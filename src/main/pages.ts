@@ -29,3 +29,4 @@ h1{font-size:18px;margin:0 0 8px}p{margin:0;color:#5f6469}.d{margin-top:12px;fon
 
 export const offlinePage = (detail?: string) => page(S.offlineTitle, S.offlineBody, detail);
 export const noServerPage = () => page(S.noServerTitle, S.noServerBody);
+export const experimentPage = () => page(S.experimentTitle, S.experimentBody);

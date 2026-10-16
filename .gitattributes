@@ -1,0 +1,4 @@
+# Переводы строк — LF во всех текстовых файлах на любом компьютере (Prettier пишет LF)
+* text=auto eol=lf
+*.png binary
+*.ico binary
