@@ -13,7 +13,13 @@ if (!serverUrl && existsSync(envFile)) {
 }
 // заглушка из .env.example — не адрес
 if (serverUrl.includes('<')) serverUrl = '';
-writeFileSync(new URL('dist/build-config.json', root), JSON.stringify({ serverUrl }, null, 2));
+// пробная сборка с режимом опыта (шаг Д2): EXPERIMENT=toast
+const experiment = process.env.EXPERIMENT === 'toast' ? 'toast' : undefined;
+writeFileSync(
+  new URL('dist/build-config.json', root),
+  JSON.stringify({ serverUrl, ...(experiment && { experiment }) }, null, 2),
+);
 console.log(
   serverUrl ? '✓ адрес сервера записан в сборку' : '! адрес сервера не задан (SERVER_URL)',
 );
+if (experiment) console.log('! пробная сборка: режим опыта с уведомлениями');

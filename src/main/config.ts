@@ -5,14 +5,19 @@ import { parseServerUrl } from './navigation';
 
 export interface BuildConfig {
   serverUrl?: string;
+  /** Пробная сборка с режимом опыта (шаг Д2); в обычной сборке поля нет */
+  experiment?: 'toast';
 }
 
 export function readBuildConfig(file: string): BuildConfig {
   try {
     const raw: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (typeof raw === 'object' && raw !== null) {
-      const v = (raw as Record<string, unknown>).serverUrl;
-      return typeof v === 'string' ? { serverUrl: v } : {};
+      const r = raw as Record<string, unknown>;
+      const cfg: BuildConfig = {};
+      if (typeof r.serverUrl === 'string') cfg.serverUrl = r.serverUrl;
+      if (r.experiment === 'toast') cfg.experiment = 'toast';
+      return cfg;
     }
   } catch {
     // файла нет — сборка без адреса
