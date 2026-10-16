@@ -1,0 +1,19 @@
+name: Проверки кода
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+# Сквозные тесты и сборка установщика — на Windows, локально перед PR (`npm run check`, `npm run dist`)

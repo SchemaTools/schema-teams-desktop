@@ -27,4 +27,20 @@
 
 ## Команды
 
-Появятся на шаге Д1 (установка, запуск, тесты, сборка установщика) — записать сюда.
+- `npm install` — зависимости (Node 22.12+). Сам Electron скачивается при первом запуске.
+- `npm start` — сборка и запуск. Адрес сервера — `SCHEMA_TEAMS_SERVER_URL` (например, локальный стенд `schema-teams`), иначе из `settings.json` или `.env`.
+- `npm test` — модульные тесты; `npm run test:e2e` — сквозные (Playwright `_electron`, заглушка сервера `tests/e2e/stub.ts`).
+- `npm run typecheck`, `npm run lint` (ESLint и Prettier), `npm run format`.
+- `npm run check` — всё перед PR: типы, линт, модульные и сквозные тесты.
+- `npm run dist` — установщик `release/Schema Teams Setup <версия>.exe`; адрес сервера — из `SERVER_URL` или `.env`.
+- Тихая установка для проверки — установщик с ключом `/S`; удаление — `%LOCALAPPDATA%\Programs\Schema Teams\Uninstall Schema Teams.exe /S`.
+
+Переменные для разработки и тестов: `SCHEMA_TEAMS_SERVER_URL` — адрес сервера, `SCHEMA_TEAMS_USER_DATA` — отдельная папка профиля (настройки, cookie, журнал).
+
+## Устройство
+
+- `src/main/index.ts` — запуск: один экземпляр, журнал, разрешения, автозапуск, окно, трей.
+- `mainWindow.ts` — окно Teams: переходы только в пределах сервера, ✕ и «Свернуть» — в трей, страница «Нет связи» с повтором, масштаб, положение окна.
+- `tray.ts`, `icons.ts`, `mark.ts`, `png.ts` — значок: знак Schema рисуется на лету.
+- `navigation.ts`, `windowState.ts`, `settings.ts`, `logger.ts`, `config.ts` — логика без Electron, покрыта модульными тестами.
+- `strings.ts` — тексты интерфейса.
