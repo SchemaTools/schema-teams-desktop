@@ -23,7 +23,8 @@ check () {
 
 check "IP-адрес внутренней сети" '\b(10\.\d{1,3}|172\.(1[6-9]|2\d|3[01])|192\.168)\.\d{1,3}\.\d{1,3}\b'
 check "сетевой путь" '\\\\[A-Za-z0-9_.-]+\\' '\\\\server\\'
-check "адрес почты" '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' '(noreply@|@example\.(com|org)|users\.noreply\.github\.com|fonts\.googleapis)'
+# в package-lock.json — только открытые сведения реестра npm (адреса авторов пакетов)
+check "адрес почты" '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' '(^package-lock\.json:|noreply@|@example\.(com|org)|users\.noreply\.github\.com|fonts\.googleapis)'
 check "закрытый ключ" '-----BEGIN [A-Z ]*PRIVATE KEY-----'
 check "токен" '\b(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16})\b'
 # токен доступа Schema Teams (решение от 13.10.2026): приставка stt_ и ровно 43 знака

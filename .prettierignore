@@ -1,0 +1,9 @@
+dist/
+release/
+coverage/
+test-results/
+docs/
+private/
+package-lock.json
+*.md
+build/

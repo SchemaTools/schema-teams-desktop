@@ -1,0 +1,38 @@
+{
+  "name": "schema-teams-desktop",
+  "productName": "Schema Teams",
+  "version": "0.1.0",
+  "description": "Настольное приложение Schema Teams для Windows",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "dist/main/index.js",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/build-config.mjs && node scripts/make-icon.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "dist": "npm run build && electron-builder --win nsis --publish never",
+    "check": "npm run typecheck && npm run lint && npm test && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^24.0.0",
+    "electron": "^44.7.2",
+    "electron-builder": "^26.15.3",
+    "eslint": "^10.12.0",
+    "prettier": "^3.9.10",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.5"
+  },
+  "allowScripts": {
+    "electron-winstaller": false
+  }
+}
