@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Хук перед отправкой: та же проверка плюс локальный список private/denylist.txt.
+# Подключить один раз:  git config core.hooksPath scripts/hooks
+exec "$(git rev-parse --show-toplevel)/scripts/check-private-data.sh"
