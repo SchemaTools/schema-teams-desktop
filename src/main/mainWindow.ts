@@ -18,6 +18,8 @@ export interface MainWindowOptions {
   settings: SettingsStore;
   log: Logger;
   isQuitting: () => boolean;
+  /** Страница вместо «Не задан адрес сервера» (пробная сборка) */
+  noServerPage?: string;
 }
 
 export class MainWindow {
@@ -88,7 +90,7 @@ export class MainWindow {
     clearTimeout(this.retryTimer);
     if (!this.o.server) {
       this.o.log.error('адрес сервера не задан');
-      void this.win.loadURL(noServerPage());
+      void this.win.loadURL(this.o.noServerPage ?? noServerPage());
       return;
     }
     void this.win.loadURL(this.o.server.href).catch(() => {

@@ -1,6 +1,6 @@
 // Значок в трее (ТЗ, 4.1). На шаге Д1 — знак, подсказка, щелчок и короткое системное меню;
 // счётчик, таймер, «Фокус» и своё меню-окно (Д-Т-2) — шаг Д3.
-import { Menu, Tray, nativeTheme } from 'electron';
+import { Menu, Tray, nativeTheme, type MenuItemConstructorOptions } from 'electron';
 import { trayImage } from './icons';
 import { S } from './strings';
 
@@ -9,6 +9,8 @@ export interface TrayOptions {
   onClick: () => void;
   onOpen: () => void;
   onQuit: () => void;
+  /** Пункты пробной сборки (режим опыта, шаг Д2) */
+  extra?: MenuItemConstructorOptions[];
 }
 
 export function createTray(o: TrayOptions): Tray {
@@ -18,6 +20,7 @@ export function createTray(o: TrayOptions): Tray {
   tray.on('click', o.onClick);
   const menu = Menu.buildFromTemplate([
     { label: S.menuOpen, click: o.onOpen },
+    ...(o.extra ?? []),
     { type: 'separator' },
     { label: S.menuVersion(o.version), enabled: false },
     { label: S.menuQuit, click: o.onQuit },

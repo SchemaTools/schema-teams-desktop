@@ -8,6 +8,8 @@ import { MainWindow, PARTITION } from './mainWindow';
 import { isServerUrl } from './navigation';
 import { SettingsStore } from './settings';
 import { createTray } from './tray';
+import { ToastExperiment } from './experiments/toastExperiment';
+import { experimentPage } from './pages';
 
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
@@ -55,15 +57,33 @@ function start(): void {
     server: server?.origin ?? null,
   });
 
+  const experiment =
+    build.experiment === 'toast' || process.env.SCHEMA_TEAMS_EXPERIMENT === 'toast';
+  if (experiment) log.info('пробная сборка: опыт с уведомлениями');
+
   restrictPermissions(server);
   applyAutostart(settings.get().autostart);
 
-  main = new MainWindow({ server, settings, log, isQuitting: () => quitting });
+  main = new MainWindow({
+    server,
+    settings,
+    log,
+    isQuitting: () => quitting,
+    ...(experiment && { noServerPage: experimentPage() }),
+  });
+  const toast = experiment
+    ? new ToastExperiment({
+        log,
+        isWindowVisible: () => main?.win.isVisible() ?? false,
+        showWindow: () => main?.show(),
+      })
+    : undefined;
   tray = createTray({
     version: app.getVersion(),
     onClick: () => main?.toggle(),
     onOpen: () => main?.show(),
     onQuit: () => app.quit(),
+    ...(toast && { extra: [toast.menu()] }),
   });
   if (!hidden) main.win.once('ready-to-show', () => main?.show());
 }
