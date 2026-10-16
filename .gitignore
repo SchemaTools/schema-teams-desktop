@@ -1,0 +1,24 @@
+# секреты и настройки сборки
+.env
+.env.*
+!.env.example
+# реальные данные бюро и списки проверки
+private/
+# сертификаты и ключи подписи — только на компьютере сборки
+*.pfx
+*.p12
+*.cer
+*.key
+# сборка и зависимости
+node_modules/
+dist/
+out/
+release/
+coverage/
+*.log
+*.tsbuildinfo
+# системное
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

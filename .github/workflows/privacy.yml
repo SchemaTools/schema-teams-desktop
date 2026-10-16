@@ -1,0 +1,11 @@
+name: Проверка реальных данных
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-private-data.sh

@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Schema Teams Desktop — макет</title>
+<!-- Schema Teams Desktop · интерактивный макет v1 · 2026-10-15 · данные вымышленные -->
+<style>
+:root{
+  --graphite:#1a1d21;--electric:#1b3fd1;--surface:#fff;--muted:#f2f4f5;--sunken:#e6e9eb;--ink:#1a1d21;--ink2:#5f6469;--line:#c9ced2;--ctl:#7d8388;
+  --accent:#1b3fd1;--accent-h:#1532a8;--accent-s:#e8ecfb;--pos:#0e7c63;--pos-s:#e3f2ee;
+  --warn:#d99100;--warn-ink:#8a5c00;--warn-s:#fbf1dc;--dan:#d32f2f;--dan-s:#fbe7e7;--focus:#5b21b6;--focus-s:#efe9fb;
+  --shadow:0 10px 30px rgba(26,29,33,.22);
+  --sans:Inter,"Segoe UI",Arial,sans-serif;--head:"Inter Tight",Inter,"Segoe UI",Arial,sans-serif;--mono:"IBM Plex Mono",Consolas,monospace;
+  --bar:52px;--task:44px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--graphite);color:var(--ink);font:14px/20px var(--sans)}
+button,input,select,textarea{font:inherit;color:inherit}
+.btn{border:1px solid var(--ctl);background:var(--surface);padding:5px 12px;cursor:pointer;border-radius:8px;white-space:nowrap}
+.btn:hover{background:var(--muted)}.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff}.btn.pri:hover{background:var(--accent-h)}
+.btn.sm{padding:2px 8px;font-size:12px}.btn.dan{color:var(--dan);border-color:var(--dan)}
+.lbl{font:600 11px/16px var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
+.mono{font-family:var(--mono)}.dim{color:var(--ink2)}
+/* ===== шапка макета ===== */
+header.top{position:fixed;inset:0 0 auto 0;height:var(--bar);background:var(--graphite);color:#fff;display:flex;align-items:center;gap:10px;padding:0 16px;z-index:200;border-bottom:1px solid #2c3036}
+.logo{display:flex;align-items:center;gap:10px;font:600 16px/1 var(--head)}
+.mk{width:18px;height:18px;display:inline-block;background:linear-gradient(135deg,#fff 0 50%,var(--electric) 50% 100%);flex:none}
+header.top .sp{flex:1}
+header.top .tag{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border:1px solid #5f6469;color:#c9ced2;border-radius:4px}
+header.top .btn{background:transparent;color:#fff;border-color:#5f6469}
+header.top .btn:hover{background:#2c3036}
+header.top .btn.rkon{background:var(--warn);border-color:var(--warn);color:var(--graphite)}
+header.top .clk{font:500 13px var(--mono);color:#c9ced2}
+/* ===== рабочий стол ===== */
+#desk{position:fixed;top:var(--bar);left:0;right:0;bottom:0;background:radial-gradient(1200px 600px at 70% 30%,#3a4a7a 0,#24304f 45%,#151b2c 100%);overflow:hidden}
+body.rk #desk{right:340px}
+.deskicons{position:absolute;left:16px;top:16px;display:flex;flex-direction:column;gap:14px;color:#fff;font-size:12px;text-align:center}
+.deskicons div{width:72px}.deskicons i{display:block;width:40px;height:40px;margin:0 auto 4px;border-radius:8px;background:rgba(255,255,255,.18)}
+.taskbar{position:absolute;left:0;right:0;bottom:0;height:var(--task);background:rgba(28,32,40,.92);backdrop-filter:blur(8px);display:flex;align-items:center;padding:0 8px;color:#fff;z-index:60}
+.taskbar .apps{flex:1;display:flex;justify-content:center;gap:4px}
+.taskbar .app{width:40px;height:36px;border-radius:6px;display:flex;align-items:center;justify-content:center;position:relative;cursor:default}
+.taskbar .app:hover{background:rgba(255,255,255,.08)}
+.taskbar .app i{width:22px;height:22px;border-radius:4px;display:block}
+.taskbar .app.on::after{content:"";position:absolute;bottom:2px;width:16px;height:3px;border-radius:2px;background:#8fa7ff}
+.taskbar .app .ov{position:absolute;right:3px;bottom:3px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:var(--dan);font-size:9px;line-height:14px;text-align:center;font-weight:700}
+.tray{display:flex;align-items:center;gap:2px;height:100%}
+.tray .ti{height:36px;min-width:28px;padding:0 6px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#d6dae0;font-size:13px;cursor:default;position:relative}
+.tray .ti:hover{background:rgba(255,255,255,.1)}
+.tray .clock{flex-direction:column;line-height:15px;font-size:12px;padding:0 10px;text-align:right;align-items:flex-end}
+#trayIcon{cursor:pointer}
+#trayIcon .mk{width:16px;height:16px}
+#trayIcon.off .mk{filter:grayscale(1) brightness(.75)}
+#trayIcon .bdg{position:absolute;right:0;top:3px;min-width:15px;height:15px;padding:0 3px;border-radius:8px;background:var(--dan);color:#fff;font:700 9px/15px var(--sans);text-align:center}
+#trayIcon .st{position:absolute;left:2px;bottom:4px;width:9px;height:9px;border-radius:50%;border:1.5px solid #1c2028}
+#trayIcon .st.run{background:#2ecc8f}#trayIcon .st.pause{background:var(--warn)}
+#trayIcon .moon{position:absolute;left:0;top:2px;font-size:10px}
+#trayIcon .bang{position:absolute;right:1px;bottom:5px;width:12px;height:12px;border-radius:50%;background:var(--warn);color:#1a1d21;font:800 9px/12px var(--sans);text-align:center}
+.tip{position:absolute;bottom:calc(var(--task) + 6px);right:90px;background:#2b2f37;color:#fff;font-size:12px;padding:6px 10px;border-radius:6px;white-space:pre;z-index:90;pointer-events:none;display:none}
+/* ===== окно приложения ===== */
+.win{position:absolute;background:var(--surface);box-shadow:0 20px 60px rgba(0,0,0,.45);border-radius:8px;overflow:hidden;display:flex;flex-direction:column;z-index:20;border:1px solid #3a3f45}
+.win .tb{height:32px;flex:none;display:flex;align-items:center;background:#f3f3f3;border-bottom:1px solid var(--sunken);font-size:12px;user-select:none}
+.win .tb .t{display:flex;align-items:center;gap:8px;padding-left:10px;flex:1}
+.win .tb .t .mk{width:14px;height:14px;background:linear-gradient(135deg,var(--graphite) 0 50%,var(--electric) 50% 100%)}
+.win .tb .wb{width:46px;height:32px;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px}
+.win .tb .wb:hover{background:#e2e2e2}.win .tb .wb.x:hover{background:#c42b1c;color:#fff}
+#app{left:110px;top:24px;right:60px;bottom:calc(var(--task) + 24px)}
+#app.max{left:0;top:0;right:0;bottom:var(--task);border-radius:0}
+#app.hidden{display:none}
+/* веб Teams внутри окна */
+.web{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}
+.wtop{height:46px;flex:none;background:var(--graphite);color:#fff;display:flex;align-items:center;gap:10px;padding:0 12px}
+.wtop .sp{flex:1}
+.wtop .ib{border:1px solid #5f6469;background:transparent;color:#fff;border-radius:8px;padding:3px 10px;cursor:pointer;font-size:13px;position:relative}
+.wtop .ib:hover{background:#2c3036}.wtop .ib.focus{background:var(--focus);border-color:var(--focus)}
+.wtop .ib .c{position:absolute;right:-6px;top:-6px;background:var(--dan);color:#fff;border-radius:8px;font:700 10px/16px var(--sans);min-width:16px;padding:0 4px}
+.chip{display:flex;align-items:center;gap:8px;border-radius:18px;padding:3px 4px 3px 12px;font-size:13px;background:#2c3036;border:1px solid #4a4f56}
+.chip.run{background:#0d3b30;border-color:#1f7a62}.chip.pause{background:#3d3110;border-color:#8a6a10}
+.chip .tm{font-family:var(--mono);font-weight:500}
+.chip button{border:0;background:rgba(255,255,255,.12);color:#fff;border-radius:12px;width:26px;height:24px;cursor:pointer}
+.chip button:hover{background:rgba(255,255,255,.25)}
+.chip.idle{padding:3px 12px;cursor:pointer}.chip.idle:hover{background:#3a3f45}
+.wbody{flex:1;display:flex;min-height:0}
+.wnav{width:196px;flex:none;border-right:1px solid var(--line);padding:10px;overflow:auto;background:var(--surface)}
+.wnav a{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;cursor:pointer;color:var(--ink);text-decoration:none}
+.wnav a:hover{background:var(--muted)}.wnav a.on{background:var(--accent-s);color:var(--accent);font-weight:600}
+.wnav a .cnt{margin-left:auto;background:var(--accent);color:#fff;font-size:11px;font-weight:700;padding:0 6px;border-radius:9px}
+.wmain{flex:1;min-width:0;display:flex;background:var(--muted)}
+.offband{background:var(--warn-s);color:var(--warn-ink);padding:6px 14px;font-size:13px;border-bottom:1px solid #ecd9a8;display:flex;gap:10px;align-items:center}
+.updband{background:var(--accent-s);color:var(--accent);padding:6px 14px;font-size:13px;border-bottom:1px solid #c9d3f6;display:flex;gap:10px;align-items:center}
+.focband{background:var(--focus-s);color:var(--focus);padding:6px 14px;font-size:13px;display:flex;gap:10px;align-items:center}
+/* чат */
+.clist{width:250px;flex:none;background:var(--surface);border-right:1px solid var(--line);overflow:auto}
+.ci{display:flex;gap:10px;padding:9px 12px;cursor:pointer;align-items:center}
+.ci:hover{background:var(--muted)}.ci.on{background:var(--accent-s)}
+.av{width:34px;height:34px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font:600 12px var(--sans)}
+.ci .nm{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ci .pv{font-size:12px;color:var(--ink2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ci .u{margin-left:auto;background:var(--accent);color:#fff;border-radius:10px;font:700 11px/18px var(--sans);min-width:18px;text-align:center;padding:0 5px}
+.ci .u.grey{background:var(--ctl)}
+.conv{flex:1;display:flex;flex-direction:column;min-width:0}
+.conv .ch{background:var(--surface);border-bottom:1px solid var(--line);padding:10px 16px;font-weight:600}
+.msgs{flex:1;overflow:auto;padding:14px 18px;display:flex;flex-direction:column;gap:8px}
+.m{max-width:72%;background:var(--surface);border-radius:12px 12px 12px 4px;padding:7px 11px;box-shadow:0 1px 1px rgba(0,0,0,.06)}
+.m.me{align-self:flex-end;background:#dfe6fd;border-radius:12px 12px 4px 12px}
+.m .a{font-size:12px;font-weight:600;color:var(--accent)}
+.m .tm{font-size:11px;color:var(--ink2);text-align:right}
+.m .mention{color:var(--accent);font-weight:600}
+.pc{margin-top:6px;border:1px solid var(--line);border-radius:10px;padding:8px 10px;display:flex;gap:10px;align-items:flex-start;background:#fafbfc}
+.pc .ic{width:32px;height:32px;border-radius:6px;background:var(--warn-s);display:flex;align-items:center;justify-content:center;flex:none;font-size:16px}
+.pc .p{font:12px/16px var(--mono);color:var(--ink2);word-break:break-all}
+.pc .acts{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
+.compose{display:flex;gap:8px;padding:10px 14px;background:var(--surface);border-top:1px solid var(--line)}
+.compose input{flex:1;border:1px solid var(--line);border-radius:10px;padding:7px 10px}
+/* моя страница */
+.page{flex:1;overflow:auto;padding:18px 22px}
+.page h2{font:600 20px/26px var(--head);margin:0 0 12px}
+table.tasks{width:100%;border-collapse:collapse;background:var(--surface);border-radius:10px;overflow:hidden}
+table.tasks th{font:600 11px/16px var(--sans);letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+table.tasks td{padding:8px 10px;border-bottom:1px solid var(--sunken);font-size:13px}
+table.tasks tr.run td{background:var(--pos-s)}
+.st{display:inline-block;border-radius:10px;padding:0 8px;font-size:12px;background:var(--sunken)}
+.st.w{background:var(--accent-s);color:var(--accent)}.st.r{background:var(--warn-s);color:var(--warn-ink)}
+.playb{border:1px solid var(--pos);color:var(--pos);background:#fff;border-radius:14px;padding:1px 10px;cursor:pointer;font-size:12px}
+.playb:hover{background:var(--pos-s)}
+.newtag{outline:2px dashed #8fa7ff;outline-offset:2px;position:relative}
+body.shownew .newtag::after{content:"мост";position:absolute;top:-9px;right:-6px;background:#8fa7ff;color:#0e1a4d;font:700 9px/14px var(--sans);padding:0 4px;border-radius:4px;letter-spacing:.04em}
+body:not(.shownew) .newtag{outline:none}
+/* ===== меню трея ===== */
+.tmenu{position:absolute;right:96px;bottom:calc(var(--task) + 8px);width:300px;background:#2b2f37;color:#eef0f3;border-radius:10px;box-shadow:var(--shadow);padding:6px;z-index:120;font-size:13px;border:1px solid #3c414a}
+.tmenu .hd{padding:8px 10px 10px;border-bottom:1px solid #3c414a;margin-bottom:4px;display:flex;gap:10px;align-items:center}
+.tmenu .hd .s{font-size:12px;color:#aab1ba}
+.tmenu button.it{display:flex;width:100%;align-items:center;gap:10px;background:transparent;border:0;color:inherit;text-align:left;padding:7px 10px;border-radius:6px;cursor:pointer}
+.tmenu button.it:hover{background:#3a3f48}
+.tmenu button.it .r{margin-left:auto;color:#aab1ba;font-size:12px}
+.tmenu .sep{height:1px;background:#3c414a;margin:4px 6px}
+.tmenu .tbox{margin:2px 4px 6px;padding:8px 10px;border-radius:8px;background:#20352f;border:1px solid #2f6b58}
+.tmenu .tbox.pause{background:#3a311a;border-color:#7a6220}
+.tmenu .tbox .tt{font-family:var(--mono);font-size:18px;font-weight:500}
+.tmenu .tbox .row{display:flex;gap:6px;margin-top:8px}
+.tmenu .tbox .row button{flex:1;border:1px solid #5a616b;background:#2b2f37;color:#fff;border-radius:6px;padding:4px 0;cursor:pointer;font-size:12px}
+.tmenu .tbox .row button:hover{background:#3a3f48}
+.tmenu .sub{margin:0 4px 4px 34px;display:flex;flex-wrap:wrap;gap:4px}
+.tmenu .sub button{border:1px solid #5a616b;background:transparent;color:#eef0f3;border-radius:12px;padding:1px 9px;font-size:12px;cursor:pointer}
+.tmenu .sub button:hover{background:#3a3f48}
+.tmenu .upd{color:#8fa7ff}
+/* ===== уведомления Windows ===== */
+#toasts{position:absolute;right:12px;bottom:calc(var(--task) + 12px);display:flex;flex-direction:column-reverse;gap:8px;z-index:110;width:364px}
+.toast{background:#f9f9f9;border:1px solid #d9d9d9;border-radius:8px;box-shadow:var(--shadow);padding:10px 12px 12px;font-size:13px}.toast.nw{animation:tin .18s ease-out}
+@keyframes tin{from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1}}
+.toast .app{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--ink2);margin-bottom:8px}
+.toast .app .mk{width:12px;height:12px;background:linear-gradient(135deg,var(--graphite) 0 50%,var(--electric) 50% 100%)}
+.toast .app .x{margin-left:auto;cursor:pointer;padding:0 4px;font-size:13px}
+.toast .bd{display:flex;gap:10px}
+.toast .t1{font-weight:600}
+.toast .t2{color:#333;margin-top:2px}
+.toast .rep{display:flex;gap:6px;margin-top:10px}
+.toast .rep input{flex:1;border:1px solid var(--line);border-radius:6px;padding:5px 8px;background:#fff}
+.toast .acts{display:flex;gap:6px;margin-top:10px}
+.toast .acts .btn{flex:1}
+/* ===== диалоги приложения (свои окна) ===== */
+.dwin{position:absolute;z-index:115;background:var(--surface);border-radius:8px;box-shadow:0 20px 60px rgba(0,0,0,.45);border:1px solid #3a3f45;display:flex;flex-direction:column;overflow:hidden}
+.dwin .bdy{padding:16px 18px;overflow:auto}
+.dwin .ft{display:flex;gap:8px;justify-content:flex-end;padding:10px 18px;border-top:1px solid var(--sunken);background:#fafafa}
+.dwin h3{margin:0 0 4px;font:600 17px/24px var(--head)}
+.field{margin-top:12px}.field label{display:block;font-size:12px;color:var(--ink2);margin-bottom:4px}
+.field input[type=text],.field input[type=password],.field select,.field textarea{width:100%;border:1px solid var(--ctl);border-radius:8px;padding:6px 9px;background:#fff}
+.search{width:100%;border:1px solid var(--ctl);border-radius:8px;padding:7px 10px}
+.pick{margin-top:10px;max-height:300px;overflow:auto}
+.pick .g{margin:10px 0 4px}
+.pick .o{display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:8px;cursor:pointer;border:1px solid transparent}
+.pick .o:hover{background:var(--muted)}.pick .o.sel{border-color:var(--accent);background:var(--accent-s)}
+.pick .o .mkk{font:600 12px var(--mono);min-width:44px}
+.pick .o .ob{margin-left:auto;font-size:12px;color:var(--ink2)}
+table.ent{width:100%;border-collapse:collapse;margin-top:8px}
+table.ent td,table.ent th{padding:5px 4px;font-size:13px;text-align:left;border-bottom:1px solid var(--sunken)}
+table.ent th{font-size:11px;color:var(--ink2);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+table.ent select{border:1px solid var(--ctl);border-radius:6px;padding:2px 4px;background:#fff}
+.note{font-size:12px;color:var(--ink2);margin-top:8px}
+.flag{background:var(--warn-s);color:var(--warn-ink);border-radius:8px;padding:6px 10px;font-size:12px;margin-top:8px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);padding:0 12px;background:#fafafa}
+.tabs button{border:0;background:transparent;padding:9px 12px;cursor:pointer;border-bottom:2px solid transparent;font-size:13px}
+.tabs button.on{border-bottom-color:var(--accent);color:var(--accent);font-weight:600}
+.sw{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px solid var(--sunken)}
+.sw input[type=checkbox]{margin-top:3px}
+.sw .d{font-size:12px;color:var(--ink2)}
+.sw select{margin-left:auto;border:1px solid var(--ctl);border-radius:6px;padding:2px 6px}
+.steps{display:flex;gap:6px;margin-bottom:12px}.steps span{flex:1;height:4px;border-radius:2px;background:var(--sunken)}.steps span.on{background:var(--accent)}
+.explorer .path{font:12px var(--mono);background:var(--muted);padding:6px 10px;border-bottom:1px solid var(--line)}
+.explorer .f{display:flex;gap:10px;padding:6px 14px;font-size:13px;border-bottom:1px solid #f0f0f0}
+/* ===== сценарии ===== */
+.scen{position:fixed;top:calc(var(--bar) + 6px);right:16px;width:360px;max-height:calc(100% - 80px);overflow:auto;background:var(--surface);border-radius:10px;box-shadow:var(--shadow);z-index:210;padding:8px}
+body.rk .scen{right:356px}
+.scen button{display:block;width:100%;text-align:left;border:0;background:transparent;border-radius:8px;padding:7px 10px;cursor:pointer}
+.scen button:hover{background:var(--muted)}
+.scen button b{display:block;font-size:13px}.scen button span{font-size:12px;color:var(--ink2)}
+.scen .lbl{padding:8px 10px 2px}
+/* ===== режим замечаний ===== */
+body.rk [data-rk]{outline:1px dashed #9aa1a8!important;outline-offset:1px;cursor:help!important}
+body.rk [data-rk]:hover{outline:2px solid var(--accent)!important}
+.rkpanel{position:fixed;right:0;top:var(--bar);bottom:0;width:340px;background:var(--surface);border-left:1px solid var(--line);z-index:220;display:none;flex-direction:column}
+body.rk .rkpanel{display:flex}
+.rkpanel .hd{padding:12px 16px;border-bottom:1px solid var(--line)}
+.rkpanel .ls{flex:1;overflow:auto;padding:8px 16px}
+.rkpanel .it{border-bottom:1px solid var(--sunken);padding:8px 0;font-size:13px}
+.rkpanel .it b{font-family:var(--mono);font-weight:500;font-size:12px;color:var(--ink2)}
+.rkpanel .ft{padding:12px 16px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.rkpanel textarea{min-height:70px;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.pop{position:fixed;z-index:300;width:300px;background:var(--surface);border-radius:10px;box-shadow:var(--shadow);padding:12px;display:flex;flex-direction:column;gap:6px}
+.pop textarea{min-height:80px;border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.pop .rw{display:flex;gap:6px;justify-content:flex-end}
+.mtoast{position:fixed;left:50%;bottom:60px;transform:translateX(-50%);background:var(--graphite);color:#fff;padding:8px 14px;border-radius:10px;z-index:400;font-size:13px;display:none}
+</style>
+</head>
+<body class="shownew">
+<header class="top">
+  <div class="logo"><i class="mk"></i>Schema Teams Desktop</div>
+  <span class="tag">макет · v1</span>
+  <span class="clk" id="clk" title="Время в макете">09:05</span>
+  <button class="btn sm" id="plus15" title="Сдвинуть время макета">+15 мин</button>
+  <button class="btn sm" id="plus60">+1 ч</button>
+  <div class="sp"></div>
+  <label style="font-size:12px;color:#c9ced2;display:flex;gap:6px;align-items:center"><input type="checkbox" id="newChk" checked> показывать «мост» в вебе</label>
+  <button class="btn sm" id="scenBtn">Сценарии ▾</button>
+  <button class="btn sm" id="rkBtn">Режим замечаний</button>
+  <button class="btn sm" id="resetBtn">Сбросить демо</button>
+</header>
+<div id="desk">
+  <div class="deskicons"><div><i></i>Корзина</div><div><i></i>Проекты</div><div><i></i>Revit</div></div>
+  <div id="app" class="win" data-rk="Д-О-1: окно приложения"></div>
+  <div id="dlgs"></div>
+  <div id="toasts" data-rk="Д-У-0: уведомления Windows (стопка)"></div>
+  <div id="tmenuWrap"></div>
+  <div class="tip" id="tip"></div>
+  <div class="taskbar">
+    <div style="width:180px"></div>
+    <div class="apps">
+      <div class="app"><i style="background:#3d7bfd"></i></div>
+      <div class="app"><i style="background:#f2c94c"></i></div>
+      <div class="app"><i style="background:#2d9cdb"></i></div>
+      <div class="app" id="tbApp" data-rk="Д-Т-5: значок на панели задач (с наложенным счётчиком)"><i class="mk" style="width:22px;height:22px;border-radius:2px"></i></div>
+    </div>
+    <div class="tray">
+      <div class="ti">⌃</div>
+      <div class="ti" id="trayIcon" data-rk="Д-Т-1: значок в трее (счётчик, таймер, фокус, нет связи)"></div>
+      <div class="ti">ᯤ</div><div class="ti">🔈</div>
+      <div class="ti clock"><span id="tclk">09:05</span><span id="tdate">15.10.2026</span></div>
+    </div>
+  </div>
+</div>
+<div class="scen" id="scen" style="display:none"></div>
+<aside class="rkpanel">
+  <div class="hd"><div class="lbl">Замечания к макету</div><div class="dim" style="font-size:13px;margin-top:4px">Щёлкните по элементу с пунктирной рамкой — откроется поле для замечания. Код элемента попадёт в ответ.</div></div>
+  <div class="ls" id="rkList"></div>
+  <div class="ft"><textarea id="rkGeneral" placeholder="Общий комментарий"></textarea><button class="btn pri" id="rkCopy">Скопировать ответ</button><button class="btn" id="rkSave">Сохранить ответ .md</button></div>
+</aside>
+<div class="mtoast" id="mtoast"></div>
+<script>
+const $=(s,r=document)=>r.querySelector(s),$$=(s,r=document)=>[...r.querySelectorAll(s)];
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const KEY='st-desktop-mockup-v1';
+const P={me:['Иванова И.И.','#1b3fd1'],u1:['Петров П.П.','#0e7c63'],u2:['Сидорова А.А.','#b35c00'],u3:['Кузнецов К.К.','#5b21b6'],u4:['Смирнов С.С.','#8a1c4a']};
+const ini=k=>P[k][0].split(' ').slice(0,2).map(x=>x[0]).join('');
+const TASKS=[
+ {id:1,mark:'АР1',t:'Планы этажей',obj:'Объект А',st:'В работе',due:'24.10'},
+ {id:2,mark:'АР2',t:'Фасады',obj:'Объект А',st:'Доработка',due:'28.10'},
+ {id:3,mark:'АР1.2',t:'Узлы входной группы (подзадача)',obj:'Объект А',st:'В работе',due:'22.10'},
+ {id:4,mark:'АР3',t:'Разрезы',obj:'Объект Б',st:'Назначено',due:'06.11'},
+ {id:5,mark:'КЖ1',t:'Проверка отверстий',obj:'Объект Б',st:'В работе',due:'30.10'},
+];
+const tk=id=>TASKS.find(t=>t.id===id);
+function fresh(){return{
+ now:545,day:15,win:'open',max:false,page:'chat',chat:'c1',
+ chats:[
+  {id:'c1',name:'Объект А — общий',av:'ОА',col:'#0e7c63',kind:'obj',unread:2,msgs:[
+   {u:'u3',t:'08:42',x:'Коллеги, исходные по фасадам положил сюда:',path:'\\\\server\\Проекты\\Объект А\\02_Исходные\\Фасады'},
+   {u:'u2',t:'08:51',x:'Старый архив по соседнему участку, если нужно:',path:'\\\\server\\Архив-2019\\Объект Б'},
+   {u:'u1',t:'08:58',x:'@Иванова И.И. глянь, пожалуйста, узел 3 на листе 5',m:1},
+  ]},
+  {id:'c2',name:'Петров П.П.',av:'ПП',col:'#0e7c63',kind:'dm',unread:0,msgs:[{u:'u1',t:'вчера',x:'Спасибо!'}]},
+  {id:'c3',name:'Группа АР',av:'АР',col:'#b35c00',kind:'grp',unread:0,msgs:[{u:'u4',t:'вчера',x:'Шаблон листа обновил',path:'\\\\server\\Стандарт\\Шаблоны\\Лист А3.rvt'}]},
+ ],
+ notif:1,timer:null,entries:[],lastTasks:[1,2],focus:null,focusLog:{msgs:0,chats:{},ment:0},offline:false,update:false,
+ hintShown:false,firstRun:false,settings:{autostart:true,sound:true,preview:true,toasts:true,remind:'18:30',dayEnd:'18:00',lockPause:true,unlockAsk:true},
+ toasts:[],dlg:null,menu:false,rk:{},rkGen:''}}
+let S;try{S=JSON.parse(localStorage.getItem(KEY))||fresh()}catch(e){S=fresh()}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(S))}catch(e){}};
+const hm=m=>{m=Math.max(0,Math.round(m));return String(Math.floor(m/60)%24).padStart(2,'0')+':'+String(m%60).padStart(2,'0')};
+const dur=m=>{m=Math.max(0,Math.round(m));return Math.floor(m/60)+':'+String(m%60).padStart(2,'0')};
+const hrs=m=>(m/60).toLocaleString('ru-RU',{maximumFractionDigits:1});
+const r30=m=>Math.round(m/30)*30;
+const unreadChats=()=>S.chats.reduce((a,c)=>a+c.unread,0);
+const totalUnread=()=>unreadChats()+S.notif;
+function mtoast(t){const e=$('#mtoast');e.textContent=t;e.style.display='block';clearTimeout(mtoast.h);mtoast.h=setTimeout(()=>e.style.display='none',2600)}
+
+/* ===================== таймер ===================== */
+function elapsed(){if(!S.timer)return 0;return S.timer.segs.reduce((a,s)=>a+((s.to??S.now)-s.from),0)}
+function startTimer(id){if(S.timer&&S.timer.task===id){if(S.timer.paused)resumeTimer();else mtoast('Таймер уже идёт: '+tk(id).mark);S.dlg=null;save();render();return}
+ if(S.timer){finishDlg(id);return}
+ S.timer={task:id,segs:[{from:S.now,to:null}],paused:false};S.lastTasks=[id,...S.lastTasks.filter(x=>x!==id)].slice(0,3);
+ S.dlg=null;S.menu=false;save();render();mtoast('Таймер запущен: '+tk(id).mark)}
+function pauseTimer(reason){const t=S.timer;if(!t||t.paused)return;t.segs[t.segs.length-1].to=S.now;t.paused=true;t.reason=reason||null;save();render()}
+function resumeTimer(){const t=S.timer;if(!t||!t.paused)return;t.segs.push({from:S.now,to:null});t.paused=false;t.reason=null;save();render()}
+function rowsOf(t,endAt){const rows=[];t.segs.forEach(s=>{const to=s.to??endAt;let f=r30(s.from),e=r30(to);if(e>f)rows.push({task:t.task,from:f,to:e})});
+ // соседние строки той же задачи склеиваются
+ const out=[];rows.forEach(r=>{const l=out[out.length-1];if(l&&l.task===r.task&&l.to>=r.from)l.to=Math.max(l.to,r.to);else out.push({...r})});return out}
+
+/* ===================== отрисовка ===================== */
+function render(){$('#clk').textContent=hm(S.now);$('#tclk').textContent=hm(S.now);$('#tdate').textContent=S.day+'.10.2026';
+ renderTray();renderApp();renderMenu();renderToasts();renderDlg();rkRender();
+ const ov=totalUnread();$('#tbApp').classList.toggle('on',S.win==='open');$('#tbApp').querySelector('.ov')?.remove();
+ if(ov&&S.win==='open'){const s=document.createElement('span');s.className='ov';s.textContent=ov>99?'99+':ov;$('#tbApp').appendChild(s)}}
+function trayTip(){const l=['Schema Teams'];if(S.offline)l.push('Нет связи с сервером — переподключение…');l.push(totalUnread()?('Непрочитанных: '+totalUnread()):'Нет непрочитанного');
+ if(S.timer)l.push((S.timer.paused?'⏸ ':'▶ ')+tk(S.timer.task).mark+' · '+dur(elapsed()));if(S.focus)l.push('☾ Фокус до '+hm(S.focus));return l.join('\n')}
+function renderTray(){const n=totalUnread();const e=$('#trayIcon');e.className='ti'+(S.offline?' off':'');e.style.display=S.win==='quit'?'none':'';
+ e.innerHTML=`<i class="mk"></i>${n&&!S.offline?`<span class="bdg">${n>9?'9+':n}</span>`:''}${S.timer?`<span class="st ${S.timer.paused?'pause':'run'}"></span>`:''}${S.focus?'<span class="moon">☾</span>':''}${S.offline?'<span class="bang">!</span>':''}`}
+function navItem(id,label,cnt){return `<a class="${S.page===id?'on':''}" data-pg="${id}">${label}${cnt?`<span class="cnt">${cnt}</span>`:''}</a>`}
+function renderApp(){const a=$('#app');a.className='win'+(S.max?' max':'')+(S.win==='open'?'':' hidden');
+ if(S.win!=='open'){a.innerHTML='';return}
+ const t=S.timer;const chip=t?`<div class="chip ${t.paused?'pause':'run'} newtag" data-rk="Д-В-1: таймер в верхней панели Teams"><span>${t.paused?'❚❚':'●'} ${esc(tk(t.task).mark)}</span><span class="tm">${dur(elapsed())}</span>${t.paused?`<button title="Продолжить" data-act="resume">▶</button>`:`<button title="Пауза" data-act="pause">❚❚</button>`}<button title="Закончить работу" data-act="finish">■</button></div>`
+  :`<div class="chip idle newtag" data-act="pick" data-rk="Д-В-0: «▶ Начать работу» в верхней панели Teams">▶ Начать работу</div>`;
+ a.innerHTML=`<div class="tb" data-rk="Д-О-2: заголовок окна Windows"><div class="t"><i class="mk"></i>Schema Teams</div><div class="wb" data-act="min" title="Свернуть">─</div><div class="wb" data-act="max" title="Развернуть">▢</div><div class="wb x" data-act="close" title="Закрыть — останется в трее">✕</div></div>
+ <div class="web">
+  ${S.offline?`<div class="offband" data-rk="Д-С-1: полоса «Нет связи» (уже есть в вебе Teams)">⚠ Нет связи с сервером Teams. Переподключение… Таймер идёт на компьютере и запишется, когда связь вернётся.</div>`:''}
+  ${S.update?`<div class="updband" data-rk="Д-Н-6: полоса «Есть новая версия»">Доступна новая версия приложения 1.1.0 <button class="btn sm pri" data-act="upd">Скачать и установить</button><button class="btn sm" data-act="updlater">Позже</button><span class="dim" style="margin-left:auto">Что нового</span></div>`:''}
+  <div class="wtop"><div class="logo" style="font-size:14px"><i class="mk" style="width:14px;height:14px"></i>Schema Teams</div><div class="sp"></div>${chip}
+   <button class="ib ${S.focus?'focus':''}" data-act="focus" data-rk="Д-Ф-1: «☾ Фокус» (из 0.9.0)">${S.focus?'☾ Фокус до '+hm(S.focus):'☾ Фокус'}</button>
+   <button class="ib" data-act="bell">🔔${S.notif?`<span class="c">${S.notif}</span>`:''}</button><span style="font-size:13px;color:#c9ced2">Иванова И.И.</span></div>
+  ${S.focus?`<div class="focband">☾ Фокус до ${hm(S.focus)} — уведомления только об @упоминаниях <button class="btn sm" data-act="focusEnd">Завершить</button></div>`:''}
+  <div class="wbody"><nav class="wnav">${navItem('home','Главная')}${navItem('my','Моя страница')}${navItem('tasks','Задачи')}${navItem('chat','Чат',unreadChats())}${navItem('time','Трудозатраты')}${navItem('help','Справка')}</nav><div class="wmain" id="wmain"></div></div>
+ </div>`;
+ const w=$('#wmain');
+ if(S.page==='chat')renderChat(w);else if(S.page==='my')renderMy(w);else if(S.page==='time')renderTime(w);
+ else w.innerHTML=`<div class="page"><h2>${{home:'Главная',tasks:'Задачи',help:'Справка'}[S.page]}</h2><p class="dim">Обычный веб-интерфейс Teams — в макете не показан. Приложение показывает его без изменений.</p></div>`}
+function isFile(p){return /\.[a-zа-я0-9]{2,4}$/i.test(p)}
+function pathCard(p){const name=p.split('\\').filter(Boolean).pop();const f=isFile(p);
+ return `<div class="pc" data-rk="Д-П-1: карточка пути \\\\сервер\\… в чате"><div class="ic">${f?'📄':'📁'}</div><div style="min-width:0"><div style="font-weight:600">${esc(name)}</div><div class="p">${esc(p)}</div><div class="acts"><button class="btn sm pri newtag" data-open="${esc(p)}" data-rk="Д-П-2: «Открыть» (только в приложении)">Открыть</button>${f?`<button class="btn sm newtag" data-openfolder="${esc(p)}">Показать в папке</button>`:''}<button class="btn sm" data-copy="${esc(p)}">Скопировать путь</button></div></div></div>`}
+function renderChat(w){const c=S.chats.find(x=>x.id===S.chat);
+ w.innerHTML=`<div class="clist">${S.chats.map(x=>`<div class="ci ${x.id===S.chat?'on':''}" data-chat="${x.id}"><div class="av" style="background:${x.col}">${x.av}</div><div style="min-width:0;flex:1"><div class="nm">${esc(x.name)}</div><div class="pv">${esc(x.msgs[x.msgs.length-1]?.x||'')}</div></div>${x.unread?`<span class="u ${S.focus?'grey':''}">${x.unread}</span>`:''}</div>`).join('')}</div>
+ <div class="conv"><div class="ch">${esc(c.name)}</div><div class="msgs" id="msgs">${c.msgs.map(m=>`<div class="m ${m.u==='me'?'me':''}">${m.u!=='me'?`<div class="a">${esc(P[m.u][0])}</div>`:''}<div>${esc(m.x).replace('@Иванова И.И.','<span class="mention">@Иванова И.И.</span>')}</div>${m.path?pathCard(m.path):''}<div class="tm">${m.t}${m.quick?' · ответ из уведомления':''}</div></div>`).join('')}</div>
+ <div class="compose"><input id="cin" placeholder="Сообщение"><button class="btn pri" data-act="send">Отправить</button></div></div>`;
+ if(c.unread&&S.win==='open'){c.unread=0;save();setTimeout(()=>{renderTray();const l=$$('.wnav a')[3];if(l)l.innerHTML='Чат'+(unreadChats()?`<span class="cnt">${unreadChats()}</span>`:'')},0)}
+ const ms=$('#msgs');ms.scrollTop=ms.scrollHeight;
+ $('#cin').onkeydown=e=>{if(e.key==='Enter')sendMsg()}}
+function sendMsg(){const v=$('#cin').value.trim();if(!v)return;S.chats.find(x=>x.id===S.chat).msgs.push({u:'me',t:hm(S.now),x:v});save();render()}
+function renderMy(w){const t=S.timer;
+ w.innerHTML=`<div class="page"><h2>Моя страница</h2><div class="lbl" style="margin-bottom:6px">Мои задачи</div>
+ <table class="tasks" data-rk="Д-В-2: «▶» у задачи на «Моей странице»"><tr><th>Марка</th><th>Задача</th><th>Объект</th><th>Срок</th><th>Статус</th><th style="width:140px">Учёт времени</th></tr>
+ ${TASKS.map(x=>{const run=t&&t.task===x.id;return `<tr class="${run?'run':''}"><td class="mono">${x.mark}</td><td>${esc(x.t)}</td><td>${x.obj}</td><td>${x.due}</td><td><span class="st ${x.st==='В работе'?'w':x.st==='Доработка'?'r':''}">${x.st}</span></td><td>${run?`<span class="mono">${dur(elapsed())}</span> <button class="playb newtag" data-act="finish">■ Закончить</button>`:`<button class="playb newtag" data-start="${x.id}">▶ Начать</button>`}</td></tr>`}).join('')}</table>
+ <p class="note">Таймер хранится на сервере Teams: его видно здесь, в приложении и на втором компьютере. Запись в трудозатраты — по «Закончить работу».</p></div>`}
+function renderTime(w){const rows=S.entries;
+ w.innerHTML=`<div class="page"><h2>Трудозатраты</h2><table class="tasks" data-rk="Д-В-6: записи, сделанные таймером"><tr><th>Дата</th><th>Задача</th><th>С</th><th>До</th><th>Часы</th><th>Пометка</th></tr>
+ ${rows.length?rows.map(r=>`<tr><td>${r.day}.10</td><td><span class="mono">${tk(r.task).mark}</span> ${esc(tk(r.task).t)}</td><td>${hm(r.from)}</td><td>${hm(r.to)}</td><td>${hrs(r.to-r.from)}</td><td>${r.flag?'<span class="st r">проверить — остановлено в полночь</span>':'<span class="dim">таймер</span>'}</td></tr>`).join(''):'<tr><td colspan="6" class="dim">Записей нет. Запустите таймер и нажмите «Закончить работу».</td></tr>'}</table>
+ <p class="note">Обычный экран «Трудозатраты» Teams (неделя, список). Записи таймера — те же записи, их можно править как обычно.</p></div>`}
+
+/* ===================== меню трея ===================== */
+function renderMenu(){const w=$('#tmenuWrap');if(!S.menu){w.innerHTML='';return}
+ const t=S.timer;const st=S.offline?'⚠ нет связи':S.focus?'☾ в фокусе до '+hm(S.focus):'<span style="color:#2ecc8f">●</span> в сети';
+ w.innerHTML=`<div class="tmenu" data-rk="Д-Т-2: меню значка (правая кнопка)">
+  <div class="hd"><div class="av" style="background:#1b3fd1">ИИ</div><div><div style="font-weight:600">Иванова И.И.</div><div class="s">${st}</div></div></div>
+  ${t?`<div class="tbox ${t.paused?'pause':''}" data-rk="Д-Т-3: блок таймера в меню"><div class="dim" style="color:#aab1ba;font-size:12px">${t.paused?'На паузе'+(t.reason?' · '+t.reason:''):'Идёт работа'} · с ${hm(t.segs[0].from)}</div><div style="margin-top:2px"><b class="mono">${tk(t.task).mark}</b> ${esc(tk(t.task).t)}</div><div class="tt">${dur(elapsed())}</div>
+   <div class="row">${t.paused?'<button data-act="resume">▶ Продолжить</button>':'<button data-act="pause">❚❚ Пауза</button>'}<button data-act="pick">⇄ Сменить</button><button data-act="finish">■ Закончить</button></div></div>`
+  :`<button class="it" data-act="pick" data-rk="Д-Т-3: «Начать работу» в меню">▶ Начать работу…<span class="r">${S.lastTasks.length?'последняя: '+tk(S.lastTasks[0]).mark:''}</span></button>`}
+  <div class="sep"></div>
+  <button class="it" data-act="openchat">💬 Чат<span class="r">${unreadChats()||''}</span></button>
+  <button class="it" data-act="bell">🔔 Уведомления<span class="r">${S.notif||''}</span></button>
+  <div class="sep"></div>
+  ${S.focus?`<button class="it" data-act="focusEnd">☾ Завершить фокус<span class="r">до ${hm(S.focus)}</span></button>`:`<button class="it" data-act="focusMenu">☾ Фокус<span class="r">›</span></button><div class="sub" id="fsub" style="display:none"><button data-f="30">30 минут</button><button data-f="60">1 час</button><button data-f="900">до 15:00</button><button data-f="1080">до конца дня</button></div>`}
+  <div class="sep"></div>
+  <button class="it" data-act="show">Открыть Schema Teams</button>
+  <button class="it" data-act="settings">Настройки…</button>
+  ${S.update?'<button class="it upd" data-act="upd">⬇ Доступна версия 1.1.0</button>':''}
+  <div class="sep"></div>
+  <button class="it" data-act="quit">Выход<span class="r">1.0.0</span></button>
+ </div>`}
+
+/* ===================== уведомления ===================== */
+let tid=0;
+function pushToast(o){if(!S.settings.toasts)return;o.id=++tid;S.toasts.push(o);if(S.toasts.length>3)S.toasts.shift();save();renderToasts();autoHide(o.id)}
+// как в Windows: через 8 с плашка уходит в центр уведомлений; пока мышь на ней или вводится ответ — держится
+function autoHide(id){setTimeout(()=>{const el=$(`[data-tid="${id}"]`);if(!el)return;if(el.matches(':hover')||el.contains(document.activeElement)){autoHide(id);return}closeToast(id)},8000)}
+function closeToast(id){S.toasts=S.toasts.filter(t=>t.id!==id);save();renderToasts()}
+function renderToasts(){const seen=renderToasts.seen||(renderToasts.seen=new Set());$('#toasts').innerHTML=S.toasts.map(o=>{const nw=!seen.has(o.id);seen.add(o.id);return `<div class="toast${nw?' nw':''}" data-rk="${o.rk}" data-tid="${o.id}">
+ <div class="app"><i class="mk"></i>Schema Teams<span class="x" data-tx="${o.id}">✕</span></div>
+ <div class="bd">${o.av?`<div class="av" style="background:${o.avc}">${o.av}</div>`:''}<div style="flex:1;min-width:0"><div class="t1">${esc(o.t1)}</div>${o.t2?`<div class="t2">${o.t2}</div>`:''}</div></div>
+ ${o.reply?`<div class="rep"><input placeholder="Ответить…" data-rin="${o.id}"><button class="btn sm pri" data-rsend="${o.id}">➤</button></div>`:''}
+ ${o.acts?`<div class="acts">${o.acts.map((a,i)=>`<button class="btn sm ${i===0?'pri':''}" data-ta="${o.id}:${i}">${a[0]}</button>`).join('')}</div>`:''}
+ </div>`}).join('')}
+const INC=[
+ {c:'c2',u:'u1',x:'Ирина, скинь, пожалуйста, шаблон узла'},
+ {c:'c1',u:'u3',x:'Завтра в 10:00 обновление сервера Teams, минут на 5'},
+ {c:'c3',u:'u4',x:'Кто сегодня на обед в 13:00?'},
+ {c:'c1',u:'u1',x:'@Иванова И.И. вернул АР2 на доработку, посмотри замечания',m:1},
+];let inc=0;
+function incoming(force){const d=force||INC[inc++%INC.length];const c=S.chats.find(x=>x.id===d.c);
+ const msg={u:d.u,t:hm(S.now),x:d.x,m:d.m};c.msgs.push(msg);
+ const viewing=S.win==='open'&&S.page==='chat'&&S.chat===c.id;if(!viewing)c.unread++;
+ if(S.offline){save();render();return}
+ if(S.focus&&!d.m){S.focusLog.msgs++;S.focusLog.chats[c.id]=1;save();render();return}
+ if(viewing){save();render();return}
+ const grp=c.kind!=='dm';
+ pushToast({rk:d.m?'Д-У-2: уведомление об @упоминании':'Д-У-1: уведомление о сообщении (с быстрым ответом)',av:ini(d.u),avc:P[d.u][1],
+  t1:d.m?`${P[d.u][0]} упомянул вас`+(grp?' · '+c.name:''):(grp?`${c.name}`:P[d.u][0]),
+  t2:(grp&&!d.m?'<b>'+esc(P[d.u][0])+':</b> ':'')+(S.settings.preview?esc(d.x):'Новое сообщение'),reply:{chat:c.id},
+  acts:[['Открыть',()=>openChat(c.id)],['Прочитано',()=>{c.unread=0}]]});
+ if(d.m)S.focusLog.ment++;save();render()}
+function openChat(id){S.win='open';S.page='chat';S.chat=id;S.menu=false;save();render()}
+function notifyTask(){S.notif++;pushToast({rk:'Д-У-3: уведомление о задаче (с «Начать работу»)',av:'КК',avc:P.u3[1],t1:'Вам назначен альбом АР3 «Разрезы»',t2:'Объект Б · срок 06.11 · назначил Кузнецов К.К.',
+ acts:[['Открыть',()=>{S.win='open';S.page='my';S.notif=Math.max(0,S.notif-1)}],['▶ Начать работу',()=>{S.notif=Math.max(0,S.notif-1);startTimer(4)}]]});save();render()}
+
+/* ===================== окна приложения ===================== */
+function dlgPos(w,h,anchor){return anchor==='tray'?`right:96px;bottom:calc(var(--task) + 8px);width:${w}px;max-height:${h}px`:`left:50%;top:46%;transform:translate(-50%,-50%);width:${w}px;max-height:${h}px`}
+function renderDlg(){const d=S.dlg,box=$('#dlgs');if(!d){box.innerHTML='';return}
+ if(d.k==='pick')box.innerHTML=pickDlg(d);
+ else if(d.k==='finish')box.innerHTML=finDlg(d);
+ else if(d.k==='settings')box.innerHTML=setDlg(d);
+ else if(d.k==='first')box.innerHTML=firstDlg(d);
+ else if(d.k==='explorer')box.innerHTML=expDlg(d);
+ else if(d.k==='nopath')box.innerHTML=noPathDlg(d);
+ wireDlg()}
+function pickDlg(d){const q=(d.q||'').toLowerCase();const list=TASKS.filter(t=>!q||(t.mark+' '+t.t+' '+t.obj).toLowerCase().includes(q));
+ const recent=S.lastTasks.map(tk).filter(t=>list.includes(t));const byObj={};list.forEach(t=>(byObj[t.obj]=byObj[t.obj]||[]).push(t));
+ const opt=t=>`<div class="o ${d.sel===t.id?'sel':''}" data-sel="${t.id}"><span class="mkk">${t.mark}</span><span>${esc(t.t)}</span><span class="ob">${t.obj} · ${t.st}</span></div>`;
+ return `<div class="dwin" style="${dlgPos(440,520,'tray')}" data-rk="Д-В-3: выбор задачи для таймера (окно у трея)"><div class="bdy"><h3>${S.timer?'Сменить задачу':'Начать работу'}</h3><div class="dim" style="font-size:12px;margin-bottom:10px">Только ваши задачи и подзадачи (где вы исполнитель). Время пойдёт с ${hm(S.now)}.</div>
+ <input class="search" id="pq" placeholder="Марка, название или объект" value="${esc(d.q||'')}">
+ <div class="pick">${recent.length&&!q?`<div class="lbl g">Недавние</div>${recent.map(opt).join('')}`:''}${Object.keys(byObj).map(o=>`<div class="lbl g">${o}</div>${byObj[o].map(opt).join('')}`).join('')||'<div class="dim">Не найдено</div>'}</div>
+ ${S.timer?`<div class="flag">Текущая работа над ${tk(S.timer.task).mark} (${dur(elapsed())}) будет записана — откроется окно проверки.</div>`:''}</div>
+ <div class="ft"><button class="btn" data-x>Отмена</button><button class="btn pri" data-act="pickgo" ${d.sel?'':'disabled'}>${S.timer?'Записать и сменить':'▶ Начать'}</button></div></div>`}
+const HALF=[];for(let m=360;m<=1440;m+=30)HALF.push(m);
+const sel=(v,attr)=>`<select ${attr}>${HALF.map(m=>`<option value="${m}" ${m===v?'selected':''}>${m===1440?'24:00':hm(m)}</option>`).join('')}</select>`;
+function finDlg(d){const tot=d.rows.reduce((a,r)=>a+Math.max(0,r.to-r.from),0);const raw=d.raw;
+ return `<div class="dwin" style="${dlgPos(520,560,'tray')}" data-rk="Д-В-4: «Закончить работу» — проверка записи"><div class="bdy"><h3>Записать в трудозатраты</h3>
+ <div class="dim" style="font-size:12px">Фактически: ${dur(raw)} (${d.segsTxt}). Начало и конец округлены до ближайших :00 / :30 — в Teams часы кратны 0,5.</div>
+ <table class="ent"><tr><th>Задача</th><th>Дата</th><th>С</th><th>До</th><th>Часы</th><th></th></tr>
+ ${d.rows.map((r,i)=>`<tr><td><span class="mono">${tk(r.task).mark}</span></td><td>${S.day}.10</td><td>${sel(r.from,`data-rf="${i}"`)}</td><td>${sel(r.to,`data-rt="${i}"`)}</td><td>${hrs(Math.max(0,r.to-r.from))}</td><td><button class="btn sm" data-rdel="${i}" title="Убрать строку">✕</button></td></tr>`).join('')||'<tr><td colspan="6" class="dim">Меньше 15 минут — записывать нечего.</td></tr>'}</table>
+ <div class="field"><label>Примечание (необязательно)</label><input type="text" id="fnote" placeholder="Что сделано" value="${esc(d.note||'')}"></div>
+ <div class="note">Итого: <b>${hrs(tot)} ч</b>. Запись можно поправить потом в «Трудозатратах».</div></div>
+ <div class="ft"><button class="btn dan" data-act="drop" style="margin-right:auto">Сбросить без записи</button><button class="btn" data-x>Продолжить работу</button><button class="btn pri" data-act="write" ${d.rows.length?'':'disabled'}>Записать${d.next?' и начать '+tk(d.next).mark:''}</button></div></div>`}
+function setDlg(d){const s=S.settings;const tab=d.tab||'gen';const T=(id,l)=>`<button class="${tab===id?'on':''}" data-tab="${id}">${l}</button>`;
+ const ck=(k,l,dd,rk)=>`<label class="sw" ${rk?`data-rk="${rk}"`:''}><input type="checkbox" data-set="${k}" ${s[k]?'checked':''}><span><div>${l}</div>${dd?`<div class="d">${dd}</div>`:''}</span></label>`;
+ let body='';
+ if(tab==='gen')body=`${ck('autostart','Запускать вместе с Windows','Приложение стартует свёрнутым в трей','Д-Н-2: автозапуск')}
+  <div class="sw"><span><div>Кнопка ✕ окна</div><div class="d">Окно прячется, приложение остаётся в трее. Выход — меню значка → «Выход»</div></span></div>
+  <div class="field" data-rk="Д-Н-3: адрес сервера"><label>Адрес сервера Teams</label><input type="text" value="http://&lt;SERVER_HOST&gt;:&lt;APP_PORT&gt;"></div><div class="note">Задаётся установщиком. Менять — только по просьбе администратора.</div>`;
+ if(tab==='not')body=`${ck('toasts','Всплывающие уведомления Windows','Выключено — только счётчик на значке','Д-Н-4: настройки уведомлений')}${ck('sound','Звук')}${ck('preview','Показывать текст сообщения','Выключено — «Новое сообщение» без текста (если рядом посторонние)')}
+  <div class="flag" style="background:var(--accent-s);color:var(--accent)">Какие события приходят и тихие часы — в Teams: «Профиль → Настройки уведомлений». Одна настройка для колокольчика и для Windows. «Фокус» действует и здесь.</div>`;
+ if(tab==='time')body=`${ck('lockPause','Пауза при блокировке компьютера','Win+L, заставка, сон — таймер встаёт на паузу сам','Д-Н-5: учёт времени')}${ck('unlockAsk','После разблокировки спросить «Продолжить?»','Выключено — таймер остаётся на паузе до «▶»')}
+  <div class="sw"><span><div>Напомнить, если таймер идёт</div><div class="d">«Таймер ещё идёт — закончить?»</div></span>${sel(toMin(s.remind),'data-time="remind"')}</div>
+  <div class="sw"><span><div>Конец рабочего дня</div><div class="d">Если таймер не остановлен до полуночи — запись до этого времени с пометкой «проверить»</div></span>${sel(toMin(s.dayEnd),'data-time="dayEnd"')}</div>`;
+ if(tab==='about')body=`<div style="display:flex;gap:12px;align-items:center"><i class="mk" style="width:40px;height:40px;background:linear-gradient(135deg,var(--graphite) 0 50%,var(--electric) 50% 100%)"></i><div><div style="font:600 16px var(--head)">Schema Teams</div><div class="dim">Версия 1.0.0 · сервер 0.9.0</div></div></div>
+  <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap" data-rk="Д-Н-7: «О программе»"><button class="btn" data-act="chk">Проверить обновления</button><button class="btn" data-act="logs">Открыть папку журналов</button><button class="btn" data-act="bug">Сообщить о проблеме</button></div>
+  <div class="note">«Сообщить о проблеме» — как в плагинах бюро: окно обратной связи Teams с приложенным журналом.</div>`;
+ return `<div class="dwin" style="${dlgPos(520,520)}" data-rk="Д-Н-1: окно «Настройки»"><div class="tb" style="height:32px;display:flex;align-items:center;background:#f3f3f3;border-bottom:1px solid var(--sunken);font-size:12px;padding-left:10px">Schema Teams — настройки<span style="flex:1"></span><span class="wb" data-x style="width:46px;text-align:center;cursor:pointer">✕</span></div>
+ <div class="tabs">${T('gen','Общие')}${T('not','Уведомления')}${T('time','Учёт времени')}${T('about','О программе')}</div><div class="bdy" style="min-height:280px">${body}</div></div>`}
+function firstDlg(d){const st=d.step||1;
+ const steps=`<div class="steps">${[1,2,3].map(i=>`<span class="${i<=st?'on':''}"></span>`).join('')}</div>`;
+ let b='';
+ if(st===1)b=`<h3>Подключение к Schema Teams</h3><div class="dim">Адрес сервера уже записан установщиком.</div><div class="field"><label>Адрес сервера</label><input type="text" value="http://&lt;SERVER_HOST&gt;:&lt;APP_PORT&gt;"></div>${d.ok?'<div class="flag" style="background:var(--pos-s);color:var(--pos)">✓ Сервер отвечает, версия 0.9.0</div>':''}`;
+ if(st===2)b=`<h3>Вход</h3><div class="dim">Обычная страница входа Teams. Вход запоминается: пароль не спросят, пока вы заходите хотя бы раз в 14 дней.</div><div class="field"><label>Логин</label><input type="text" value="ivanova"></div><div class="field"><label>Пароль</label><input type="password" value="••••••••"></div>`;
+ if(st===3)b=`<h3>Готово</h3><div>Schema Teams будет жить в трее рядом с часами <i class="mk" style="width:12px;height:12px;display:inline-block"></i>. Щелчок — открыть окно, правая кнопка — меню: таймер, фокус, настройки.</div><label class="sw"><input type="checkbox" checked><span>Запускать вместе с Windows</span></label><div class="note">Совет: в Windows «Параметры → Панель задач → Значки в углу» включите значок Schema Teams, чтобы он не прятался под «⌃».</div>`;
+ return `<div class="dwin" style="${dlgPos(440,480)}" data-rk="Д-Н-8: первый запуск (${st} из 3)"><div class="bdy">${steps}${b}</div><div class="ft">${st===1&&!d.ok?'<button class="btn pri" data-act="fr-chk">Проверить связь</button>':st<3?'<button class="btn pri" data-act="fr-next">'+(st===2?'Войти':'Дальше')+'</button>':'<button class="btn pri" data-act="fr-done">Открыть Teams</button>'}</div></div>`}
+function expDlg(d){const files=d.file?[[d.file,'Revit · 24 МБ']]:[['Фасад 1-12.dwg','DWG · 3,1 МБ'],['Фасад А-Г.dwg','DWG · 2,7 МБ'],['Колеровка.pdf','PDF · 8,4 МБ'],['Фото участка','папка']];
+ return `<div class="dwin explorer" style="left:180px;top:60px;width:560px;height:360px" data-rk="Д-П-3: открыт Проводник Windows"><div class="tb" style="height:32px;display:flex;align-items:center;background:#f3f3f3;border-bottom:1px solid var(--sunken);font-size:12px;padding-left:10px">📁 Проводник<span style="flex:1"></span><span data-x style="width:46px;text-align:center;cursor:pointer">✕</span></div>
+ <div class="path">${esc(d.path)}</div>${files.map(f=>`<div class="f" style="${d.file===f[0]?'background:var(--accent-s)':''}"><span>${f[1].includes('папка')?'📁':'📄'}</span><span style="flex:1">${esc(f[0])}</span><span class="dim">${f[1]}</span></div>`).join('')}
+ <div class="note" style="padding:10px 14px">Это настоящий Проводник Windows — в макете нарисован условно. Права — сотрудника, как при ручном открытии.</div></div>`}
+function noPathDlg(d){return `<div class="dwin" style="${dlgPos(420,300)}" data-rk="Д-П-4: путь недоступен"><div class="bdy"><h3>Папка недоступна</h3><div class="p mono" style="font-size:12px;color:var(--ink2);word-break:break-all;margin:6px 0 10px">${esc(d.path)}</div>
+ <div>Компьютер не видит этот адрес. Возможно, нет доступа к этой папке, сервер выключен или вы не в офисной сети.</div></div>
+ <div class="ft"><button class="btn" data-copy="${esc(d.path)}">Скопировать путь</button><button class="btn pri" data-x>Понятно</button></div></div>`}
+function finishDlg(next){const t=S.timer;if(!t)return;const raw=elapsed();const rows=rowsOf(t,S.now);
+ const segsTxt=t.segs.map(s=>hm(s.from)+'–'+hm(s.to??S.now)).join(', ');S.dlg={k:'finish',rows,raw,segsTxt,next:next||null};S.menu=false;save();render()}
+function wireDlg(){const box=$('#dlgs');
+ $$('[data-x]',box).forEach(b=>b.onclick=()=>{S.dlg=null;save();render()});
+ const pq=$('#pq',box);if(pq){pq.oninput=e=>{S.dlg.q=e.target.value;const p=e.target.selectionStart;renderDlg();const n=$('#pq');n.focus();n.setSelectionRange(p,p)};if(!S.dlg.q)pq.focus()}
+ $$('[data-sel]',box).forEach(o=>{o.onclick=()=>{S.dlg.sel=+o.dataset.sel;renderDlg()};o.ondblclick=()=>{S.dlg.sel=+o.dataset.sel;pickGo()}});
+ $$('[data-rf]',box).forEach(s=>s.onchange=()=>{S.dlg.rows[+s.dataset.rf].from=+s.value;renderDlg()});
+ $$('[data-rt]',box).forEach(s=>s.onchange=()=>{S.dlg.rows[+s.dataset.rt].to=+s.value;renderDlg()});
+ $$('[data-rdel]',box).forEach(b=>b.onclick=()=>{S.dlg.rows.splice(+b.dataset.rdel,1);renderDlg()});
+ const fn=$('#fnote',box);if(fn)fn.oninput=e=>S.dlg.note=e.target.value;
+ $$('[data-tab]',box).forEach(b=>b.onclick=()=>{S.dlg.tab=b.dataset.tab;renderDlg()});
+ $$('[data-set]',box).forEach(c=>c.onchange=()=>{S.settings[c.dataset.set]=c.checked;save()});
+ $$('[data-time]',box).forEach(c=>c.onchange=()=>{S.settings[c.dataset.time]=hm(+c.value);save()});}
+function pickGo(){const id=S.dlg.sel;if(!id)return;if(S.timer){finishDlg(id)}else startTimer(id)}
+function writeEntries(){const d=S.dlg;d.rows.filter(r=>r.to>r.from).forEach(r=>S.entries.push({...r,day:S.day,note:d.note||'',flag:!!d.flag}));
+ const n=d.rows.length,next=d.next;S.timer=null;S.dlg=null;save();
+ if(next)startTimer(next);else{render();mtoast(n?'Записано в трудозатраты: '+n+' стр.':'Таймер остановлен')}}
+
+/* ===================== фокус ===================== */
+function focusOn(until){S.focus=until;S.focusLog={msgs:0,chats:{},ment:0};S.menu=false;save();render()}
+function focusEnd(){const l=S.focusLog;S.focus=null;save();
+ if(l.msgs||l.ment)pushToast({rk:'Д-Ф-2: «Пока вы были в фокусе»',t1:'Пока вы были в фокусе',t2:`${l.msgs} сообщ. в ${Object.keys(l.chats).length} чатах`+(l.ment?` · упоминаний: ${l.ment}`:''),acts:[['Открыть чат',()=>{S.win='open';S.page='chat'}]]});
+ render()}
+function focusMenuWeb(ev){const b=ev.target.closest('[data-act]');const r=b.getBoundingClientRect();
+ const m=document.createElement('div');m.className='tmenu';m.style.cssText=`position:fixed;left:${r.left-60}px;top:${r.bottom+6}px;bottom:auto;right:auto;width:200px`;
+ m.innerHTML=[['30','30 минут'],['60','1 час'],['900','до 15:00'],['1080','до конца дня']].map(x=>`<button class="it" data-fw="${x[0]}">${x[1]}</button>`).join('');document.body.appendChild(m);
+ $$('[data-fw]',m).forEach(b=>b.onclick=()=>{const v=+b.dataset.fw;m.remove();focusOn(v<200?S.now+v:v)});
+ setTimeout(()=>{const off=e=>{if(!m.contains(e.target)){m.remove();removeEventListener('mousedown',off,true)}};addEventListener('mousedown',off,true)})}
+
+/* ===================== время макета ===================== */
+function tick(min){const before=S.now;S.now+=min;
+ if(S.focus&&S.now>=S.focus)focusEnd();
+ const rm=toMin(S.settings.remind);if(S.timer&&!S.timer.paused&&before<rm&&S.now>=rm)remind();
+ if(S.now>=1440)midnight();
+ save();render()}
+const toMin=s=>{const[a,b]=s.split(':').map(Number);return a*60+b};
+function remind(){pushToast({rk:'Д-В-5: напоминание в 18:30',t1:'Таймер ещё идёт',t2:`${tk(S.timer.task).mark} · ${dur(elapsed())} с ${hm(S.timer.segs[0].from)}`,acts:[['■ Закончить работу',()=>finishDlg()],['Ещё работаю',()=>{}]]})}
+function midnight(){const t=S.timer;let n=0;if(t){const end=toMin(S.settings.dayEnd);
+  const clip={task:t.task,segs:t.segs.map(s=>({from:s.from,to:Math.min(s.to??end,end)})).filter(s=>s.to>s.from)};
+  rowsOf(clip,end).forEach(r=>{S.entries.push({...r,day:S.day,flag:true});n++});S.timer=null;}
+ S.now=525;S.day++;S.dlg=null;S.toasts=[];
+ if(t)pushToast({rk:'Д-В-7: утро после остановки в полночь',t1:'Вчерашний таймер остановлен в полночь',t2:n?`${tk(t.task).mark}: записано до ${S.settings.dayEnd} с пометкой «проверить». Поправьте, если ушли раньше.`:`${tk(t.task).mark}: работа была только после ${S.settings.dayEnd} — ничего не записано, внесите вручную.`,acts:[['Проверить запись',()=>{S.win='open';S.page='time'}]]})}
+function lockDemo(){if(!S.timer||S.timer.paused){mtoast('Сначала запустите таймер');return}
+ const from=S.now;pauseTimer('компьютер заблокирован');S.now+=50;save();
+ if(S.settings.unlockAsk)pushToast({rk:'Д-В-8: после разблокировки',t1:'Таймер на паузе',t2:`Компьютер был заблокирован ${hm(from)}–${hm(S.now)}, это время не учтено. ${tk(S.timer.task).mark} · ${dur(elapsed())}`,acts:[['▶ Продолжить',()=>resumeTimer()],['■ Закончить работу',()=>finishDlg()]]});
+ render()}
+
+/* ===================== сценарии ===================== */
+const SC=[
+ ['Сообщения и уведомления'],
+ ['Входящее сообщение','Плашка с быстрым ответом; окно можно закрыть ✕ — придёт всё равно',()=>{S.page='my';incoming()}],
+ ['@упоминание','Проходит даже в «Фокусе»',()=>incoming({c:'c1',u:'u1',x:'@Иванова И.И. вернул АР2 на доработку, посмотри замечания',m:1})],
+ ['Назначена задача','С кнопкой «▶ Начать работу»',notifyTask],
+ ['Включить «Фокус» на 1 час','Сообщения копятся молча, потом сводка (+1 ч)',()=>focusOn(S.now+60)],
+ ['Учёт времени'],
+ ['Начать работу (из трея)','Окно выбора задачи у трея',()=>{S.dlg={k:'pick',sel:S.lastTasks[0]};S.menu=false}],
+ ['Заблокировать компьютер на 50 мин','Пауза сама, после — «Продолжить?»',lockDemo],
+ ['Перевести время на 18:30','Напоминание, если таймер идёт',()=>{if(S.now<1110)tick(1110-S.now)}],
+ ['Перевести время на полночь','Таймер останавливается, утром — «проверить»',()=>{tick(1440-S.now)}],
+ ['Сеть и файлы'],
+ ['Нет связи','Значок серый, полоса в окне; таймер идёт',()=>{S.offline=!S.offline}],
+ ['Открыть путь из чата','Карточки путей в «Объект А — общий»',()=>{S.win='open';S.page='chat';S.chat='c1'}],
+ ['Приложение'],
+ ['Есть новая версия','Полоса в окне и пункт в меню значка',()=>{S.update=true}],
+ ['Первый запуск','Адрес → вход → «живу в трее»',()=>{S.dlg={k:'first',step:1}}],
+ ['Настройки','Общие, уведомления, учёт времени, о программе',()=>{S.dlg={k:'settings',tab:'gen'}}],
+];
+function renderScen(){$('#scen').innerHTML=SC.map((s,i)=>s.length===1?`<div class="lbl">${s[0]}</div>`:`<button data-sc="${i}"><b>${s[0]}</b><span>${s[1]}</span></button>`).join('')+'<div class="note" style="padding:6px 10px">Подсказка: значок Schema в трее — щелчок открывает окно, правая кнопка — меню.</div>'}
+
+/* ===================== события ===================== */
+document.addEventListener('click',e=>{
+ if(document.body.classList.contains('rk')){if(e.target.closest('.rkpanel,.pop,#rkBtn,header.top'))return;const t=e.target.closest('[data-rk]');if(t){e.preventDefault();e.stopPropagation();rkOpen(t.dataset.rk,e);return}}
+},true);
+document.addEventListener('click',e=>{
+ const sc=e.target.closest('[data-sc]');if(sc){$('#scen').style.display='none';SC[+sc.dataset.sc][2]();save();render();return}
+ if(e.target.closest('#scenBtn')){const s=$('#scen');s.style.display=s.style.display==='none'?'block':'none';return}
+ if(!e.target.closest('#scen'))$('#scen').style.display='none';
+ const tx=e.target.closest('[data-tx]');if(tx){closeToast(+tx.dataset.tx);return}
+ const ta=e.target.closest('[data-ta]');if(ta){const[id,i]=ta.dataset.ta.split(':').map(Number);const o=S.toasts.find(t=>t.id===id);closeToast(id);o?._acts?.[i]?.();save();render();return}
+ const rs=e.target.closest('[data-rsend]');if(rs){quickReply(+rs.dataset.rsend);return}
+ const pg=e.target.closest('[data-pg]');if(pg){S.page=pg.dataset.pg;save();render();return}
+ const ch=e.target.closest('[data-chat]');if(ch){S.chat=ch.dataset.chat;save();render();return}
+ const st=e.target.closest('[data-start]');if(st){startTimer(+st.dataset.start);return}
+ const op=e.target.closest('[data-open]');if(op){openPath(op.dataset.open,false);return}
+ const of=e.target.closest('[data-openfolder]');if(of){openPath(of.dataset.openfolder,true);return}
+ const cp=e.target.closest('[data-copy]');if(cp){try{navigator.clipboard.writeText(cp.dataset.copy)}catch(x){}mtoast('Путь скопирован');return}
+ const f=e.target.closest('[data-f]');if(f){const v=+f.dataset.f;focusOn(v<200?S.now+v:v);return}
+ const a=e.target.closest('[data-act]');if(a){act(a.dataset.act,e);return}
+ if(S.menu&&!e.target.closest('.tmenu')&&!e.target.closest('#trayIcon')){S.menu=false;save();renderMenu()}
+});
+function openPath(p,folder){if(/Архив-2019/.test(p)){S.dlg={k:'nopath',path:p};save();render();return}
+ const parts=p.split('\\');const file=isFile(p)?parts.pop():null;S.dlg={k:'explorer',path:parts.join('\\'),file};save();render();
+ if(file&&!folder)mtoast('Файл открывается в программе по умолчанию (Revit)')}
+function quickReply(id){const o=S.toasts.find(t=>t.id===id);const inp=$(`[data-rin="${id}"]`);const v=inp?.value.trim();if(!v||!o)return;
+ const c=S.chats.find(x=>x.id===o.reply.chat);c.msgs.push({u:'me',t:hm(S.now),x:v,quick:1});c.unread=0;closeToast(id);save();render();mtoast('Отправлено в «'+c.name+'»')}
+document.addEventListener('keydown',e=>{const r=e.target.closest?.('[data-rin]');if(r&&e.key==='Enter')quickReply(+r.dataset.rin)});
+function act(k,e){
+ if(k==='min'||k==='close'){S.win='hidden';if(k==='close'&&!S.hintShown){S.hintShown=true;pushToast({rk:'Д-О-3: подсказка при первом закрытии',t1:'Schema Teams работает в трее',t2:'Уведомления будут приходить. Выйти совсем — правой кнопкой по значку → «Выход».'})}}
+ else if(k==='max')S.max=!S.max;
+ else if(k==='show'){S.win='open';S.menu=false}
+ else if(k==='openchat')openChat(S.chats.find(c=>c.unread)?.id||S.chat);
+ else if(k==='bell'){S.win='open';S.menu=false;S.notif=0;mtoast('Открыт колокольчик Teams')}
+ else if(k==='pick'){S.dlg={k:'pick',sel:S.timer?null:S.lastTasks[0]};S.menu=false}
+ else if(k==='pickgo'){pickGo();return}
+ else if(k==='pause')pauseTimer(null);
+ else if(k==='resume')resumeTimer();
+ else if(k==='finish'){finishDlg();return}
+ else if(k==='write'){writeEntries();return}
+ else if(k==='drop'){S.timer=null;S.dlg=null;mtoast('Таймер сброшен, ничего не записано')}
+ else if(k==='focus'){if(S.focus)focusEnd();else focusMenuWeb(e);return}
+ else if(k==='focusMenu'){const s=$('#fsub');s.style.display=s.style.display==='none'?'flex':'none';return}
+ else if(k==='focusEnd'){focusEnd();S.menu=false}
+ else if(k==='settings'){S.dlg={k:'settings',tab:'gen'};S.menu=false}
+ else if(k==='upd'){S.update=false;S.menu=false;mtoast('Скачивается установщик 1.1.0… Приложение закроется, установится и запустится снова')}
+ else if(k==='updlater')S.update=false;
+ else if(k==='quit'){S.menu=false;S.win='quit';mtoast('Приложение закрыто. Уведомлений не будет до следующего запуска (в макете — «Сбросить демо»)')}
+ else if(k==='send'){sendMsg();return}
+ else if(k==='chk')mtoast('Установлена последняя версия');
+ else if(k==='logs')mtoast('Откроется папка журналов %APPDATA%\\Schema Teams\\logs');
+ else if(k==='bug')mtoast('Откроется окно обратной связи Teams с журналом');
+ else if(k==='fr-chk')S.dlg.ok=true;
+ else if(k==='fr-next')S.dlg.step++;
+ else if(k==='fr-done'){S.dlg=null;S.win='open'}
+ save();render()}
+// действия уведомлений — функции, в localStorage не сохраняются
+const _push=pushToast;pushToast=function(o){o._acts=(o.acts||[]).map(a=>a[1]);_push(o)};
+// значок трея
+$('#trayIcon').addEventListener('click',e=>{if(document.body.classList.contains('rk'))return;if(S.win==='quit'){mtoast('Приложение закрыто — значка нет');return}S.win=S.win==='open'?'hidden':'open';S.menu=false;save();render()});
+$('#trayIcon').addEventListener('contextmenu',e=>{e.preventDefault();if(S.win==='quit')return;S.menu=!S.menu;save();renderMenu()});
+$('#trayIcon').addEventListener('mouseenter',()=>{const t=$('#tip');t.textContent=trayTip();t.style.display='block'});
+$('#trayIcon').addEventListener('mouseleave',()=>$('#tip').style.display='none');
+$('#plus15').onclick=()=>tick(15);$('#plus60').onclick=()=>tick(60);
+$('#newChk').onchange=e=>document.body.classList.toggle('shownew',e.target.checked);
+
+/* ===================== режим замечаний ===================== */
+function rkToggle(){document.body.classList.toggle('rk');$('#rkBtn').classList.toggle('rkon');rkRender()}
+function rkOpen(key,ev){$$('.pop').forEach(x=>x.remove());const code=key.split(':')[0],label=key.slice(code.length+1).trim();
+ const m=document.createElement('div');m.className='pop';m.innerHTML=`<div class="lbl">${esc(code)}</div><div style="font-weight:600">${esc(label)}</div><textarea>${esc(S.rk[code]?.t||'')}</textarea><div class="rw"><button class="btn sm" data-d>Удалить</button><button class="btn sm pri" data-s>Сохранить</button></div>`;document.body.appendChild(m);
+ let x=ev.clientX,y=ev.clientY+8;if(x+310>innerWidth)x=innerWidth-310;if(y+180>innerHeight)y=innerHeight-180;m.style.left=x+'px';m.style.top=y+'px';$('textarea',m).focus();
+ $('[data-s]',m).onclick=()=>{const v=$('textarea',m).value.trim();if(v)S.rk[code]={l:label,t:v};else delete S.rk[code];save();m.remove();rkRender()};$('[data-d]',m).onclick=()=>{delete S.rk[code];save();m.remove();rkRender()}}
+function rkRender(){const ks=Object.keys(S.rk);$('#rkList').innerHTML=ks.length?ks.map(k=>`<div class="it"><b>${esc(k)}</b> · ${esc(S.rk[k].l)}<div>${esc(S.rk[k].t)}</div></div>`).join(''):'<div class="dim" style="font-size:13px">Замечаний пока нет.</div>'}
+function rkAnswer(){const ks=Object.keys(S.rk);const o=['# Ответ: макет «Schema Teams Desktop» v1','Schema Teams Desktop · интерактивный макет · 2026-10-15 · замечаний: '+ks.length,''];ks.forEach(k=>o.push(`- ${k} «${S.rk[k].l}» — ${S.rk[k].t}`));if(S.rkGen)o.push('','## Общий комментарий',S.rkGen);return o.join('\n')}
+$('#rkBtn').onclick=rkToggle;$('#rkGeneral').value=S.rkGen||'';$('#rkGeneral').oninput=e=>{S.rkGen=e.target.value;save()};
+$('#rkCopy').onclick=()=>{const t=rkAnswer();(navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(()=>mtoast('Ответ скопирован — вставьте в чат')).catch(()=>$('#rkSave').click())};
+$('#rkSave').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([rkAnswer()],{type:'text/markdown'}));a.download='Ответ — макет Schema Teams Desktop v1.md';a.click()};
+$('#resetBtn').onclick=()=>{const rk=S.rk,g=S.rkGen;S=fresh();S.rk=rk;S.rkGen=g;save();render();mtoast('Демо восстановлено (замечания сохранены)')};
+
+S.toasts=[];S.menu=false;S.dlg=null;if(S.win==='quit')S.win='open';
+renderScen();render();
+window.__t={S:()=>S,incoming,act,tick,startTimer,lockDemo};
+</script>
+</body>
+</html>
