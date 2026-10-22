@@ -1,17 +1,24 @@
 // Опыт шага Д2 (ТЗ, 5.1): родные уведомления Windows с полем ответа и кнопками.
 // Есть только в пробной сборке (EXPERIMENT=toast). Итоги — %APPDATA%\Schema Teams\toast-experiment.jsonl.
+// Вторая версия по итогам Windows 10: своё уведомление (toastXml) с «Отправить» и группой чата,
+// действия — только из общего обработчика с отбросом повторов.
 import { app, Notification, shell, type MenuItemConstructorOptions } from 'electron';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { release } from 'node:os';
 import { join } from 'node:path';
 import { windowImage } from '../icons';
 import type { Logger } from '../logger';
+import { ELECTRIC, type Bitmap } from '../mark';
+import { encodePng } from '../png';
 import {
-  REPLY_PLACEHOLDER,
+  ActivationDedup,
+  CLOSED_AT_ONCE_SEC,
   replyFacts,
   scenarios,
   secondsBetween,
+  tagOf,
   toJsonLine,
+  toastXml,
   type ExperimentRecord,
   type ToastSpec,
 } from './toastScenarios';
@@ -20,19 +27,38 @@ export interface ToastExperimentOptions {
   log: Logger;
   isWindowVisible: () => boolean;
   showWindow: () => void;
+  /** Приложение запущено Windows из уведомления */
+  fromNotification: boolean;
 }
 
 export class ToastExperiment {
   private readonly file = join(app.getPath('userData'), 'toast-experiment.jsonl');
   private readonly startedAt = Date.now();
+  private readonly dedup = new ActivationDedup();
+  private readonly icon = join(app.getPath('userData'), 'toast-icon.png');
+  private readonly sendIcon = join(app.getPath('userData'), 'toast-send.png');
   private shown = 0;
   /** Живые уведомления: без ссылки сборщик мусора забирает объект и события теряются */
   private readonly alive = new Map<string, { n: Notification; spec: ToastSpec; at: number }>();
 
   constructor(private readonly o: ToastExperimentOptions) {
-    this.record({ event: 'start', windows: release(), app: app.getVersion() });
-    // общий обработчик: ловит ответы и из центра уведомлений после перезапуска приложения
+    try {
+      writeFileSync(this.icon, windowImage().toPNG());
+      writeFileSync(this.sendIcon, encodePng(drawSendArrow(32)));
+    } catch (err) {
+      o.log.warn('значки уведомлений не записаны', { err });
+    }
+    this.record({
+      event: 'start',
+      windows: release(),
+      app: app.getVersion(),
+      fromNotification: o.fromNotification,
+    });
+    // единственное место, где нажатие что-то делает: ловит и живые уведомления,
+    // и центр уведомлений после перезапуска приложения
     Notification.handleActivation((d) => {
+      const repeat = this.dedup.isRepeat(d.type, d.arguments, d.reply);
+      const tag = tagOf(d.arguments);
       this.record({
         event: 'activation',
         source: 'activation',
@@ -40,10 +66,14 @@ export class ToastExperiment {
         arguments: d.arguments,
         ...(d.type === 'action' && { button: `#${d.actionIndex ?? '?'}` }),
         ...(d.reply !== undefined && replyFacts(d.reply)),
+        ...(repeat && { repeat }),
         sinceStartSec: secondsBetween(this.startedAt, Date.now()),
       });
-      if (d.type === 'reply' && d.reply !== undefined) this.confirmSent('чат');
-      if (d.type === 'click') this.o.showWindow();
+      if (repeat) return;
+      const spec = tag === undefined ? undefined : this.alive.get(tag)?.spec;
+      if (d.type === 'reply' && d.reply !== undefined) this.confirmSent(spec?.title ?? 'чат');
+      // «Открыть» — первая кнопка у всех сценариев; щелчок по уведомлению — как «Открыть» (ТЗ, 5.3)
+      if (d.type === 'click' || (d.type === 'action' && d.actionIndex === 0)) this.o.showWindow();
     });
     // для проверки без мыши: SCHEMA_TEAMS_EXPERIMENT_RUN=reply,task — показать сценарии сразу
     for (const key of (process.env.SCHEMA_TEAMS_EXPERIMENT_RUN ?? '').split(',').filter(Boolean)) {
@@ -83,10 +113,11 @@ export class ToastExperiment {
       groupId: spec.groupId,
       title: spec.title,
       body: spec.body,
-      icon: windowImage(),
-      hasReply: spec.hasReply,
-      replyPlaceholder: REPLY_PLACEHOLDER,
-      actions: spec.buttons.map((text) => ({ type: 'button' as const, text })),
+      toastXml: toastXml(spec, {
+        icon: this.icon,
+        sendIcon: this.sendIcon,
+        header: spec.header,
+      }),
     });
     const at = Date.now();
     this.alive.set(spec.id, { n, spec, at });
@@ -96,24 +127,21 @@ export class ToastExperiment {
       windowVisible: this.o.isWindowVisible(),
       sinceShowSec: secondsBetween(at, Date.now()),
     });
+    // события объекта только записываются: действия — в handleActivation, иначе ответ уйдёт дважды
     n.on('show', () => this.record({ event: 'show', ...base() }));
     n.on('failed', (_e, error) => this.record({ event: 'failed', ...base(), error }));
-    n.on('click', () => {
-      this.record({ event: 'click', ...base() });
-      this.o.showWindow();
-    });
-    n.on('reply', (d) => {
-      this.record({ event: 'reply', ...base(), ...replyFacts(d.reply) });
-      this.confirmSent(spec.title);
-    });
+    n.on('click', () => this.record({ event: 'click', ...base() }));
+    n.on('reply', (d) => this.record({ event: 'reply', ...base(), ...replyFacts(d.reply) }));
     n.on('action', (d) => {
       const button = spec.buttons[d.actionIndex] ?? `#${d.actionIndex}`;
       this.record({ event: 'action', ...base(), button });
-      if (button === 'Открыть') this.o.showWindow();
     });
     n.on('close', () => {
-      this.record({ event: 'close', ...base() });
-      this.alive.delete(spec.id);
+      const b = base();
+      this.record({ event: 'close', ...b });
+      // Windows не показала уведомление: «Не беспокоить» (оно в центре уведомлений) или отбросила
+      if (b.sinceShowSec < CLOSED_AT_ONCE_SEC) this.record({ event: 'closedAtOnce', ...b });
+      // ид остаётся до замены: по нему «Отправлено в «чат»» берёт название из центра уведомлений
     });
     n.show();
   }
@@ -132,4 +160,22 @@ export class ToastExperiment {
     }
     this.o.log.info('опыт уведомлений', { ...full });
   }
+}
+
+/** Значок кнопки отправки: треугольник «➤» цвета электрик, виден и на светлом, и на тёмном фоне. */
+function drawSendArrow(size: number): Bitmap {
+  const data = Buffer.alloc(size * size * 4);
+  const left = size * 0.2;
+  const right = size * 0.85;
+  const mid = size / 2;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const cx = x + 0.5;
+      const half = ((right - cx) / (right - left)) * size * 0.35;
+      if (cx >= left && cx <= right && Math.abs(y + 0.5 - mid) <= half) {
+        data.set(ELECTRIC, (y * size + x) * 4);
+      }
+    }
+  }
+  return { width: size, height: size, data };
 }
