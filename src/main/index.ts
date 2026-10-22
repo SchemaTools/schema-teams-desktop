@@ -8,13 +8,19 @@ import { MainWindow, PARTITION } from './mainWindow';
 import { isServerUrl } from './navigation';
 import { SettingsStore } from './settings';
 import { createTray } from './tray';
+import { ToastExperiment } from './experiments/toastExperiment';
+import { experimentPage } from './pages';
+import { APP_ID, TOAST_ACTIVATOR_CLSID } from './appIdentity';
 
-export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
 const HIDDEN_ARG = '--hidden';
+/** Так Windows запускает приложение из уведомления: окно покажет само нажатие, если нужно */
+const EMBEDDING_ARG = '-Embedding';
 
 // отдельная папка данных — для сквозных тестов, чтобы не трогать настоящий профиль
 if (process.env.SCHEMA_TEAMS_USER_DATA) app.setPath('userData', process.env.SCHEMA_TEAMS_USER_DATA);
+// до первого уведомления: код активатора должен совпадать с ярлыком и реестром (опыт Д2)
+if (process.platform === 'win32') app.setToastActivatorCLSID(TOAST_ACTIVATOR_CLSID);
 
 const log = new Logger({ dir: join(app.getPath('userData'), 'logs') });
 
@@ -26,7 +32,9 @@ if (!app.requestSingleInstanceLock()) {
   // приложение уже запущено — оно само покажет окно (second-instance)
   app.quit();
 } else {
-  app.on('second-instance', () => main?.show());
+  app.on('second-instance', (_e, argv) => {
+    if (!argv.includes(EMBEDDING_ARG)) main?.show();
+  });
   process.on('uncaughtException', (err) => log.error('необработанная ошибка', { err }));
   process.on('unhandledRejection', (err) => log.error('необработанный отказ', { err }));
   app.whenReady().then(start, (err: unknown) => log.error('запуск не удался', { err }));
@@ -43,7 +51,8 @@ function start(): void {
     settings: settings.get().serverUrl,
     build: build.serverUrl,
   });
-  const hidden = process.argv.includes(HIDDEN_ARG);
+  const fromNotification = process.argv.includes(EMBEDDING_ARG);
+  const hidden = process.argv.includes(HIDDEN_ARG) || fromNotification;
 
   log.info('запуск', {
     app: app.getVersion(),
@@ -52,18 +61,39 @@ function start(): void {
     windows: release(),
     packaged: app.isPackaged,
     hidden,
+    fromNotification,
+    toastActivator: process.platform === 'win32' ? app.toastActivatorCLSID : null,
     server: server?.origin ?? null,
   });
+
+  const experiment =
+    build.experiment === 'toast' || process.env.SCHEMA_TEAMS_EXPERIMENT === 'toast';
+  if (experiment) log.info('пробная сборка: опыт с уведомлениями');
 
   restrictPermissions(server);
   applyAutostart(settings.get().autostart);
 
-  main = new MainWindow({ server, settings, log, isQuitting: () => quitting });
+  main = new MainWindow({
+    server,
+    settings,
+    log,
+    isQuitting: () => quitting,
+    ...(experiment && { noServerPage: experimentPage() }),
+  });
+  const toast = experiment
+    ? new ToastExperiment({
+        log,
+        isWindowVisible: () => main?.win.isVisible() ?? false,
+        showWindow: () => main?.show(),
+        fromNotification,
+      })
+    : undefined;
   tray = createTray({
     version: app.getVersion(),
     onClick: () => main?.toggle(),
     onOpen: () => main?.show(),
     onQuit: () => app.quit(),
+    ...(toast && { extra: [toast.menu()] }),
   });
   if (!hidden) main.win.once('ready-to-show', () => main?.show());
 }

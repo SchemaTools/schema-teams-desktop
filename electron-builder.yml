@@ -31,6 +31,8 @@ nsis:
   # журналы и настройки при удалении остаются (ТЗ, 9.1)
   deleteAppDataOnUninstall: false
   artifactName: Schema Teams Setup ${version}.${ext}
+  # регистрация для уведомлений Windows (опыт Д2): AppUserModelId и активатор
+  include: installer/windows.nsh
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
 publish: null
