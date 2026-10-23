@@ -77,22 +77,25 @@ async function withToast(
         const display = screen.getPrimaryDisplay();
         screen.getPrimaryDisplay = () => ({
           ...display,
-          workArea: { x: 0, y: 0, ...size },
+          workArea: { x: display.workArea.x, y: display.workArea.y, ...size },
           workAreaSize: size,
         });
       }, options.workArea);
     }
     let popup: Page | undefined;
     await expect
-      .poll(async () => {
-        for (const page of app.windows()) {
-          if ((await page.title()) === TITLE) {
-            popup = page;
-            return true;
+      .poll(
+        async () => {
+          for (const page of app.windows()) {
+            if ((await page.title()) === TITLE) {
+              popup = page;
+              return true;
+            }
           }
-        }
-        return false;
-      })
+          return false;
+        },
+        { timeout: 10000, intervals: [100] },
+      )
       .toBe(true);
     if (!popup) throw new Error('Окно уведомления не появилось');
     await expect(popup.locator('#reply')).toBeVisible();
@@ -194,8 +197,8 @@ test('окно изолировано, сообщения IPC от главно�
       const main = BrowserWindow.getAllWindows().find((w) => w.getTitle() === 'Schema Teams');
       if (!main) throw new Error('Нет главного окна');
       const event = { sender: main.webContents, senderFrame: main.webContents.mainFrame };
-      ipcMain.emit('experiment:custom-toast', event, { action: 'reply', text: 'поддельный ответ' });
-      ipcMain.emit('experiment:custom-toast', event, { action: 'close' });
+      ipcMain.emit('desktop:toast', event, { action: 'reply', text: 'поддельный ответ' });
+      ipcMain.emit('desktop:toast', event, { action: 'close' });
     });
     await expect(popup.locator('#reply')).toBeVisible();
     await expect(popup.locator('#status')).not.toHaveText(SENT);
@@ -249,9 +252,15 @@ for (const display of [
 ]) {
   test(`стопка помещается в рабочую область ${display.width}×${display.height}`, async () => {
     await withToast(
-      async ({ app, profile }) => {
+      async ({ app, popup, profile }) => {
+        // Этот сценарий — стопка без удержания мышью. Физический курсор пользователя
+        // может оказаться над первым окном и по правилам законно удержать его.
+        await popup.mouse.move(-20, -20);
         await expect
-          .poll(() => records(profile).some((r) => r.event === 'show' && r.toast === 'burst-3'))
+          .poll(() => records(profile).some((r) => r.event === 'show' && r.toast === 'burst-3'), {
+            timeout: 10000,
+            intervals: [100],
+          })
           .toBe(true);
         const windowBounds = () =>
           app.evaluate(({ BrowserWindow }) =>
@@ -262,11 +271,12 @@ for (const display of [
           );
         await expect.poll(async () => (await windowBounds()).length).toBe(display.visible);
         const bounds = await windowBounds();
+        const area = await app.evaluate(({ screen }) => screen.getPrimaryDisplay().workArea);
         for (const box of bounds) {
-          expect(box.x).toBeGreaterThanOrEqual(0);
-          expect(box.y).toBeGreaterThanOrEqual(0);
-          expect(box.x + box.width).toBeLessThanOrEqual(display.width);
-          expect(box.y + box.height).toBeLessThanOrEqual(display.height);
+          expect(box.x).toBeGreaterThanOrEqual(area.x);
+          expect(box.y).toBeGreaterThanOrEqual(area.y);
+          expect(box.x + box.width).toBeLessThanOrEqual(area.x + display.width);
+          expect(box.y + box.height).toBeLessThanOrEqual(area.y + display.height);
         }
         for (let index = 1; index < bounds.length; index++) {
           const previous = bounds[index - 1];

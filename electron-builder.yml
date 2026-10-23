@@ -10,6 +10,8 @@ files:
   - '!dist/**/*.map'
   - package.json
 asar: true
+asarUnpack:
+  - dist/native/*.exe
 # папка установки у установщика «в один щелчок» берётся из name (ТЗ, 9.1: Programs\Schema Teams)
 extraMetadata:
   name: Schema Teams

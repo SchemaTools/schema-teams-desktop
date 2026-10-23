@@ -1,12 +1,12 @@
-// Собственные уведомления — опыт Д2 для Enter / Shift+Enter, без серверного моста Д3.
+// Собственные уведомления: изолированный локальный UI и асинхронные действия.
 import { BrowserWindow, ipcMain, screen, type IpcMainEvent } from 'electron';
 import { join } from 'node:path';
 import { S } from '../strings';
-import { customToastPage } from './customToastPage';
-import type { ToastSpec } from './toastScenarios';
+import { customToastPage } from './page';
+import type { ToastSpec } from './types';
 
-const CHANNEL = 'experiment:custom-toast';
-const RESULT = 'experiment:custom-toast-result';
+const CHANNEL = 'desktop:toast';
+const RESULT = 'desktop:toast-result';
 const LIFETIME = 8000;
 const GAP = 12;
 const WIDTH = 364;
@@ -22,9 +22,12 @@ interface Entry {
   timer?: NodeJS.Timeout;
 }
 
+export type ReplyResult = { ok: true } | { ok: false; error: string };
+
 interface Options {
-  onReply: (spec: ToastSpec, text: string) => void;
+  onReply: (spec: ToastSpec, text: string) => ReplyResult | Promise<ReplyResult>;
   onButton: (spec: ToastSpec, index: number) => void;
+  onOpen?: (spec: ToastSpec) => void;
   onShow: (spec: ToastSpec) => void;
   onClose: (spec: ToastSpec) => void;
 }
@@ -45,7 +48,7 @@ export class CustomToasts {
     const height = Math.min(spec.hasReply ? 258 : 194, area.height - GAP * 2);
     const previous = this.entries.get(spec.id);
     // Не заменяем уведомление, пока сотрудник пишет ответ.
-    if (previous?.draft) return;
+    if (previous?.draft || previous?.sent) return;
     if (previous) {
       this.entries.delete(spec.id);
       previous.win.close();
@@ -56,7 +59,9 @@ export class CustomToasts {
         GAP * 2 <=
         area.height;
     while (!fits()) {
-      const oldest = [...this.entries.values()].find((entry) => !entry.draft && !entry.hover);
+      const oldest = [...this.entries.values()].find(
+        (entry) => !entry.draft && !entry.hover && !entry.sent,
+      );
       if (!oldest) return;
       this.entries.delete(oldest.spec.id);
       oldest.win.close();
@@ -115,6 +120,10 @@ export class CustomToasts {
     ipcMain.removeListener(CHANNEL, this.onIpc);
     screen.removeListener('display-metrics-changed', this.reposition);
     screen.removeListener('display-removed', this.reposition);
+    this.clear();
+  }
+
+  clear(): void {
     for (const entry of [...this.entries.values()]) entry.win.close();
   }
 
@@ -178,10 +187,15 @@ export class CustomToasts {
         return;
       }
       entry.sent = true;
+      entry.draft = true;
       clearTimeout(entry.timer);
-      this.o.onReply(entry.spec, message.text);
-      event.sender.send(RESULT, S.customToastSent(entry.spec.title));
-      entry.timer = setTimeout(() => entry.win.close(), 1300);
+      void this.sendReply(entry, message.text);
+    } else if (message.action === 'open') {
+      if (entry.sent) return;
+      entry.sent = true;
+      if (this.o.onOpen) this.o.onOpen(entry.spec);
+      else this.o.onButton(entry.spec, 0);
+      entry.win.close();
     } else if (message.action === 'button') {
       if (
         entry.sent ||
@@ -194,6 +208,27 @@ export class CustomToasts {
       entry.sent = true;
       this.o.onButton(entry.spec, message.index);
       entry.win.close();
+    }
+  }
+
+  private async sendReply(entry: Entry, text: string): Promise<void> {
+    let result: ReplyResult;
+    try {
+      result = await this.o.onReply(entry.spec, text);
+    } catch {
+      // Не показываем исключение: оно может содержать URL, токен или текст ответа.
+      result = { ok: false, error: S.customToastUnavailable };
+    }
+    if (entry.win.isDestroyed()) return;
+    if (result.ok) {
+      entry.win.webContents.send(RESULT, {
+        ok: true,
+        message: S.customToastSent(entry.spec.title),
+      });
+      entry.timer = setTimeout(() => entry.win.close(), 1300);
+    } else {
+      entry.sent = false;
+      entry.win.webContents.send(RESULT, { ok: false, message: S.customToastFailed(result.error) });
     }
   }
 }

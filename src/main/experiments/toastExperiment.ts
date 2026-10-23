@@ -11,7 +11,7 @@ import type { Logger } from '../logger';
 import { ELECTRIC, type Bitmap } from '../mark';
 import { encodePng } from '../png';
 import { S } from '../strings';
-import { CustomToasts } from './customToast';
+import { CustomToasts } from '../notifications/toasts';
 import {
   ActivationDedup,
   CLOSED_AT_ONCE_SEC,
@@ -48,6 +48,7 @@ export class ToastExperiment {
     this.custom = new CustomToasts({
       onReply: (spec, text) => {
         this.record({ event: 'reply', source: 'custom', toast: spec.key, ...replyFacts(text) });
+        return { ok: true };
       },
       onButton: (spec, index) => {
         this.record({

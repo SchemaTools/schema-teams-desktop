@@ -14,6 +14,7 @@ export interface Settings {
   zoomLevel: number;
   /** Подсказка «работает в трее» уже показана (ТЗ, 4.3, Д-О-3) */
   trayHintShown: boolean;
+  notifications: { enabled: boolean; sound: boolean; preview: boolean };
 }
 
 export const DEFAULTS: Settings = {
@@ -21,6 +22,7 @@ export const DEFAULTS: Settings = {
   window: {},
   zoomLevel: 0,
   trayHintShown: false,
+  notifications: { enabled: true, sound: true, preview: true },
 };
 
 export const ZOOM_MIN = -3;
@@ -28,13 +30,19 @@ export const ZOOM_MAX = 3;
 
 /** Приводит прочитанный файл к настройкам: неизвестное и негодное — по умолчанию. */
 export function normalizeSettings(raw: unknown): Settings {
-  const s: Settings = { ...DEFAULTS, window: {} };
+  const s: Settings = { ...DEFAULTS, window: {}, notifications: { ...DEFAULTS.notifications } };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
   if (typeof r.serverUrl === 'string' && r.serverUrl.trim() !== '')
     s.serverUrl = r.serverUrl.trim();
   if (typeof r.autostart === 'boolean') s.autostart = r.autostart;
   if (typeof r.trayHintShown === 'boolean') s.trayHintShown = r.trayHintShown;
+  if (typeof r.notifications === 'object' && r.notifications !== null) {
+    const n = r.notifications as Record<string, unknown>;
+    for (const key of ['enabled', 'sound', 'preview'] as const) {
+      if (typeof n[key] === 'boolean') s.notifications[key] = n[key];
+    }
+  }
   if (typeof r.zoomLevel === 'number' && Number.isFinite(r.zoomLevel)) {
     s.zoomLevel = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, r.zoomLevel));
   }

@@ -1,7 +1,7 @@
 // Локальная страница опыта Д2: оформление Д-У-0 из согласованного макета.
 // Данные — только текст, скриптов страницы нет; ввод обрабатывает изолированный preload.
 import { S } from '../strings';
-import type { ToastSpec } from './toastScenarios';
+import type { ToastSpec } from './types';
 
 function esc(text: string): string {
   return text.replace(/[&<>"']/g, (c) => {
@@ -32,6 +32,7 @@ border:1px solid #c9ced2;border-radius:6px;padding:7px 8px;font:inherit;backgrou
 #send:hover{background:#1433ad}button:disabled{opacity:.55;cursor:default}
 .hint{font-size:11px;color:#5f6469;margin-top:4px}.actions{display:flex;gap:6px;margin-top:auto}
 .actions button{flex:1}#status{color:#168058;margin:0;min-height:0}#status:empty{display:none}
+#status[data-state="error"]{color:#a32020}
 </style></head><body><section class="toast" aria-label="${esc(S.customToastTitle)}">
 <header><span class="mark" aria-hidden="true"></span>${esc(S.appName)}
 <button id="close" aria-label="${esc(S.customToastClose)}">×</button></header>

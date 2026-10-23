@@ -11,6 +11,7 @@ import { createTray } from './tray';
 import { ToastExperiment } from './experiments/toastExperiment';
 import { experimentPage } from './pages';
 import { APP_ID, TOAST_ACTIVATOR_CLSID } from './appIdentity';
+import { DesktopApp } from './desktop/app';
 
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
 const HIDDEN_ARG = '--hidden';
@@ -27,6 +28,7 @@ const log = new Logger({ dir: join(app.getPath('userData'), 'logs') });
 let quitting = false;
 let main: MainWindow | undefined;
 let tray: Tray | undefined;
+export let desktop: DesktopApp | undefined;
 
 if (!app.requestSingleInstanceLock()) {
   // приложение уже запущено — оно само покажет окно (second-instance)
@@ -94,7 +96,10 @@ function start(): void {
     onOpen: () => main?.show(),
     onQuit: () => app.quit(),
     ...(toast && { extra: [toast.menu()] }),
+    ...(!experiment &&
+      server && { onContextMenu: (bounds: Electron.Rectangle) => desktop?.showMenu(bounds) }),
   });
+  if (!experiment && server) desktop = new DesktopApp({ main, server, tray, settings, log });
   if (!hidden) main.win.once('ready-to-show', () => main?.show());
 }
 
@@ -104,6 +109,7 @@ app.on('before-quit', (e) => {
   // cookie входа должны лечь на диск до выхода, иначе пароль спросят снова (ТЗ, 2.2)
   e.preventDefault();
   log.info('выход');
+  desktop?.destroy();
   session
     .fromPartition(PARTITION)
     .cookies.flushStore()

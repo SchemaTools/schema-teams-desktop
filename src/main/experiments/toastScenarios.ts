@@ -1,22 +1,8 @@
 // Опыт шага Д2 (ТЗ, 5.1): какие уведомления показать и как записать итог.
 // Без Electron — проверяется модульными тестами. Данные вымышленные.
 
-export interface ToastSpec {
-  /** Ключ в итогах: какое уведомление сработало */
-  key: string;
-  /** Через сколько мс после выбора пункта показать */
-  delayMs: number;
-  /** Ид уведомления: одинаковый ид заменяет прежнее уведомление */
-  id: string;
-  groupId: string;
-  /** Название группы в центре уведомлений (чат); без него — без группы */
-  header?: string;
-  title: string;
-  body: string;
-  hasReply: boolean;
-  /** Подписи кнопок, по порядку */
-  buttons: string[];
-}
+import type { ToastSpec } from '../notifications/types';
+export type { ToastSpec } from '../notifications/types';
 
 export interface Scenario {
   key: string;

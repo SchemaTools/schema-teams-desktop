@@ -7,6 +7,7 @@ import { ZOOM_MAX, ZOOM_MIN, type SettingsStore } from './settings';
 import { S } from './strings';
 import { fitBounds, MIN_SIZE } from './windowState';
 import { windowImage } from './icons';
+import { join } from 'node:path';
 
 export const PARTITION = 'persist:teams';
 const RETRY_MS = 10_000;
@@ -51,6 +52,10 @@ export class MainWindow {
         sandbox: true,
         nodeIntegration: false,
         webSecurity: true,
+        preload: join(__dirname, '../preload/desktop.js'),
+        additionalArguments: [
+          `--schema-server-origin=${encodeURIComponent(o.server?.origin ?? '')}`,
+        ],
         // страница держит соединение реального времени и при спрятанном окне (ТЗ, 2.2)
         backgroundThrottling: false,
       },

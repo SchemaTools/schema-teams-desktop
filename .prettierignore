@@ -7,3 +7,5 @@ private/
 package-lock.json
 *.md
 build/
+# Точная копия серверного договора; формат не меняется отдельно от schema-teams.
+src/bridge/protocol.ts

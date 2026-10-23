@@ -10,7 +10,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/build-config.mjs && node scripts/make-icon.mjs",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/build-config.mjs && node scripts/make-icon.mjs && node scripts/build-notification-state.mjs",
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "lint": "eslint . && prettier --check .",
