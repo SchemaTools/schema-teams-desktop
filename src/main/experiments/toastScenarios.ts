@@ -151,7 +151,7 @@ export interface ExperimentRecord {
   /** Ключ уведомления (ToastSpec.key), если известен */
   toast?: string;
   /** instance — событие объекта Notification, activation — общий обработчик Windows */
-  source?: 'instance' | 'activation';
+  source?: 'instance' | 'activation' | 'custom';
   /** Подпись нажатой кнопки */
   button?: string;
   /** Длина ответа (сам текст в итоги не пишется) */

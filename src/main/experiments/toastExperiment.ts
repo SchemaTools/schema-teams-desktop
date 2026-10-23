@@ -10,6 +10,8 @@ import { windowImage } from '../icons';
 import type { Logger } from '../logger';
 import { ELECTRIC, type Bitmap } from '../mark';
 import { encodePng } from '../png';
+import { S } from '../strings';
+import { CustomToasts } from './customToast';
 import {
   ActivationDedup,
   CLOSED_AT_ONCE_SEC,
@@ -38,10 +40,35 @@ export class ToastExperiment {
   private readonly icon = join(app.getPath('userData'), 'toast-icon.png');
   private readonly sendIcon = join(app.getPath('userData'), 'toast-send.png');
   private shown = 0;
+  private readonly custom: CustomToasts;
   /** Живые уведомления: без ссылки сборщик мусора забирает объект и события теряются */
   private readonly alive = new Map<string, { n: Notification; spec: ToastSpec; at: number }>();
 
   constructor(private readonly o: ToastExperimentOptions) {
+    this.custom = new CustomToasts({
+      onReply: (spec, text) => {
+        this.record({ event: 'reply', source: 'custom', toast: spec.key, ...replyFacts(text) });
+      },
+      onButton: (spec, index) => {
+        this.record({
+          event: 'action',
+          source: 'custom',
+          toast: spec.key,
+          button: spec.buttons[index],
+        });
+        if (index === 0) o.showWindow();
+      },
+      onShow: (spec) => {
+        this.record({
+          event: 'show',
+          source: 'custom',
+          toast: spec.key,
+          windowVisible: o.isWindowVisible(),
+        });
+      },
+      onClose: (spec) => this.record({ event: 'close', source: 'custom', toast: spec.key }),
+    });
+    app.once('before-quit', () => this.custom.destroy());
     try {
       writeFileSync(this.icon, windowImage().toPNG());
       writeFileSync(this.sendIcon, encodePng(drawSendArrow(32)));
@@ -86,10 +113,17 @@ export class ToastExperiment {
     return {
       label: 'Проверка уведомлений',
       submenu: [
-        ...scenarios(0).map((s) => ({
-          label: s.label,
-          click: () => this.run(s.key),
-        })),
+        {
+          label: S.customToastMenu,
+          submenu: scenarios(0).map((s) => ({
+            label: s.label,
+            click: () => this.run(`custom:${s.key}`),
+          })),
+        },
+        {
+          label: S.nativeToastMenu,
+          submenu: scenarios(0).map((s) => ({ label: s.label, click: () => this.run(s.key) })),
+        },
         { type: 'separator' as const },
         { label: 'Открыть файл итогов', click: () => shell.showItemInFolder(this.file) },
       ],
@@ -97,14 +131,18 @@ export class ToastExperiment {
   }
 
   private run(key: string): void {
+    const custom = key.startsWith('custom:');
+    if (custom) key = key.slice('custom:'.length);
     const n = ++this.shown;
     const s = scenarios(n).find((x) => x.key === key);
     if (!s) return;
-    if (!Notification.isSupported()) {
+    if (!custom && !Notification.isSupported()) {
       this.record({ event: 'failed', toast: key, error: 'Notification.isSupported() = false' });
       return;
     }
-    for (const spec of s.toasts) setTimeout(() => this.show(spec), spec.delayMs);
+    for (const spec of s.toasts) {
+      setTimeout(() => (custom ? this.custom.show(spec) : this.show(spec)), spec.delayMs);
+    }
   }
 
   private show(spec: ToastSpec): void {

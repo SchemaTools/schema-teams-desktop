@@ -17,5 +17,13 @@ export const S = {
   // пробная сборка шага Д2
   experimentTitle: 'Пробная сборка: проверка уведомлений',
   experimentBody:
-    'Правой кнопкой по значку Schema Teams у часов → «Проверка уведомлений». Порядок проверок — в памятке.',
+    'Правой кнопкой по значку Schema Teams у часов → «Проверка уведомлений» → «Свои окна: Enter / Shift+Enter». Порядок проверок — в памятке.',
+  customToastTitle: 'Schema Teams — уведомление',
+  customToastReply: 'Ответить…',
+  customToastSend: 'Отправить',
+  customToastClose: 'Закрыть уведомление',
+  customToastKeys: 'Enter — отправить · Shift+Enter — новая строка',
+  customToastSent: (chat: string) => `Отправлено в «${chat}»`,
+  customToastMenu: 'Свои окна: Enter / Shift+Enter',
+  nativeToastMenu: 'Родные уведомления Windows (сравнение)',
 } as const;
