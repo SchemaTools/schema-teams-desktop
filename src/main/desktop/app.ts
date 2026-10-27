@@ -20,6 +20,7 @@ import type { SettingsStore } from '../settings';
 import type { Logger } from '../logger';
 import { encodePng } from '../png';
 import { S } from '../strings';
+import { PathService } from '../paths/service';
 
 interface Options {
   main: MainWindow;
@@ -44,6 +45,7 @@ export class DesktopApp {
   private readonly menu: TrayMenu;
   private readonly bridge: ServerBridge;
   private readonly pages: ServerPages;
+  private readonly paths: PathService;
   private readonly tick: NodeJS.Timeout;
   private readonly theme = () => this.update();
   private readonly windowChanged = () => {
@@ -55,6 +57,7 @@ export class DesktopApp {
   };
 
   constructor(private readonly o: Options) {
+    this.paths = new PathService({ log: o.log });
     this.pages = new ServerPages(o.server);
     this.toasts = new CustomToasts({
       beforeShow: (spec) => this.beforeShow(spec),
@@ -83,6 +86,7 @@ export class DesktopApp {
       log: o.log,
       onEvent: (name, data) => this.event(name, data),
       onReset: () => this.reset(),
+      onOpenPath: (data) => this.paths.open(data),
     });
     o.main.win.on('show', this.windowChanged);
     o.main.win.on('hide', this.windowChanged);
@@ -100,6 +104,7 @@ export class DesktopApp {
     this.state = initialState();
     this.toasts.clear();
     this.pages.destroy();
+    this.paths.reset();
     this.menu.hide();
     this.update();
   }
@@ -308,6 +313,7 @@ export class DesktopApp {
     this.o.main.win.removeListener('blur', this.windowChanged);
     this.bridge.destroy();
     this.pages.destroy();
+    this.paths.destroy();
     this.toasts.destroy();
     this.menu.destroy();
   }

@@ -58,4 +58,10 @@ export const S = {
   desktopResume: 'Продолжить',
   desktopStop: 'Закончить',
   desktopChange: 'Сменить',
+  pathUnavailableTitle: 'Папка недоступна',
+  pathUnavailableBody:
+    'Компьютер не видит этот адрес. Возможно, нет доступа к этой папке, сервер выключен или вы не в офисной сети.',
+  pathCopy: 'Скопировать путь',
+  pathCopied: 'Скопировано',
+  pathUnderstood: 'Понятно',
 } as const;

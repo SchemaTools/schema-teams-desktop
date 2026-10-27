@@ -71,6 +71,10 @@ export class CustomToasts {
       title: S.customToastTitle,
       width: WIDTH,
       height,
+      // Изначально создаём на целевом мониторе: скрытое окно, созданное на другом
+      // экране, Windows может вернуть в прежнюю рабочую область при первом show.
+      x: area.x + area.width - Math.min(WIDTH, area.width - GAP * 2) - GAP,
+      y: area.y + area.height - height - GAP,
       frame: false,
       resizable: false,
       maximizable: false,

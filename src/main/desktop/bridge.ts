@@ -8,6 +8,7 @@ import {
   type DesktopCommandResult,
   type DesktopEventName,
   type DesktopEvents,
+  type DesktopOpenPathResult,
 } from '../../bridge/protocol';
 import { eventValid, record } from '../../bridge/validate';
 import { isServerUrl } from '../navigation';
@@ -21,6 +22,7 @@ interface Options {
   log: Logger;
   onEvent: <E extends DesktopEventName>(event: E, data: DesktopEvents[E]) => void;
   onReset: () => void;
+  onOpenPath: (data: DesktopEvents['openPath']) => Promise<DesktopOpenPathResult>;
 }
 interface Pending {
   finish: (result: DesktopCommandResult) => void;
@@ -69,7 +71,7 @@ export class ServerBridge {
 
   private receive(event: IpcMainInvokeEvent, rawName: unknown, data: unknown): unknown {
     if (!this.trusted(event) || typeof rawName !== 'string' || !EVENTS.has(rawName))
-      return undefined;
+      return rawName === 'openPath' ? 'blocked' : undefined;
     const name = rawName as DesktopEventName;
     if (!eventValid(name, data)) {
       this.o.log.warn('данные моста отклонены', { event: name });
@@ -90,8 +92,7 @@ export class ServerBridge {
     } else if (name === 'connection') {
       this.online = data === 'online';
     } else if (!this.ready) return name === 'openPath' ? 'blocked' : undefined;
-    // Сетевые пути — следующий этап Д4. Ни один путь не исполняется здесь.
-    if (name === 'openPath') return 'blocked';
+    if (name === 'openPath') return this.o.onOpenPath(data as DesktopEvents['openPath']);
     this.o.onEvent(name, data as DesktopEvents[typeof name]);
     return undefined;
   }
