@@ -57,6 +57,7 @@ export class DesktopApp {
   constructor(private readonly o: Options) {
     this.pages = new ServerPages(o.server);
     this.toasts = new CustomToasts({
+      beforeShow: (spec) => this.beforeShow(spec),
       onReply: (spec, text) => this.reply(spec, text),
       onButton: (spec, index) => {
         void this.button(spec, index);
@@ -67,7 +68,7 @@ export class DesktopApp {
       },
       onShow: (spec) => {
         o.log.info('уведомление показано');
-        if (this.meta.has(spec) && o.settings.get().notifications.sound) shell.beep();
+        if (this.noticeEligible(spec) && o.settings.get().notifications.sound) shell.beep();
       },
       onClose: () => {},
     });
@@ -164,6 +165,23 @@ export class DesktopApp {
     };
     this.meta.set(spec, { wire, owner, buttons });
     this.toasts.show(spec);
+  }
+  private noticeEligible(spec: ToastSpec): boolean {
+    const item = this.meta.get(spec);
+    return Boolean(
+      item &&
+      item.owner === this.state.user?.id &&
+      this.state.ready &&
+      this.state.online &&
+      this.o.settings.get().notifications.enabled &&
+      (!focusOn(this.state) || item.wire.kind === 'mention'),
+    );
+  }
+  private async beforeShow(spec: ToastSpec): Promise<boolean> {
+    if (!this.noticeEligible(spec)) return false;
+    // Проверяем ещё раз после загрузки скрытого окна — до showInactive и звука.
+    if (!(await this.policy.allows())) return false;
+    return this.noticeEligible(spec);
   }
   private async reply(spec: ToastSpec, text: string): Promise<DesktopCommandResult> {
     const item = this.meta.get(spec);

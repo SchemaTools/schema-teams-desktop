@@ -28,6 +28,7 @@ interface Options {
   onReply: (spec: ToastSpec, text: string) => ReplyResult | Promise<ReplyResult>;
   onButton: (spec: ToastSpec, index: number) => void;
   onOpen?: (spec: ToastSpec) => void;
+  beforeShow?: (spec: ToastSpec) => boolean | Promise<boolean>;
   onShow: (spec: ToastSpec) => void;
   onClose: (spec: ToastSpec) => void;
 }
@@ -101,11 +102,7 @@ export class CustomToasts {
     });
     win.webContents.session.setPermissionCheckHandler(() => false);
     win.once('ready-to-show', () => {
-      if (win.isDestroyed()) return;
-      this.layout();
-      win.showInactive();
-      this.arm(entry);
-      this.o.onShow(spec);
+      void this.present(entry);
     });
     win.once('closed', () => {
       clearTimeout(entry.timer);
@@ -113,7 +110,27 @@ export class CustomToasts {
       this.layout();
       this.o.onClose(spec);
     });
-    void win.loadURL(url);
+    void win.loadURL(url).catch(() => {
+      if (!win.isDestroyed()) win.close();
+    });
+  }
+
+  private async present(entry: Entry): Promise<void> {
+    let allowed = false;
+    try {
+      allowed = this.o.beforeShow ? await this.o.beforeShow(entry.spec) : true;
+    } catch {
+      // Неизвестное состояние системы не разрешает всплывающее окно или звук.
+    }
+    if (entry.win.isDestroyed()) return;
+    if (!allowed) {
+      entry.win.close();
+      return;
+    }
+    this.layout();
+    entry.win.showInactive();
+    this.arm(entry);
+    this.o.onShow(entry.spec);
   }
 
   destroy(): void {

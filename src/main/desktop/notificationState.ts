@@ -1,24 +1,32 @@
 import { app } from 'electron';
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
-
-// QUNS_ACCEPTS_NOTIFICATIONS. Не показываем UI при полноэкранном приложении,
-// презентации, quiet time, отсутствии пользователя или неизвестном состоянии.
-export const notificationStateAllowed = (state: number | null): boolean => state === 5;
+import {
+  parseNotificationState,
+  notificationStateAllowed,
+  type NotificationState,
+} from './notificationPolicy';
 
 export class WindowsNotificationPolicy {
-  private cached?: { at: number; answer: Promise<boolean> };
+  private pending?: Promise<boolean>;
+  constructor(private readonly platform: NodeJS.Platform = process.platform) {}
 
   allows(): Promise<boolean> {
-    const now = Date.now();
-    if (this.cached && now - this.cached.at < 1000) return this.cached.answer;
-    const answer = this.query().then(notificationStateAllowed);
-    this.cached = { at: now, answer };
+    // Делим только выполняющийся запрос. Завершённое разрешение не кэшируем:
+    // пользователь мог включить «Не беспокоить» сразу после прошлого события.
+    if (this.pending) return this.pending;
+    const answer = this.query()
+      .then(notificationStateAllowed)
+      .catch(() => false)
+      .finally(() => {
+        if (this.pending === answer) this.pending = undefined;
+      });
+    this.pending = answer;
     return answer;
   }
 
-  private query(): Promise<number | null> {
-    if (process.platform !== 'win32') return Promise.resolve(null);
+  private query(): Promise<NotificationState | null> {
+    if (this.platform !== 'win32') return Promise.resolve(null);
     const root = app.isPackaged
       ? app.getAppPath().replace(/\.asar$/, '.asar.unpacked')
       : app.getAppPath();
@@ -29,8 +37,7 @@ export class WindowsNotificationPolicy {
         [],
         { shell: false, windowsHide: true, timeout: 1500, maxBuffer: 128 },
         (error, stdout) => {
-          const state = Number(stdout.trim());
-          resolve(!error && Number.isInteger(state) && state >= 1 && state <= 7 ? state : null);
+          resolve(error ? null : parseNotificationState(stdout));
         },
       );
     });

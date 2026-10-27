@@ -24,6 +24,15 @@ interface Fixture extends Window {
   calls: { name: string; data: Record<string, unknown> }[];
   delivered: { requestId: string; text: string }[];
 }
+interface PolicyHarness {
+  allowNotice: boolean;
+  lastTip: string;
+  beepCount: number;
+  policyCalls: number;
+  answers: boolean[];
+  holdPolicy: boolean;
+  finishPolicy?: (answer: boolean) => void;
+}
 const message: DesktopNotify = {
   key: 'chat:7',
   kind: 'message',
@@ -49,11 +58,11 @@ test.afterEach(async () => {
   for (const app of running.splice(0)) await app.close();
 });
 
-async function launch(protocol = '1.1') {
+async function launch(protocol = '1.1', preferences: { sound?: boolean; enabled?: boolean } = {}) {
   const profile = mkdtempSync(join(tmpdir(), 'stdesk-bridge-'));
   writeFileSync(
     join(profile, 'settings.json'),
-    JSON.stringify({ notifications: { sound: false }, trayHintShown: true }),
+    JSON.stringify({ notifications: { sound: false, ...preferences }, trayHintShown: true }),
   );
   const app = await electron.launch({
     args: [ROOT],
@@ -71,7 +80,7 @@ async function launch(protocol = '1.1') {
   const mainWindow = await app.browserWindow(page);
   await expect.poll(() => mainWindow.evaluate((win) => win.isVisible())).toBe(true);
   // Управляем только системной политикой. Все IPC, preload и команды — реальные.
-  await app.evaluate(({ app, Tray }) => {
+  await app.evaluate(({ app, Tray, shell }) => {
     const load = process
       .getBuiltinModule('module')
       .createRequire(`${app.getAppPath()}/package.json`);
@@ -80,10 +89,23 @@ async function launch(protocol = '1.1') {
     ) as {
       WindowsNotificationPolicy: typeof import('../../src/main/desktop/notificationState').WindowsNotificationPolicy;
     };
-    const g = globalThis as unknown as { allowNotice: boolean; lastTip: string };
+    const g = globalThis as unknown as PolicyHarness;
     g.allowNotice = true;
     g.lastTip = '';
-    WindowsNotificationPolicy.prototype.allows = async () => g.allowNotice;
+    g.beepCount = 0;
+    g.policyCalls = 0;
+    g.answers = [];
+    g.holdPolicy = false;
+    WindowsNotificationPolicy.prototype.allows = () => {
+      g.policyCalls++;
+      const answer = g.answers.shift();
+      if (typeof answer === 'boolean') return Promise.resolve(answer);
+      if (g.holdPolicy) return new Promise<boolean>((finish) => (g.finishPolicy = finish));
+      return Promise.resolve(g.allowNotice);
+    };
+    shell.beep = () => {
+      g.beepCount++;
+    };
     const original = Tray.prototype.setToolTip;
     Tray.prototype.setToolTip = function (text: string) {
       g.lastTip = text;
@@ -132,6 +154,22 @@ async function menu(app: ElectronApplication) {
 }
 const tip = (app: ElectronApplication) =>
   app.evaluate(() => (globalThis as unknown as { lastTip: string }).lastTip);
+const policy = (app: ElectronApplication) =>
+  app.evaluate(() => {
+    const g = globalThis as unknown as PolicyHarness;
+    return {
+      calls: g.policyCalls,
+      beeps: g.beepCount,
+      pending: typeof g.finishPolicy === 'function',
+    };
+  });
+const notificationWindows = (app: ElectronApplication) =>
+  app.evaluate(({ BrowserWindow }) => {
+    const windows = BrowserWindow.getAllWindows().filter(
+      (win) => win.getTitle() === 'Schema Teams — уведомление',
+    );
+    return { total: windows.length, visible: windows.filter((win) => win.isVisible()).length };
+  });
 
 test('быстрый ответ: ошибка сохраняет текст, повтор с тем же requestId доставляет один ответ', async () => {
   const { app, page, profile } = await launch();
@@ -266,17 +304,99 @@ test('меню открывает колокольчик, включает фо�
   ).toBe('undefined');
 });
 
-test('системный запрет скрывает окно уведомления, сохраняя счётчик', async () => {
-  const { app, page } = await launch();
+test('системный запрет скрывает сообщение и упоминание без звука; после него приходит только новое событие', async () => {
+  const { app, page } = await launch('1.1', { sound: true });
   await app.evaluate(
     () => ((globalThis as unknown as { allowNotice: boolean }).allowNotice = false),
   );
   await send(page, 'counters', { chat: 2, notifications: 0 });
   await send(page, 'notify', message);
+  await send(page, 'notify', { ...message, key: 'mention:11', kind: 'mention' });
+  await expect.poll(async () => (await policy(app)).calls).toBe(2);
   await expect.poll(() => tip(app)).toContain('2');
   // Барьер двух процессов: событие уже принято, async policy успела завершиться.
   await page.evaluate(
     () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
   );
-  expect(app.windows()).toHaveLength(1);
+  expect(await notificationWindows(app)).toEqual({ total: 0, visible: 0 });
+  expect((await policy(app)).beeps).toBe(0);
+  await app.evaluate(() => {
+    (globalThis as unknown as PolicyHarness).allowNotice = true;
+  });
+  // Снятие запрета само по себе не должно воспроизводить пропущенные события.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  expect(await notificationWindows(app)).toEqual({ total: 0, visible: 0 });
+  expect((await policy(app)).beeps).toBe(0);
+  const notice = await popup(app, page, {
+    ...message,
+    key: 'new-event',
+    text: 'Только новое событие',
+  });
+  await expect(notice.locator('body')).toContainText('Только новое событие');
+  await expect(notice.locator('body')).not.toContainText(message.text);
+  await expect.poll(async () => (await policy(app)).beeps).toBe(1);
+  expect(await notificationWindows(app)).toEqual({ total: 1, visible: 1 });
 });
+
+test('разрешённое уведомление показывает одно окно и проигрывает один звук после двух проверок', async () => {
+  const { app, page } = await launch('1.1', { sound: true });
+  await popup(app, page);
+  await expect.poll(async () => (await policy(app)).calls).toBe(2);
+  await expect.poll(async () => (await policy(app)).beeps).toBe(1);
+  expect(await notificationWindows(app)).toEqual({ total: 1, visible: 1 });
+});
+
+test('выключенные уведомления подавляют окно и звук до запроса системной политики', async () => {
+  const { app, page } = await launch('1.1', { enabled: false, sound: true });
+  await send(page, 'notify', message);
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  expect(await notificationWindows(app)).toEqual({ total: 0, visible: 0 });
+  expect(await policy(app)).toEqual({ calls: 0, beeps: 0, pending: false });
+});
+
+test('выключенный звук сохраняет показ разрешённого уведомления', async () => {
+  const { app, page } = await launch('1.1', { sound: false });
+  await popup(app, page);
+  await expect.poll(() => notificationWindows(app)).toEqual({ total: 1, visible: 1 });
+  expect((await policy(app)).beeps).toBe(0);
+});
+
+test('включение системного запрета перед фактическим показом не даёт окна и звука', async () => {
+  const { app, page } = await launch('1.1', { sound: true });
+  await app.evaluate(() => {
+    const g = globalThis as unknown as PolicyHarness;
+    g.allowNotice = false;
+    g.answers = [true, false];
+  });
+  await send(page, 'notify', message);
+  await expect.poll(async () => (await policy(app)).calls).toBe(2);
+  await expect.poll(() => notificationWindows(app)).toEqual({ total: 0, visible: 0 });
+  expect((await policy(app)).beeps).toBe(0);
+});
+
+for (const change of ['signedOut', 'offline'] as const) {
+  test(`ожидание повторной политики и ${change} не оставляют запоздалого окна или звука`, async () => {
+    const { app, page } = await launch('1.1', { sound: true });
+    await app.evaluate(() => {
+      const g = globalThis as unknown as PolicyHarness;
+      g.answers = [true];
+      g.holdPolicy = true;
+    });
+    await send(page, 'notify', message);
+    await expect.poll(async () => (await policy(app)).pending).toBe(true);
+    expect((await policy(app)).calls).toBe(2);
+    expect((await notificationWindows(app)).visible).toBe(0);
+    if (change === 'signedOut') await send(page, 'signedOut', {});
+    else await send(page, 'connection', 'offline');
+    await app.evaluate(async () => {
+      const g = globalThis as unknown as PolicyHarness;
+      g.holdPolicy = false;
+      const finish = g.finishPolicy;
+      delete g.finishPolicy;
+      finish?.(true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    });
+    await expect.poll(() => notificationWindows(app)).toEqual({ total: 0, visible: 0 });
+    expect((await policy(app)).beeps).toBe(0);
+  });
+}
