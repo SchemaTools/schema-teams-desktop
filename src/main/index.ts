@@ -8,6 +8,7 @@ import { MainWindow, PARTITION } from './mainWindow';
 import { isServerUrl } from './navigation';
 import { SettingsStore } from './settings';
 import { createTray } from './tray';
+import { ClientHost } from './clientHost';
 
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
@@ -21,6 +22,7 @@ const log = new Logger({ dir: join(app.getPath('userData'), 'logs') });
 let quitting = false;
 let main: MainWindow | undefined;
 let tray: Tray | undefined;
+export let client: ClientHost | undefined;
 
 if (!app.requestSingleInstanceLock()) {
   // приложение уже запущено — оно само покажет окно (second-instance)
@@ -64,7 +66,9 @@ function start(): void {
     onClick: () => main?.toggle(),
     onOpen: () => main?.show(),
     onQuit: () => app.quit(),
+    onMenu: (bounds) => client?.showMenu(bounds),
   });
+  client = new ClientHost({ main, server, settings, log, tray });
   if (!hidden) main.win.once('ready-to-show', () => main?.show());
 }
 
@@ -74,6 +78,7 @@ app.on('before-quit', (e) => {
   // cookie входа должны лечь на диск до выхода, иначе пароль спросят снова (ТЗ, 2.2)
   e.preventDefault();
   log.info('выход');
+  client?.destroy();
   session
     .fromPartition(PARTITION)
     .cookies.flushStore()

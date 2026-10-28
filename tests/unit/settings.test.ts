@@ -27,6 +27,19 @@ describe('normalizeSettings', () => {
 });
 
 describe('SettingsStore', () => {
+  it('смена темы не теряет настройки пробного таймера прежней сборки', () => {
+    const file = join(tmp(), 'settings.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ timer: { pauseOnLock: false, askOnUnlock: false, reminderTime: '17:00' } }),
+    );
+    new SettingsStore(file).update({ theme: 'dark' });
+    expect(new SettingsStore(file).get().timer).toEqual({
+      pauseOnLock: false,
+      askOnUnlock: false,
+      reminderTime: '17:00',
+    });
+  });
   it('сохраняет и читает после перезапуска', () => {
     const file = join(tmp(), 'sub', 'settings.json');
     new SettingsStore(file).update({ autostart: false, trayHintShown: true });

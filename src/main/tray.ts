@@ -1,6 +1,6 @@
 // Значок в трее (ТЗ, 4.1). На шаге Д1 — знак, подсказка, щелчок и короткое системное меню;
 // счётчик, таймер, «Фокус» и своё меню-окно (Д-Т-2) — шаг Д3.
-import { Menu, Tray, nativeTheme } from 'electron';
+import { Menu, Tray, nativeTheme, type Rectangle } from 'electron';
 import { trayImage } from './icons';
 import { S } from './strings';
 
@@ -9,6 +9,7 @@ export interface TrayOptions {
   onClick: () => void;
   onOpen: () => void;
   onQuit: () => void;
+  onMenu?: (bounds: Rectangle) => void;
 }
 
 export function createTray(o: TrayOptions): Tray {
@@ -22,7 +23,9 @@ export function createTray(o: TrayOptions): Tray {
     { label: S.menuVersion(o.version), enabled: false },
     { label: S.menuQuit, click: o.onQuit },
   ]);
-  tray.on('right-click', () => tray.popUpContextMenu(menu));
+  tray.on('right-click', () =>
+    o.onMenu ? o.onMenu(tray.getBounds()) : tray.popUpContextMenu(menu),
+  );
   // панель задач сменила тему — перерисовать знак
   nativeTheme.on('updated', () => tray.setImage(trayImage(dark())));
   return tray;
