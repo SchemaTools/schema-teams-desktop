@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fixtureMessage, startClientStub, type ClientStub } from './clientStub';
@@ -156,6 +156,195 @@ test('свой чат загружает историю, Shift+Enter перен�
   expect(
     stub.messages().filter((message) => message.text === 'Первая строка\nВторая строка'),
   ).toHaveLength(1);
+});
+
+test('у UNC-пути только «Показать в папке», команда не открывает сам файл', async () => {
+  const path = '\\\\server\\project\\План узла.rvt';
+  const message = stub.messages()[0];
+  if (!message) throw new Error('fixture message missing');
+  message.text = path;
+  const { app, page } = await authenticated();
+  await app.evaluate(({ app }) => {
+    const { createRequire } = process.getBuiltinModule('module');
+    const load = createRequire(`${app.getAppPath()}/package.json`);
+    const g = globalThis as unknown as { pathActions: { path: string; reveal: boolean }[] };
+    g.pathActions = [];
+    const host = load('./dist/main/index.js') as {
+      client: {
+        paths: { open(input: { path: string; reveal: boolean }): Promise<string> };
+      };
+    };
+    host.client.paths.open = async (input) => {
+      g.pathActions.push({ path: input.path, reveal: input.reveal });
+      return 'ok';
+    };
+  });
+  await selectChat(page);
+  const card = page.locator('.path-card');
+  await expect(card.getByRole('button')).toHaveCount(1);
+  await expect(card.getByRole('button', { name: 'Открыть', exact: true })).toHaveCount(0);
+  await card.getByRole('button', { name: 'Показать в папке', exact: true }).click();
+  await expect
+    .poll(() =>
+      app.evaluate(() => (globalThis as unknown as { pathActions: unknown[] }).pathActions),
+    )
+    .toEqual([{ path, reveal: true }]);
+});
+
+test('вложения скачиваются и открываются локально, фото увеличивается в своём окне чата', async () => {
+  const image = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jEpoAAAAASUVORK5CYII=',
+    'base64',
+  );
+  const document = Buffer.from('Тестовый документ из чата', 'utf8');
+  const script = Buffer.from('@echo fixture-only', 'utf8');
+  stub.files.set(901, { bytes: image, mime: 'image/png' });
+  stub.files.set(902, { bytes: document, mime: 'text/plain' });
+  stub.files.set(903, { bytes: script, mime: 'text/plain' });
+  const message = stub.messages()[0];
+  if (!message) throw new Error('fixture message missing');
+  message.files = [
+    { fileId: 901, fileName: 'Узел.png', size: image.length, mime: 'image/png', isImage: true },
+    {
+      fileId: 902,
+      fileName: 'Пояснение.txt',
+      size: document.length,
+      mime: 'text/plain',
+      isImage: false,
+    },
+    {
+      fileId: 903,
+      fileName: 'Проверка.cmd',
+      size: script.length,
+      mime: 'text/plain',
+      isImage: false,
+    },
+  ];
+  const downloads = join(profile, 'downloads');
+  mkdirSync(downloads);
+  const { app, page } = await authenticated();
+  await app.evaluate(({ app, shell }, downloads) => {
+    app.setPath('downloads', downloads);
+    const g = globalThis as unknown as { openedFiles: string[]; revealedFiles: string[] };
+    g.openedFiles = [];
+    g.revealedFiles = [];
+    shell.openPath = async (file) => {
+      g.openedFiles.push(file);
+      return '';
+    };
+    shell.showItemInFolder = (file) => {
+      g.revealedFiles.push(file);
+    };
+  }, downloads);
+  await selectChat(page);
+  const picture = page.locator('.attachment-card[data-file-id="901"]');
+  await picture.scrollIntoViewIfNeeded();
+  const preview = picture.locator('img.attachment-preview');
+  await expect(preview).toBeVisible();
+  await expect(preview).toHaveAttribute('src', /^schema-attachment:\/\/preview\//);
+  await expect
+    .poll(() => preview.evaluate((image: HTMLImageElement) => image.naturalWidth))
+    .toBe(1);
+  await picture.getByRole('button', { name: 'Увеличить Узел.png', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Узел.png', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Закрыть просмотр', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Открыть сообщение в Teams', exact: true }),
+  ).toHaveCount(0);
+  const file = page.locator('.attachment-card[data-file-id="902"]');
+  await file.getByRole('button', { name: 'Скачать', exact: true }).click();
+  await expect(file.getByRole('status')).toHaveText('Файл сохранён');
+  const saved = readdirSync(downloads).find((name) => name.endsWith('.txt'));
+  if (!saved) throw new Error('downloaded fixture missing');
+  expect(readFileSync(join(downloads, saved), 'utf8')).toBe(document.toString('utf8'));
+  await file.getByRole('button', { name: 'Открыть', exact: true }).click();
+  await expect
+    .poll(() =>
+      app.evaluate(() => (globalThis as unknown as { openedFiles: string[] }).openedFiles),
+    )
+    .toEqual([join(downloads, saved)]);
+  await expect(file.getByRole('button', { name: 'Показать в папке', exact: true })).toBeEnabled();
+  await file.getByRole('button', { name: 'Показать в папке', exact: true }).click();
+  await expect
+    .poll(() =>
+      app.evaluate(() => (globalThis as unknown as { revealedFiles: string[] }).revealedFiles),
+    )
+    .toEqual([join(downloads, saved)]);
+  const dangerous = page.locator('.attachment-card[data-file-id="903"]');
+  await dangerous.getByRole('button', { name: 'Открыть', exact: true }).click();
+  await expect(dangerous.getByRole('alert')).toContainText(
+    'Этот тип файла нельзя открыть из Teams',
+  );
+  expect(
+    await app.evaluate(() => (globalThis as unknown as { openedFiles: string[] }).openedFiles),
+  ).toHaveLength(1);
+  const calls = stub.state.calls.filter((call) => /^\/api\/files\//.test(call.path));
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls.every((call) => call.userId === 1)).toBe(true);
+  const log = readFileSync(join(profile, 'logs', 'app.log'), 'utf8');
+  expect(log).not.toContain(document.toString('utf8'));
+});
+
+test('ошибка фото допускает повтор, увеличение перечитывает старое фото после длинной ленты', async () => {
+  const bytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jEpoAAAAASUVORK5CYII=',
+    'base64',
+  );
+  const photos = Array.from({ length: 14 }, (_, i) => {
+    const fileId = 1001 + i;
+    stub.files.set(fileId, { bytes, mime: 'image/png', ...(i === 0 && { status: 503 }) });
+    const message = fixtureMessage(110 + i, 4, `Фото ${i + 1}`);
+    message.files = [
+      {
+        fileId,
+        fileName: `Фото ${i + 1}.png`,
+        size: bytes.length,
+        mime: 'image/png',
+        isImage: true,
+      },
+    ];
+    return message;
+  });
+  stub.messages().splice(0, stub.messages().length, ...photos);
+  const { page } = await authenticated();
+  await selectChat(page);
+  const first = page.locator('.attachment-card[data-file-id="1001"]');
+  await first.scrollIntoViewIfNeeded();
+  await expect(
+    first.getByRole('button', { name: 'Повторить загрузку фото', exact: true }),
+  ).toBeVisible();
+  stub.files.set(1001, { bytes, mime: 'image/png' });
+  await first.getByRole('button', { name: 'Повторить загрузку фото', exact: true }).click();
+  await expect
+    .poll(() =>
+      first
+        .locator('img.attachment-preview')
+        .evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBe(1);
+  const original = await first.locator('img.attachment-preview').getAttribute('src');
+  for (let i = 1; i < 14; i++) {
+    const photo = page.locator(`.attachment-card[data-file-id="${1001 + i}"]`);
+    await photo.scrollIntoViewIfNeeded();
+    await expect
+      .poll(() =>
+        photo
+          .locator('img.attachment-preview')
+          .evaluate((image: HTMLImageElement) => image.naturalWidth),
+      )
+      .toBe(1);
+  }
+  await first.scrollIntoViewIfNeeded();
+  await first.getByRole('button', { name: 'Увеличить Фото 1.png', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Фото 1.png', exact: true });
+  await expect(dialog).toBeVisible();
+  await expect
+    .poll(() => dialog.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth))
+    .toBe(1);
+  expect(await dialog.locator('img').getAttribute('src')).not.toBe(original);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
 });
 
 test('потерянное подтверждение сохраняет черновик и повторяет тот же UUID без дубликата', async () => {

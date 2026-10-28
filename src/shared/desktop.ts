@@ -50,6 +50,14 @@ export type DesktopRequest =
       | { kind: 'open.site'; path: string }
       | { kind: 'open.link'; url: string }
       | { kind: 'open.path'; path: string; reveal: boolean }
+      | { kind: 'file.preview'; chatId: number; messageId: number; fileId: number }
+      | {
+          kind: 'file.action';
+          chatId: number;
+          messageId: number;
+          fileId: number;
+          action: 'save' | 'open' | 'reveal';
+        }
       | { kind: 'focus.set'; minutes: 0 | 30 | 60 | 480 }
       | { kind: 'notifications.read'; id: number | 'all' }
     ));
@@ -71,6 +79,8 @@ export interface DesktopResponseMap {
   'open.site': null;
   'open.link': null;
   'open.path': 'ok' | 'blocked' | 'unavailable';
+  'file.preview': { url: string };
+  'file.action': 'saved' | 'opened' | 'revealed' | 'canceled' | 'blocked';
   'focus.set': null;
   'notifications.read': null;
 }

@@ -6,6 +6,7 @@ import type { ClientSnapshot, DesktopRequest } from '../../src/shared/desktop';
 import type { MainWindow } from '../../src/main/mainWindow';
 import type { SettingsStore } from '../../src/main/settings';
 import type { Logger } from '../../src/main/logger';
+import { requestValid } from '../../src/shared/requests';
 
 const URL = 'file:///unit/client.html';
 type Handler = (event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>;
@@ -35,6 +36,10 @@ const h = vi.hoisted(() => ({
   pathOpen: vi.fn(),
   pathReset: vi.fn(),
   pathDestroy: vi.fn(),
+  filePreview: vi.fn(),
+  fileAction: vi.fn(),
+  fileReset: vi.fn(),
+  fileDestroy: vi.fn(),
   toastShow: vi.fn(),
   toastClear: vi.fn(),
   toastDestroy: vi.fn(),
@@ -50,7 +55,7 @@ const h = vi.hoisted(() => ({
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
   const cookies = Object.assign(new EventEmitter(), { get: h.cookiesGet, remove: h.cookiesRemove });
-  const ses = { cookies, fetch: h.fetch };
+  const ses = { cookies, fetch: h.fetch, protocol: { handle: vi.fn(), unhandle: vi.fn() } };
   return {
     app: { getVersion: () => '0.4.0-test', quit: h.quit },
     BrowserWindow: class extends EventEmitter {},
@@ -119,6 +124,15 @@ vi.mock('../../src/main/paths/service', () => ({
     open = h.pathOpen;
     reset = h.pathReset;
     destroy = h.pathDestroy;
+  },
+}));
+vi.mock('../../src/main/files/service', () => ({
+  AttachmentService: class {
+    preview = h.filePreview;
+    action = h.fileAction;
+    reset = h.fileReset;
+    destroy = h.fileDestroy;
+    response = vi.fn();
   },
 }));
 vi.mock('../../src/main/notifications/toasts', () => ({
@@ -236,11 +250,52 @@ describe('ClientHost: поколение входа проверяется в д
       },
       { kind: 'chat.read', epoch: 6, chatId: 4, upTo: 10 },
       { kind: 'open.path', epoch: 6, path: '\\\\server\\share\\folder', reveal: false },
+      { kind: 'file.preview', epoch: 6, chatId: 4, messageId: 10, fileId: 90 },
+      { kind: 'file.action', epoch: 6, chatId: 4, messageId: 10, fileId: 90, action: 'open' },
     ] satisfies DesktopRequest[])
       expect(await invoke(request)).toMatchObject({ ok: false, code: 'stale_session' });
     expect(h.send).not.toHaveBeenCalled();
     expect(h.read).not.toHaveBeenCalled();
     expect(h.pathOpen).not.toHaveBeenCalled();
+    expect(h.filePreview).not.toHaveBeenCalled();
+    expect(h.fileAction).not.toHaveBeenCalled();
+  });
+  it('UNC из старого интерфейса всё равно только показывается в папке', async () => {
+    const { invoke } = fixture();
+    await invoke({
+      kind: 'open.path',
+      epoch: 7,
+      path: '\\\\server\\share\\plan.pdf',
+      reveal: false,
+    });
+    expect(h.pathOpen).toHaveBeenCalledWith({
+      kind: 'open.path',
+      epoch: 7,
+      path: '\\\\server\\share\\plan.pdf',
+      reveal: true,
+    });
+  });
+  it('вложения принимают только IDs и epoch, без URL, пути и произвольной операции', () => {
+    const request = {
+      kind: 'file.action',
+      epoch: 7,
+      chatId: 4,
+      messageId: 10,
+      fileId: 90,
+      action: 'save',
+    };
+    expect(requestValid(request)).toBe(true);
+    for (const extra of [
+      { url: 'https://example.test/private' },
+      { path: 'secret.txt' },
+      { action: 'execute' },
+      { fileId: -1 },
+      { messageId: '10' },
+    ])
+      expect(requestValid({ ...request, ...extra })).toBe(false);
+    expect(
+      requestValid({ kind: 'file.preview', epoch: 7, chatId: 4, messageId: 10, fileId: 90 }),
+    ).toBe(true);
   });
   it('logout захватывает mutex до первого async cookie query; второй logout и новый login не запускаются', async () => {
     const { invoke } = fixture();

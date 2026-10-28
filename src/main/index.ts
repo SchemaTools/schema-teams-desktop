@@ -1,5 +1,5 @@
 // Точка входа главного процесса.
-import { app, Menu, session, type Tray } from 'electron';
+import { app, Menu, protocol, session, type Tray } from 'electron';
 import { release } from 'node:os';
 import { join } from 'node:path';
 import { readBuildConfig, resolveServerUrl } from './config';
@@ -13,6 +13,9 @@ import { ClientHost } from './clientHost';
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
 const HIDDEN_ARG = '--hidden';
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'schema-attachment', privileges: { standard: true, secure: true } },
+]);
 
 // отдельная папка данных — для сквозных тестов, чтобы не трогать настоящий профиль
 if (process.env.SCHEMA_TEAMS_USER_DATA) app.setPath('userData', process.env.SCHEMA_TEAMS_USER_DATA);

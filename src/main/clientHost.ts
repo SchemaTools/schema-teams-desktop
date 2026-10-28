@@ -27,6 +27,7 @@ import { CustomToasts } from './notifications/toasts';
 import type { ToastSpec } from './notifications/types';
 import { WindowsNotificationPolicy } from './desktop/notificationState';
 import { PathService } from './paths/service';
+import { AttachmentService } from './files/service';
 import { statusBitmap, badgeBitmap } from './desktop/statusBitmap';
 import { encodePng } from './png';
 import type { Logger } from './logger';
@@ -59,6 +60,8 @@ export class ClientHost {
   private readonly realtime?: RealtimeClient;
   private readonly login?: LoginWindow;
   private readonly paths: PathService;
+  private readonly files: AttachmentService;
+  private readonly fileSession = session.fromPartition('client-ui');
   private readonly policy = new WindowsNotificationPolicy();
   private readonly toasts: CustomToasts;
   private readonly notices = new WeakMap<ToastSpec, Notice>();
@@ -142,6 +145,15 @@ export class ClientHost {
       onAuthLost: () => this.signedOut(),
     });
     this.paths = new PathService({ log: o.log });
+    this.files = new AttachmentService({
+      api: this.api,
+      downloads: () => app.getPath('downloads'),
+      openPath: (path) => shell.openPath(path),
+      reveal: (path) => shell.showItemInFolder(path),
+    });
+    this.fileSession.protocol.handle('schema-attachment', (request) =>
+      this.files.response(request),
+    );
     this.toasts = new CustomToasts({
       beforeShow: (spec) => this.beforeNotice(spec),
       onReply: async (spec, text) => {
@@ -228,6 +240,7 @@ export class ClientHost {
     this.api.clear();
     this.realtime?.stop();
     this.paths.reset();
+    this.files.reset();
     this.toasts.clear();
     this.counts.clear();
     this.activeChat = null;
@@ -251,6 +264,7 @@ export class ClientHost {
     this.summarizedUntil = null;
     this.realtime?.stop();
     this.paths.reset();
+    this.files.reset();
     this.toasts.clear();
     this.activeChat = null;
     this.state = {
@@ -327,6 +341,7 @@ export class ClientHost {
       this.activeChat = null;
       this.toasts.clear();
       this.paths.reset();
+      this.files.reset();
       this.counts.clear();
     }
     this.state.user = user.data;
@@ -709,7 +724,11 @@ export class ClientHost {
         this.activeChat = r.chatId;
         return ok(null);
       case 'open.path':
-        return ok(await this.paths.open(r));
+        return ok(await this.paths.open({ ...r, reveal: true }));
+      case 'file.preview':
+        return this.files.preview(r);
+      case 'file.action':
+        return this.files.action(r, r.action);
       case 'focus.set': {
         const result = await this.api.setFocus(
           r.minutes ? new Date(Date.now() + r.minutes * 60000).toISOString() : null,
@@ -840,6 +859,8 @@ export class ClientHost {
     this.login?.close();
     this.toasts.destroy();
     this.paths.destroy();
+    this.files.destroy();
+    this.fileSession.protocol.unhandle('schema-attachment');
     this.trayWindow?.destroy();
     ipcMain.removeHandler('client:request');
     this.ses.cookies.removeListener('changed', this.cookieChanged);

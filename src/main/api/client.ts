@@ -21,6 +21,7 @@ export type MessageCursor = { before?: number; after?: number; around?: number }
 type Raw = { status: number; body: unknown };
 const DEADLINE = 15000;
 const BODY_LIMIT = 2 * 1024 * 1024;
+export const FILE_LIMIT = 50 * 1024 * 1024;
 const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const ERROR_TEXT: Record<string, string> = {
   network: 'Нет связи с сервером. Повторите действие после восстановления связи.',
@@ -38,6 +39,9 @@ const ERROR_TEXT: Record<string, string> = {
   idempotency_conflict: 'Ключ повтора уже занят другой отправкой.',
   stale_session: 'Вход изменился. Повторите действие из текущего окна.',
   server_error: 'Сервер временно не может выполнить действие.',
+  invalid_file: 'Не удалось проверить файл. Повторите загрузку из актуального сообщения.',
+  file_error: 'Не удалось сохранить или открыть файл. Проверьте доступ к папке «Загрузки».',
+  busy: 'Дождитесь окончания загрузки файла.',
 };
 export function failure<T = never>(code: string, uncertain = false): ApiResult<T> {
   return {
@@ -181,6 +185,37 @@ export class TeamsApi {
       ? this.request(`/api/chats/${chatId}/read`, 'POST', parse.acknowledged, { upTo })
       : Promise.resolve(failure('validation'));
   }
+  async download(
+    fileId: number,
+    size: number,
+  ): Promise<ApiResult<{ bytes: Uint8Array; mime: string }>> {
+    if (!this.validId(fileId) || !Number.isSafeInteger(size) || size < 0 || size > FILE_LIMIT)
+      return failure('validation');
+    if (!this.user || !this.csrf) return failure('unauthenticated');
+    if (this.user.mustChangePassword) return failure('password_change_required');
+    const epoch = this.epoch;
+    const result = await this.raw(
+      `/api/files/${fileId}`,
+      'GET',
+      undefined,
+      epoch,
+      null,
+      undefined,
+      size,
+    );
+    if (epoch !== this.epoch) return failure('stale_session');
+    if (!result.ok) return result;
+    const { status, body } = result.data;
+    if (status === 401) {
+      this.authLost(epoch);
+      return failure('unauthenticated');
+    }
+    if (status === 403) return failure('forbidden');
+    if (status === 404) return failure('not_found');
+    if (status !== 200) return failure(status >= 500 ? 'server_error' : 'invalid_data');
+    // raw creates this main-only DTO; bytes are never part of the renderer IPC result.
+    return { ok: true, data: body as { bytes: Uint8Array; mime: string } };
+  }
   notifications(before?: number): Promise<ApiResult<NotificationPage>> {
     return before === undefined || this.validId(before)
       ? this.request(
@@ -298,14 +333,18 @@ export class TeamsApi {
     epoch: number,
     csrf: string | null = null,
     requestId?: string,
+    fileSize?: number,
   ): Promise<ApiResult<Raw>> {
     const controller = new AbortController();
     this.pending.add(controller);
     let timeout = false;
-    const timer = setTimeout(() => {
-      timeout = true;
-      controller.abort();
-    }, DEADLINE);
+    const timer = setTimeout(
+      () => {
+        timeout = true;
+        controller.abort();
+      },
+      fileSize === undefined ? DEADLINE : 60000,
+    );
     const aborted = new Promise<never>((_resolve, reject) =>
       controller.signal.addEventListener(
         'abort',
@@ -333,13 +372,21 @@ export class TeamsApi {
           void response.body?.cancel().catch(() => {});
           return { status: 401, body: null };
         }
+        if (fileSize !== undefined && response.status !== 200) {
+          void response.body?.cancel().catch(() => {});
+          return { status: response.status, body: null };
+        }
+        const limit = fileSize ?? BODY_LIMIT;
         const size = response.headers.get('content-length');
-        if (size !== null && Number(size) > BODY_LIMIT) {
+        if (size !== null && (!/^\d+$/.test(size) || Number(size) > limit)) {
           void response.body?.cancel().catch(() => {});
           throw new TransportError('payload_too_large');
         }
         const reader = response.body?.getReader();
-        if (!reader) return { status: response.status, body: null };
+        if (!reader) {
+          if (fileSize !== undefined) throw new TransportError('invalid_file');
+          return { status: response.status, body: null };
+        }
         const chunks: Uint8Array[] = [];
         let total = 0;
         const cancel = () => {
@@ -352,7 +399,7 @@ export class TeamsApi {
             const part = await reader.read();
             if (part.done) break;
             total += part.value.byteLength;
-            if (total > BODY_LIMIT) {
+            if (total > limit) {
               void reader.cancel().catch(() => {});
               throw new TransportError('payload_too_large');
             }
@@ -367,6 +414,18 @@ export class TeamsApi {
         for (const chunk of chunks) {
           bytes.set(chunk, offset);
           offset += chunk.byteLength;
+        }
+        if (fileSize !== undefined) {
+          if (total !== fileSize) throw new TransportError('invalid_file');
+          return {
+            status: response.status,
+            body: {
+              bytes,
+              mime:
+                response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ??
+                'application/octet-stream',
+            },
+          };
         }
         if (!total) return { status: response.status, body: null };
         try {

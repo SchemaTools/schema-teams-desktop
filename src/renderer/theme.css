@@ -505,6 +505,107 @@ button svg {
   margin-top: 7px;
   font-size: 13px;
 }
+.attachment-card {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  min-width: 0;
+}
+.attachment-card .attachment-meta {
+  margin-top: 0;
+}
+.attachment-meta svg {
+  flex: none;
+}
+.attachment-preview {
+  display: block;
+  max-width: 100%;
+  max-height: 320px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.attachment-preview-button {
+  display: block;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: zoom-in;
+  max-width: 100%;
+}
+.attachment-dialog {
+  max-width: 92vw;
+  max-height: 92vh;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--body);
+  background: var(--panel);
+  box-shadow: var(--shadow-raised);
+}
+.attachment-dialog::backdrop {
+  background: rgb(0 0 0 / 65%);
+}
+.attachment-dialog header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.attachment-dialog header b {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.attachment-dialog button {
+  flex: none;
+  border: 0;
+  border-radius: 16px;
+  padding: 6px 12px;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+.attachment-dialog img {
+  display: block;
+  max-width: 85vw;
+  max-height: 75vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  margin: auto;
+}
+.attachment-preview-state,
+.attachment-feedback {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.attachment-feedback[role='alert'] {
+  color: var(--error);
+}
+.attachment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  margin-top: 7px;
+}
+.attachment-actions button,
+.attachment-preview-retry {
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  padding: 3px 0;
+  font-size: 12px;
+}
+.attachment-actions button:hover:not(:disabled),
+.attachment-preview-retry:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .attachment-meta small {
   display: block;
   color: var(--muted);

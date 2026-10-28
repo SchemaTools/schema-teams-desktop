@@ -62,6 +62,15 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       return only('url') && text(r.url, 16000);
     case 'open.path':
       return only('path', 'reveal') && text(r.path, 32767) && typeof r.reveal === 'boolean';
+    case 'file.preview':
+    case 'file.action':
+      return (
+        only('chatId', 'messageId', 'fileId', ...(r.kind === 'file.action' ? ['action'] : [])) &&
+        id(r.chatId) &&
+        id(r.messageId) &&
+        id(r.fileId) &&
+        (r.kind === 'file.preview' || ['save', 'open', 'reveal'].includes(String(r.action)))
+      );
     case 'focus.set':
       return only('minutes') && [0, 30, 60, 480].includes(r.minutes as number);
     case 'notifications.read':

@@ -57,6 +57,7 @@ export const fixtureMessage = (
 });
 
 export async function startClientStub() {
+  const files = new Map<number, { bytes: Buffer; mime: string; status?: number }>();
   const state: FixtureState = {
     loginUserId: 1,
     healthOnline: true,
@@ -231,6 +232,24 @@ export async function startClientStub() {
       });
       return;
     }
+    const fileRoute = /^\/api\/files\/(\d+)$/.exec(path);
+    if (fileRoute && method === 'GET') {
+      const id = Number(fileRoute[1]);
+      const file = files.get(id);
+      const accessible = conversations
+        .get(chatOf(user))
+        ?.some((m) => !m.deleted && m.files.some((f) => f.fileId === id));
+      if (!file || !accessible) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      res.writeHead(file.status ?? 200, {
+        'content-type': file.mime,
+        'content-length': String(file.bytes.length),
+      });
+      res.end(file.bytes);
+      return;
+    }
     if (
       !['GET', 'HEAD', 'OPTIONS'].includes(method) &&
       req.headers['x-csrf-token'] !== csrfFor(user)
@@ -360,6 +379,7 @@ export async function startClientStub() {
   return {
     url: `http://127.0.0.1:${port}/`,
     state,
+    files,
     messages: (chatId = 4) => conversations.get(chatId) ?? [],
     push: (text: string, chatId = 4, emit = true) => {
       const message = fixtureMessage(nextId++, chatId, text, chatId === 4 ? 2 : 1);
