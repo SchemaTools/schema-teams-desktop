@@ -290,6 +290,38 @@ for (const display of [
   });
 }
 
+test('перенос неподвижного окна за пределы монитора возвращает его в стопку', async () => {
+  await withToast(async ({ app, popup }) => {
+    await popup.mouse.move(-20, -20);
+    const area = await app.evaluate(({ screen, BrowserWindow }) => {
+      const area = screen.getPrimaryDisplay().workArea;
+      const win = BrowserWindow.getAllWindows().find(
+        (w) => w.getTitle() === 'Schema Teams — уведомление',
+      );
+      if (!win) throw new Error('Нет окна уведомления');
+      win.setPosition(area.x + area.width + 100, area.y + 60);
+      return area;
+    });
+    await expect
+      .poll(async () =>
+        app.evaluate(({ BrowserWindow }, area) => {
+          const win = BrowserWindow.getAllWindows().find(
+            (w) => w.getTitle() === 'Schema Teams — уведомление',
+          );
+          if (!win) return false;
+          const bounds = win.getBounds();
+          return (
+            bounds.x >= area.x &&
+            bounds.y >= area.y &&
+            bounds.x + bounds.width <= area.x + area.width &&
+            bounds.y + bounds.height <= area.y + area.height
+          );
+        }, area),
+      )
+      .toBe(true);
+  });
+});
+
 test('закрытие уведомления не отправляет набранный черновик', async () => {
   await withToast(async ({ popup, profile }) => {
     await popup.locator('#reply').fill('неотправленный черновик');

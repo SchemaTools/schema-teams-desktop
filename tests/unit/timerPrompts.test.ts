@@ -309,6 +309,22 @@ describe('TimerPrompts: политика показа и явные действ
     expect(harness.allows).not.toHaveBeenCalled();
   });
 
+  it('фокус и выключенные уведомления не занимают место в общей стопке', () => {
+    const f = fixture();
+    f.state.focusUntil = new Date(NOW + 3600000).toISOString();
+    f.prompts.poll();
+    expect(harness.show).not.toHaveBeenCalled();
+    f.state.focusUntil = null;
+    f.settings.notifications.enabled = false;
+    forward();
+    f.prompts.poll();
+    expect(harness.show).not.toHaveBeenCalled();
+    f.settings.notifications.enabled = true;
+    forward();
+    f.prompts.poll();
+    expect(harness.show).toHaveBeenCalledTimes(1);
+  });
+
   it('destroy снимает слушатели и закрывает только собственные окна общего host', () => {
     const f = fixture();
     f.prompts.poll();

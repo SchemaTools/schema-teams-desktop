@@ -136,7 +136,10 @@ export class TimerPrompts {
     const state = this.o.getState();
     this.absence.observe(state, now);
     for (const spec of [...this.active.values()]) {
-      if (!this.eligible(spec, now)) this.o.toasts.dismiss(spec.id);
+      if (!this.eligible(spec, now)) {
+        this.active.delete(spec.id);
+        this.o.toasts.dismiss(spec.id);
+      }
     }
     if (this.away || !state.ready || !state.user) return;
     const warning = this.absence.warning;
@@ -181,6 +184,9 @@ export class TimerPrompts {
       delayMs: 0,
     };
     this.meta.set(spec, item);
+    // Запрещённое локальными правилами напоминание не должно занимать место
+    // в общей стопке или вытеснять разрешённое @упоминание во время фокуса.
+    if (!this.eligible(spec)) return;
     this.active.set(id, spec);
     this.o.toasts.show(spec);
   }

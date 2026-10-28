@@ -35,6 +35,7 @@ interface Options {
 
 export class CustomToasts {
   private readonly entries = new Map<string, Entry>();
+  private arranging = false;
   private readonly onIpc = (event: IpcMainEvent, raw: unknown) => this.receive(event, raw);
   private readonly reposition = () => this.layout();
 
@@ -97,6 +98,10 @@ export class CustomToasts {
     const url = customToastPage(spec);
     const entry: Entry = { win, spec, url, height, hover: false, draft: false, sent: false };
     this.entries.set(spec.id, entry);
+    // Окна неподвижны для сотрудника; если Windows меняет их геометрию при
+    // показе или смене DPI, возвращаем всю стопку в целевую рабочую область.
+    win.on('move', this.reposition);
+    win.on('resize', this.reposition);
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (event) => event.preventDefault());
     win.webContents.on('will-redirect', (event) => event.preventDefault());
@@ -133,6 +138,8 @@ export class CustomToasts {
     }
     this.layout();
     entry.win.showInactive();
+    // Применяем нужную геометрию также к уже показанному окну Windows.
+    this.layout();
     this.arm(entry);
     this.o.onShow(entry.spec);
   }
@@ -154,6 +161,16 @@ export class CustomToasts {
   }
 
   private layout(): void {
+    if (this.arranging) return;
+    this.arranging = true;
+    try {
+      this.arrange();
+    } finally {
+      this.arranging = false;
+    }
+  }
+
+  private arrange(): void {
     const area = screen.getPrimaryDisplay().workArea;
     // После смены масштаба/монитора уменьшаем окна, сохраняя уже набранные черновики.
     const availableHeight = Math.floor(
@@ -165,12 +182,21 @@ export class CustomToasts {
       const height = Math.min(entry.height, Math.max(1, availableHeight));
       const width = Math.min(WIDTH, area.width - GAP * 2);
       bottom -= height;
-      entry.win.setBounds({
+      const target = {
         x: area.x + area.width - width - GAP,
         y: Math.max(area.y + GAP, bottom),
         width,
         height,
-      });
+      };
+      const current = entry.win.getBounds();
+      // Округление DIP на Windows 125% даёт 1–2 px. Не создаём цикл
+      // move/resize из-за этих округлений при программном setBounds.
+      if (
+        (['x', 'y', 'width', 'height'] as const).some(
+          (key) => Math.abs(current[key] - target[key]) > 2,
+        )
+      )
+        entry.win.setBounds(target);
       bottom -= GAP;
     }
   }
