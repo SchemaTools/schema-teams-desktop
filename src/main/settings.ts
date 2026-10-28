@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isRect, type WindowState } from './windowState';
+import { isReminderTime } from './timer/reminders';
 
 export interface Settings {
   /** Адрес сервера; пусто — адрес из сборки */
@@ -15,6 +16,7 @@ export interface Settings {
   /** Подсказка «работает в трее» уже показана (ТЗ, 4.3, Д-О-3) */
   trayHintShown: boolean;
   notifications: { enabled: boolean; sound: boolean; preview: boolean };
+  timer: { pauseOnLock: boolean; askOnUnlock: boolean; reminderTime: string };
 }
 
 export const DEFAULTS: Settings = {
@@ -23,6 +25,7 @@ export const DEFAULTS: Settings = {
   zoomLevel: 0,
   trayHintShown: false,
   notifications: { enabled: true, sound: true, preview: true },
+  timer: { pauseOnLock: true, askOnUnlock: true, reminderTime: '18:30' },
 };
 
 export const ZOOM_MIN = -3;
@@ -30,7 +33,12 @@ export const ZOOM_MAX = 3;
 
 /** Приводит прочитанный файл к настройкам: неизвестное и негодное — по умолчанию. */
 export function normalizeSettings(raw: unknown): Settings {
-  const s: Settings = { ...DEFAULTS, window: {}, notifications: { ...DEFAULTS.notifications } };
+  const s: Settings = {
+    ...DEFAULTS,
+    window: {},
+    notifications: { ...DEFAULTS.notifications },
+    timer: { ...DEFAULTS.timer },
+  };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
   if (typeof r.serverUrl === 'string' && r.serverUrl.trim() !== '')
@@ -42,6 +50,13 @@ export function normalizeSettings(raw: unknown): Settings {
     for (const key of ['enabled', 'sound', 'preview'] as const) {
       if (typeof n[key] === 'boolean') s.notifications[key] = n[key];
     }
+  }
+  if (typeof r.timer === 'object' && r.timer !== null) {
+    const t = r.timer as Record<string, unknown>;
+    for (const key of ['pauseOnLock', 'askOnUnlock'] as const) {
+      if (typeof t[key] === 'boolean') s.timer[key] = t[key];
+    }
+    if (isReminderTime(t.reminderTime)) s.timer.reminderTime = t.reminderTime;
   }
   if (typeof r.zoomLevel === 'number' && Number.isFinite(r.zoomLevel)) {
     s.zoomLevel = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, r.zoomLevel));

@@ -11,6 +11,7 @@ export interface DesktopState {
   focusUntil: string | null;
   timer: DesktopTimer;
   timerReceivedAt: number;
+  timerWarning: string;
 }
 export function initialState(): DesktopState {
   return {
@@ -23,6 +24,7 @@ export function initialState(): DesktopState {
     focusUntil: null,
     timer: { state: 'idle', task: null, startedAt: null, elapsedSec: 0, reason: null },
     timerReceivedAt: Date.now(),
+    timerWarning: '',
   };
 }
 export function elapsed(state: DesktopState, now = Date.now()): number {

@@ -58,6 +58,17 @@ export const S = {
   desktopResume: 'Продолжить',
   desktopStop: 'Закончить',
   desktopChange: 'Сменить',
+  timerSettings: 'Настройки учёта времени…',
+  timerUpgrade: 'Для автоматической паузы при блокировке требуется обновление сервера.',
+  timerUnconfirmedTitle: 'Автоматическая пауза не подтверждена',
+  timerUnconfirmed:
+    'После блокировки или сна таймер мог продолжать идти. Проверьте таймер и трудозатраты в Teams.',
+  timerReview: 'Проверить таймер',
+  timerDismiss: 'Понятно',
+  timerReminderTitle: 'Таймер ещё идёт',
+  timerStillWorking: 'Ещё работаю',
+  timerFinish: 'Закончить работу',
+  timerChanged: 'Таймер изменился. Откройте его из меню ещё раз.',
   pathUnavailableTitle: 'Папка недоступна',
   pathUnavailableBody:
     'Компьютер не видит этот адрес. Возможно, нет доступа к этой папке, сервер выключен или вы не в офисной сети.',

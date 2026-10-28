@@ -6,12 +6,20 @@ import { S } from '../strings';
 
 export class ServerPages {
   private win?: BrowserWindow;
+  private kind?: 'pick' | 'finish';
   constructor(private readonly server: URL) {}
   open(kind: 'pick' | 'finish', tray: Rectangle): void {
     if (this.win && !this.win.isDestroyed()) {
-      this.win.show();
-      this.win.focus();
-      return;
+      // Страница выбора сама переходит в /desktop/finish?next=… . Ориентируемся
+      // на текущий URL, сохраняя уже открытую форму того же вида и её черновик.
+      const current = this.win.webContents.getURL();
+      const currentKind = current ? new URL(current).pathname.slice('/desktop/'.length) : this.kind;
+      if (currentKind === kind) {
+        this.win.show();
+        this.win.focus();
+        return;
+      }
+      this.win.close();
     }
     const area = screen.getDisplayMatching(tray).workArea;
     const width = Math.min(460, area.width - 24),
@@ -34,6 +42,7 @@ export class ServerPages {
       },
     });
     this.win = win;
+    this.kind = kind;
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (event) => {
       if (!isServerUrl(event.url, this.server)) event.preventDefault();

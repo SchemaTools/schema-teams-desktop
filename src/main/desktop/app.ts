@@ -21,6 +21,8 @@ import type { Logger } from '../logger';
 import { encodePng } from '../png';
 import { S } from '../strings';
 import { PathService } from '../paths/service';
+import { TimerPrompts } from '../timer/prompts';
+import { TimerPreferences } from '../timer/preferences';
 
 interface Options {
   main: MainWindow;
@@ -46,6 +48,8 @@ export class DesktopApp {
   private readonly bridge: ServerBridge;
   private readonly pages: ServerPages;
   private readonly paths: PathService;
+  private readonly timers: TimerPrompts;
+  private readonly timerPreferences: TimerPreferences;
   private readonly tick: NodeJS.Timeout;
   private readonly theme = () => this.update();
   private readonly windowChanged = () => {
@@ -60,20 +64,33 @@ export class DesktopApp {
     this.paths = new PathService({ log: o.log });
     this.pages = new ServerPages(o.server);
     this.toasts = new CustomToasts({
-      beforeShow: (spec) => this.beforeShow(spec),
+      beforeShow: (spec) =>
+        this.timers?.owns(spec) ? this.timers.beforeShow(spec) : this.beforeShow(spec),
       onReply: (spec, text) => this.reply(spec, text),
       onButton: (spec, index) => {
+        if (this.timers?.owns(spec)) {
+          this.timers.button(spec, index);
+          return;
+        }
         void this.button(spec, index);
       },
       onOpen: (spec) => {
+        if (this.timers?.owns(spec)) {
+          this.timers.open(spec);
+          return;
+        }
         const item = this.meta.get(spec);
         if (item && item.owner === this.state.user?.id) void this.navigate(item.wire.link);
       },
       onShow: (spec) => {
+        if (this.timers?.owns(spec)) {
+          this.timers.shown(spec);
+          return;
+        }
         o.log.info('уведомление показано');
         if (this.noticeEligible(spec) && o.settings.get().notifications.sound) shell.beep();
       },
-      onClose: () => {},
+      onClose: (spec) => this.timers?.closed(spec),
     });
     this.menu = new TrayMenu({
       version: app.getVersion(),
@@ -88,12 +105,32 @@ export class DesktopApp {
       onReset: () => this.reset(),
       onOpenPath: (data) => this.paths.open(data),
     });
+    this.timers = new TimerPrompts({
+      win: o.main.win,
+      getState: () => this.state,
+      settings: o.settings,
+      log: o.log,
+      toasts: this.toasts,
+      onAway: () => this.toasts.clear(),
+      onChange: () => this.update(),
+      onOpen: () => o.main.show(),
+      onFinish: () => this.menuAction('stop'),
+      onResult: (result) => this.notice(result),
+      beep: () => shell.beep(),
+    });
+    this.timerPreferences = new TimerPreferences({
+      settings: o.settings,
+      onSaved: () => this.timers.settingsChanged(),
+    });
     o.main.win.on('show', this.windowChanged);
     o.main.win.on('hide', this.windowChanged);
     o.main.win.on('focus', this.windowChanged);
     o.main.win.on('blur', this.windowChanged);
     nativeTheme.on('updated', this.theme);
-    this.tick = setInterval(() => this.update(), 30000);
+    this.tick = setInterval(() => {
+      this.timers.poll();
+      this.update();
+    }, 30000);
     this.update();
   }
   showMenu(bounds: Rectangle): void {
@@ -105,6 +142,7 @@ export class DesktopApp {
     this.toasts.clear();
     this.pages.destroy();
     this.paths.reset();
+    this.timers?.reset();
     this.menu.hide();
     this.update();
   }
@@ -133,22 +171,26 @@ export class DesktopApp {
       case 'focus':
         this.state.focusUntil = (data as DesktopEvents['focus'])?.until ?? null;
         break;
-      case 'timer':
-        this.state.timer = data as DesktopEvents['timer'];
+      case 'timer': {
+        const timer = data as DesktopEvents['timer'];
+        this.state.timer = timer;
         this.state.timerReceivedAt = Date.now();
         break;
+      }
       case 'notify':
         void this.notify(data as DesktopNotify);
         return;
     }
     this.o.log.info('событие моста', { event: name });
+    this.timers.poll();
     this.update();
   }
   private async notify(wire: DesktopNotify): Promise<void> {
     const epoch = this.epoch,
       owner = this.state.user?.id;
     const prefs = this.o.settings.get().notifications;
-    if (!owner || !this.state.ready || !this.state.online || !prefs.enabled) return;
+    if (!owner || !this.state.ready || !this.state.online || !prefs.enabled || this.timers.away)
+      return;
     // Основные правила решает страница. Дополнительная защита от запоздавшего события.
     if (focusOn(this.state) && wire.kind !== 'mention') return;
     if (!(await this.policy.allows())) {
@@ -160,7 +202,7 @@ export class DesktopApp {
     const labels = { open: S.desktopOpen, read: S.desktopRead, startTimer: S.desktopStartTask };
     const spec: ToastSpec = {
       key: wire.key,
-      id: wire.key,
+      id: `server:${wire.key}`,
       groupId: wire.chatId ? `chat:${wire.chatId}` : wire.key,
       title: wire.title,
       body: prefs.preview ? wire.text : S.desktopNewMessage,
@@ -175,6 +217,7 @@ export class DesktopApp {
     const item = this.meta.get(spec);
     return Boolean(
       item &&
+      !this.timers.away &&
       item.owner === this.state.user?.id &&
       this.state.ready &&
       this.state.online &&
@@ -245,6 +288,15 @@ export class DesktopApp {
       app.quit();
       return { ok: true };
     }
+    if (action === 'timer-settings') {
+      this.timerPreferences.open();
+      return { ok: true };
+    }
+    if (action === 'timer-dismiss' || action === 'timer-review') {
+      this.timers.dismissWarning();
+      if (action === 'timer-review') this.o.main.show();
+      return { ok: true };
+    }
     if (action === 'chat') return this.navigate('/chat');
     if (action === 'notifications') {
       this.o.main.show();
@@ -269,6 +321,7 @@ export class DesktopApp {
   }
   private update(): void {
     if (this.o.tray.isDestroyed()) return;
+    this.state.timerWarning = this.timers?.warning ?? '';
     const state = {
       count: this.state.chat + this.state.notifications,
       online: this.state.ready && this.state.online,
@@ -314,6 +367,8 @@ export class DesktopApp {
     this.bridge.destroy();
     this.pages.destroy();
     this.paths.destroy();
+    this.timers.destroy();
+    this.timerPreferences.destroy();
     this.toasts.destroy();
     this.menu.destroy();
   }

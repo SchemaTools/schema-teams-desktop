@@ -6,4 +6,8 @@
 - Интерактивный макет — `docs/mockups/` (открыть в браузере)
 - Решения — [`docs/decisions.md`](docs/decisions.md)
 
-Статус: шаг Д1 — каркас (окно Teams, трей, автозапуск, установщик без прав администратора). Команды — в [`CLAUDE.md`](CLAUDE.md).
+Статус: Д1–Д4 реализованы; ручные проверки Windows 11 и пилота остаются открыты.
+В ветке `codex/d5-timer` подготовлена клиентская часть Д5: напоминание, настройки
+времени и предупреждение после блокировки. Автоматическая пауза и очередь ждут
+серверной доработки [SERVER-D5-001](https://github.com/SchemaTools/schema-teams-desktop/blob/codex/task-exchange/tasks/SERVER-D5-001.md).
+Подробности — [`docs/d5-status.md`](docs/d5-status.md), команды — [`CLAUDE.md`](CLAUDE.md).

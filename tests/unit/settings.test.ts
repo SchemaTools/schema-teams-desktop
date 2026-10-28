@@ -24,6 +24,16 @@ describe('normalizeSettings', () => {
     expect(s.window).toEqual({ maximized: true });
     expect(s).not.toHaveProperty('extra');
   });
+  it('настройки времени мигрируют независимо и принимают только получасовые значения', () => {
+    for (const reminderTime of ['24:00', '9:00', '18:15', null, 1830])
+      expect(normalizeSettings({ timer: { reminderTime } }).timer.reminderTime).toBe('18:30');
+    expect(
+      normalizeSettings({ timer: { reminderTime: '09:00', pauseOnLock: false } }).timer,
+    ).toEqual({ reminderTime: '09:00', pauseOnLock: false, askOnUnlock: true });
+    const first = normalizeSettings(null);
+    first.timer.reminderTime = '08:00';
+    expect(normalizeSettings(null).timer.reminderTime).toBe('18:30');
+  });
 });
 
 describe('SettingsStore', () => {

@@ -148,6 +148,11 @@ export class CustomToasts {
     for (const entry of [...this.entries.values()]) entry.win.close();
   }
 
+  dismiss(id: string): void {
+    const entry = this.entries.get(id);
+    if (entry && !entry.win.isDestroyed()) entry.win.close();
+  }
+
   private layout(): void {
     const area = screen.getPrimaryDisplay().workArea;
     // После смены масштаба/монитора уменьшаем окна, сохраняя уже набранные черновики.
