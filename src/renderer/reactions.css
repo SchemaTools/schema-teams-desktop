@@ -4,7 +4,8 @@
 .message-quick-reactions {
   position: absolute;
   z-index: 3;
-  top: -14px;
+  top: auto;
+  bottom: calc(100% + 3px);
   right: 0;
   display: flex;
   align-items: center;
