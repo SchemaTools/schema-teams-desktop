@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
-import type { ChatMessage, ChatSummary, NotificationItem } from '../../src/shared/client';
+import type { ChatFile, ChatMessage, ChatSummary, NotificationItem } from '../../src/shared/client';
 
 export interface FixtureCall {
   method: string;
@@ -12,6 +12,9 @@ export interface FixtureCall {
   requestId: string | null;
   cookie: string | null;
   body: Record<string, unknown> | null;
+  contentType?: string;
+  fileName?: string;
+  bytes?: number;
 }
 export interface FixtureState {
   loginUserId: 1 | 2;
@@ -23,6 +26,11 @@ export interface FixtureState {
   socketCookies: string[];
   focusUntil: string | null;
   calls: FixtureCall[];
+  uploadStatus: number | null;
+  uploadDelayMs: number;
+  reactionStatus: number | null;
+  reactionDelayMs: number;
+  canWrite: boolean;
 }
 const names: Record<number, string> = { 1: 'Иванова И.И.', 2: 'Петров П.П.' };
 const csrfFor = (id: number) => `csrf-test-only-user-${id}`;
@@ -68,8 +76,15 @@ export async function startClientStub() {
     socketCookies: [],
     focusUntil: null,
     calls: [],
+    uploadStatus: null,
+    uploadDelayMs: 0,
+    reactionStatus: null,
+    reactionDelayMs: 0,
+    canWrite: true,
   };
   const sessions = new Map<string, number>();
+  const uploads = new Map<number, { file: ChatFile; chatId: number; userId: number }>();
+  let nextFileId = 2000;
   const conversations = new Map<number, ChatMessage[]>([
     [
       4,
@@ -165,12 +180,14 @@ export async function startClientStub() {
     const method = req.method ?? 'GET';
     const user = userOf(req);
     let body: Record<string, unknown> | null = null;
+    let rawBody = Buffer.alloc(0);
     if (method !== 'GET' && method !== 'HEAD') {
       const chunks: Buffer[] = [];
       for await (const chunk of req)
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      rawBody = Buffer.concat(chunks);
       try {
-        body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
+        body = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
       } catch {
         body = null;
       }
@@ -187,6 +204,11 @@ export async function startClientStub() {
             : null,
         cookie: req.headers.cookie ?? null,
         body,
+        ...(path.endsWith('/files') && {
+          contentType: String(req.headers['content-type'] ?? ''),
+          fileName: String(req.headers['x-file-name'] ?? ''),
+          bytes: rawBody.length,
+        }),
       });
     if (path === '/login' || path === '/signed-in') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -236,9 +258,11 @@ export async function startClientStub() {
     if (fileRoute && method === 'GET') {
       const id = Number(fileRoute[1]);
       const file = files.get(id);
-      const accessible = conversations
-        .get(chatOf(user))
-        ?.some((m) => !m.deleted && m.files.some((f) => f.fileId === id));
+      const accessible =
+        conversations
+          .get(chatOf(user))
+          ?.some((m) => !m.deleted && m.files.some((f) => f.fileId === id)) ||
+        uploads.get(id)?.userId === user;
       if (!file || !accessible) {
         denied(res, 'not_found', 404);
         return;
@@ -271,6 +295,86 @@ export async function startClientStub() {
       });
       return;
     }
+    const upload = /^\/api\/chats\/(\d+)\/files$/.exec(path);
+    if (upload && method === 'POST') {
+      const chatId = Number(upload[1]);
+      if (chatId !== chatOf(user)) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      if (!state.canWrite) {
+        denied(res, 'read_only', 403);
+        return;
+      }
+      if (state.uploadDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.uploadDelayMs));
+      if (state.uploadStatus) {
+        denied(res, state.uploadStatus === 403 ? 'forbidden' : 'server_error', state.uploadStatus);
+        return;
+      }
+      let fileName: string;
+      try {
+        fileName = decodeURIComponent(String(req.headers['x-file-name'] ?? ''));
+      } catch {
+        denied(res, 'validation', 400);
+        return;
+      }
+      if (!fileName || !rawBody.length || rawBody.length > 50 * 1024 * 1024) {
+        denied(res, 'validation', 400);
+        return;
+      }
+      const mime = rawBody.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+        ? 'image/png'
+        : 'application/octet-stream';
+      const file: ChatFile = {
+        fileId: nextFileId++,
+        fileName,
+        size: rawBody.length,
+        mime,
+        isImage: mime === 'image/png',
+      };
+      uploads.set(file.fileId, { file, chatId, userId: user });
+      files.set(file.fileId, { bytes: rawBody, mime });
+      json(res, 201, file);
+      return;
+    }
+    const reaction = /^\/api\/chats\/(\d+)\/messages\/(\d+)\/reactions(?:\/([a-z]+))?$/.exec(path);
+    if (reaction && ['POST', 'DELETE'].includes(method)) {
+      const chatId = Number(reaction[1]),
+        messageId = Number(reaction[2]);
+      const message = conversations.get(chatId)?.find((m) => m.id === messageId && !m.deleted);
+      if (chatId !== chatOf(user) || !message) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      if (state.reactionDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.reactionDelayMs));
+      if (state.reactionStatus) {
+        denied(
+          res,
+          state.reactionStatus === 403 ? 'forbidden' : 'server_error',
+          state.reactionStatus,
+        );
+        return;
+      }
+      const kind = method === 'POST' ? body?.kind : reaction[3];
+      if (
+        typeof kind !== 'string' ||
+        !['like', 'heart', 'done', 'look', 'laugh', 'question'].includes(kind)
+      ) {
+        denied(res, 'validation', 400);
+        return;
+      }
+      const values = message.reactions.filter((r) => r.kind !== kind);
+      const users =
+        message.reactions.find((r) => r.kind === kind)?.users.filter((u) => u.id !== user) ?? [];
+      if (method === 'POST') users.push({ id: user, shortName: names[user] ?? 'Тест' });
+      if (users.length) values.push({ kind, users });
+      message.reactions = values;
+      json(res, 200, values);
+      io.to(`user:${user}`).emit('chat:reaction', { chatId, messageId, reactions: values });
+      return;
+    }
     const chat = /^\/api\/chats\/(\d+)(?:\/(messages|read))?$/.exec(path);
     if (chat) {
       const id = Number(chat[1]);
@@ -288,7 +392,7 @@ export async function startClientStub() {
           ],
           canManageMembers: false,
           canLeave: false,
-          canWrite: true,
+          canWrite: state.canWrite,
           pinned: null,
           canPin: false,
           taskStageId: null,
@@ -305,15 +409,30 @@ export async function startClientStub() {
         return;
       }
       if (chat[2] === 'messages' && method === 'POST') {
+        if (!state.canWrite) {
+          denied(res, 'read_only', 403);
+          return;
+        }
         if (state.sendDelayMs)
           await new Promise<void>((done) => setTimeout(done, state.sendDelayMs));
         const requestId =
           typeof req.headers['idempotency-key'] === 'string' ? req.headers['idempotency-key'] : '';
+        const fileIds = body?.fileIds ?? [];
         if (
           !requestId ||
           typeof body?.text !== 'string' ||
-          !body.text.trim() ||
-          body.text.length > 4000
+          (!body.text.trim() && !(Array.isArray(fileIds) && fileIds.length > 0)) ||
+          body.text.length > 4000 ||
+          !Array.isArray(fileIds) ||
+          fileIds.length > 10 ||
+          new Set(fileIds).size !== fileIds.length ||
+          fileIds.some(
+            (fileId) =>
+              !Number.isSafeInteger(fileId) ||
+              !uploads.has(Number(fileId)) ||
+              uploads.get(Number(fileId))?.chatId !== id ||
+              uploads.get(Number(fileId))?.userId !== user,
+          )
         ) {
           denied(res, 'validation', 400);
           return;
@@ -322,6 +441,10 @@ export async function startClientStub() {
         let message = idempotency.get(key);
         if (!message) {
           message = fixtureMessage(nextId++, id, body.text, user);
+          message.files = fileIds.flatMap((fileId) => {
+            const uploaded = uploads.get(Number(fileId));
+            return uploaded ? [uploaded.file] : [];
+          });
           idempotency.set(key, message);
           messages.push(message);
           conversations.set(id, messages);
@@ -332,6 +455,12 @@ export async function startClientStub() {
             denied(res, 'internal', 500);
             return;
           }
+        } else if (
+          message.text !== body.text ||
+          JSON.stringify(message.files.map((f) => f.fileId)) !== JSON.stringify(fileIds)
+        ) {
+          denied(res, 'idempotency_conflict', 409);
+          return;
         }
         json(res, 200, message);
         return;

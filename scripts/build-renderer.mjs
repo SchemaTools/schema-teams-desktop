@@ -12,7 +12,7 @@ await build({
   target: 'chrome150',
   minify: true,
   legalComments: 'linked',
-  loader: { '.woff': 'file', '.woff2': 'file' },
+  loader: { '.woff': 'file', '.woff2': 'file', '.png': 'file' },
   assetNames: 'assets/[name]-[hash]',
 });
 await copyFile('src/renderer/index.html', 'dist/renderer/index.html');
@@ -29,5 +29,9 @@ for (const [name, file] of [
   );
 await writeFile(
   'dist/renderer/licenses/README.txt',
-  'React 18.3.1, React DOM 18.3.1, Phosphor Icons 2.1.10: MIT. Inter and IBM Plex Mono 5.3.0: OFL-1.1. Full license texts accompany this file.\n',
+  'React 18.3.1, React DOM 18.3.1, Phosphor Icons 2.1.10, Microsoft Fluent Emoji 3D: MIT. Inter and IBM Plex Mono 5.3.0: OFL-1.1. Full license texts accompany this file.\n',
+);
+await copyFile(
+  'src/renderer/assets/reactions/LICENSE.txt',
+  'dist/renderer/licenses/fluent-emoji.txt',
 );

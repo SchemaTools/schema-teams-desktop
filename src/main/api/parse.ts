@@ -108,7 +108,7 @@ export function list(v: unknown): ChatList {
   const x = object(v);
   return { items: array(x.items, summary), unreadTotal: count(x.unreadTotal) };
 }
-const file = (v: unknown): ChatFile => {
+export const file = (v: unknown): ChatFile => {
   const x = object(v);
   return {
     fileId: id(x.fileId),
@@ -122,6 +122,7 @@ const reaction = (v: unknown): ChatReaction => {
   const x = object(v);
   return { kind: text(x.kind, 100), users: array(x.users, person) };
 };
+export const reactions = (v: unknown): ChatReaction[] => array(v, reaction, 100);
 const poll = (v: unknown): ChatPoll => {
   const x = object(v);
   return {

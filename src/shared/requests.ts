@@ -45,13 +45,39 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       );
     case 'chat.send':
       return (
-        only('chatId', 'text', 'requestId') &&
+        only('chatId', 'text', 'requestId', 'fileIds') &&
         id(r.chatId) &&
         text(r.text, 4000) &&
-        (r.text as string).trim().length > 0 &&
+        (r.fileIds === undefined ||
+          (Array.isArray(r.fileIds) &&
+            r.fileIds.length <= 10 &&
+            r.fileIds.every(id) &&
+            new Set(r.fileIds).size === r.fileIds.length)) &&
+        ((r.text as string).trim().length > 0 ||
+          (Array.isArray(r.fileIds) && r.fileIds.length > 0)) &&
         typeof r.requestId === 'string' &&
         /^[A-Za-z0-9._:-]{8,100}$/.test(r.requestId)
       );
+    case 'chat.reaction':
+      return (
+        only('chatId', 'messageId', 'reaction', 'remove') &&
+        id(r.chatId) &&
+        id(r.messageId) &&
+        typeof r.reaction === 'string' &&
+        ['like', 'done', 'look', 'heart', 'laugh', 'question'].includes(r.reaction) &&
+        typeof r.remove === 'boolean'
+      );
+    case 'file.pick':
+      return (
+        only('chatId', 'limit') &&
+        id(r.chatId) &&
+        typeof r.limit === 'number' &&
+        Number.isSafeInteger(r.limit) &&
+        r.limit >= 1 &&
+        r.limit <= 10
+      );
+    case 'file.paste':
+      return only('chatId') && id(r.chatId);
     case 'chat.read':
       return only('chatId', 'upTo') && id(r.chatId) && id(r.upTo);
     case 'chat.view':

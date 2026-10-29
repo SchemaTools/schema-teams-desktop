@@ -1,0 +1,189 @@
+.message-with-reactions {
+  position: relative;
+}
+.message-quick-reactions {
+  position: absolute;
+  z-index: 3;
+  top: -14px;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: max-content;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  background: var(--panel);
+  box-shadow: var(--shadow-raised);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+.message-row:not(.outgoing) .message-quick-reactions {
+  right: auto;
+  left: 0;
+}
+.message-row:hover .message-quick-reactions,
+.message-row:focus-within .message-quick-reactions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+.reaction-choice {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 3px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+.reaction-choice:hover:not(:disabled),
+.reaction-choice:focus-visible {
+  background: var(--hover);
+}
+.reaction-choice[aria-pressed='true'] {
+  background: var(--accent-soft);
+}
+.reaction-choice img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  transition: transform 0.45s cubic-bezier(0.2, 1.6, 0.3, 1);
+}
+.message-row:hover .reaction-choice img,
+.message-row:focus-within .reaction-choice img {
+  animation: reaction-sway 2.8s ease-in-out infinite;
+}
+.reaction-choice:nth-child(even) img {
+  animation-delay: -1.4s;
+}
+.message-row .reaction-choice:hover:not(:disabled) img,
+.message-row .reaction-choice:focus-visible img {
+  animation: none;
+  transform: scale(1.18);
+}
+.message-reaction-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.message-reaction-badges:empty {
+  display: none;
+}
+.reaction-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 42px;
+  min-height: 30px;
+  margin-top: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  color: var(--body);
+  background: var(--hover);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.reaction-badge:disabled {
+  opacity: 1;
+  cursor: default;
+}
+.reaction-badge.own-reaction {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.reaction-badge:hover:not(:disabled) {
+  filter: brightness(0.96);
+}
+.reaction-badge img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+.reaction-badge img.reaction-pulse {
+  animation: reaction-pop 0.5s cubic-bezier(0.2, 1.6, 0.3, 1) both;
+}
+.reaction-ring {
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--accent-text);
+  border-radius: inherit;
+  pointer-events: none;
+  animation: reaction-ring 0.5s ease-out both;
+}
+.reaction-pending,
+.reaction-error {
+  display: block;
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 17px;
+}
+.reaction-pending {
+  color: var(--muted);
+}
+.reaction-error {
+  color: var(--error);
+}
+.reaction-choice:focus-visible,
+.reaction-badge:focus-visible {
+  outline: 2px solid var(--accent-text);
+  outline-offset: 2px;
+}
+@keyframes reaction-sway {
+  0%,
+  100% {
+    transform: rotate(-4deg);
+  }
+  50% {
+    transform: rotate(4deg);
+  }
+}
+@keyframes reaction-pop {
+  0% {
+    transform: scale(0.65);
+  }
+  55% {
+    transform: scale(1.3);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes reaction-ring {
+  0% {
+    opacity: 0.75;
+    transform: scale(0.9);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.4);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .message-quick-reactions,
+  .reaction-choice img,
+  .message-row:hover .reaction-choice img,
+  .message-row:focus-within .reaction-choice img,
+  .message-row .reaction-choice:hover:not(:disabled) img,
+  .message-row .reaction-choice:focus-visible img,
+  .reaction-badge img.reaction-pulse,
+  .reaction-ring {
+    animation: none;
+    transition: none;
+    transform: none;
+  }
+  .reaction-ring {
+    display: none;
+  }
+}

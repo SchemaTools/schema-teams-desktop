@@ -6,17 +6,26 @@ import {
   Buildings,
   ChatCircleDots,
   Check,
+  File,
   GearSix,
   List,
   Moon,
   PaperPlaneTilt,
+  Paperclip,
   SignIn,
   SignOut,
   Stack,
   User,
   WarningCircle,
+  X,
 } from '@phosphor-icons/react';
-import type { ChatDetail, ChatMessage, ChatSummary, NotificationItem } from '../shared/client';
+import type {
+  ChatDetail,
+  ChatFile,
+  ChatMessage,
+  ChatSummary,
+  NotificationItem,
+} from '../shared/client';
 import type { ClientSnapshot } from '../shared/desktop';
 import { request } from './bridge';
 import { Avatar, MessageBubble, SchemaLogo } from './content';
@@ -33,6 +42,8 @@ import {
   type Selection,
 } from './model';
 import { R } from './strings';
+import { U } from './uploadStrings';
+import './composer.css';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -52,12 +63,25 @@ const EMPTY: ClientSnapshot = {
 };
 interface Draft {
   value: string;
+  files: ChatFile[];
+  uploading: boolean;
   pending: boolean;
   error: string;
+  uploadError: string;
   uncertain: boolean;
-  intent?: { text: string; requestId: string };
+  intent?: { text: string; fileIds: number[]; requestId: string };
 }
-const emptyDraft = (): Draft => ({ value: '', pending: false, error: '', uncertain: false });
+const emptyDraft = (): Draft => ({
+  value: '',
+  files: [],
+  uploading: false,
+  pending: false,
+  error: '',
+  uploadError: '',
+  uncertain: false,
+});
+const sameFileIds = (a: number[], b: number[]) =>
+  a.length === b.length && a.every((id, index) => id === b[index]);
 
 export function App() {
   const [snapshot, setSnapshot] = useState<ClientSnapshot>(EMPTY);
@@ -247,6 +271,7 @@ export function App() {
     typeof selection === 'number' && draftOwner === owner
       ? (drafts[selection] ?? emptyDraft())
       : emptyDraft();
+  const draftIssue = [draft.error, draft.uploadError].filter(Boolean).join(' ');
 
   function markVisible() {
     cancelAnimationFrame(markFrame.current);
@@ -310,13 +335,16 @@ export function App() {
       return;
     const current = draftsRef.current[chatId] ?? emptyDraft();
     const text = current.value.trim();
-    if (!text || current.pending) return;
+    const fileIds = current.files.map((file) => file.fileId);
+    if ((!text && !fileIds.length) || current.pending || current.uploading) return;
     if (text.length > 4000) {
       patchDraft(chatId, (old) => ({ ...old, error: R.tooLong }));
       return;
     }
     const intent =
-      current.intent?.text === text ? current.intent : { text, requestId: crypto.randomUUID() };
+      current.intent?.text === text && sameFileIds(current.intent.fileIds, fileIds)
+        ? current.intent
+        : { text, fileIds, requestId: crypto.randomUUID() };
     patchDraft(chatId, (old) => ({ ...old, intent, pending: true, error: '', uncertain: false }));
     const result = await request({
       kind: 'chat.send',
@@ -324,6 +352,7 @@ export function App() {
       chatId,
       text,
       requestId: intent.requestId,
+      ...(fileIds.length && { fileIds }),
     });
     if (
       captured.epoch !== snapshotRef.current.epoch ||
@@ -340,7 +369,13 @@ export function App() {
         requestAnimationFrame(() => bottom.current?.scrollIntoView({ block: 'end' }));
       }
       patchDraft(chatId, (old) =>
-        old.value.trim() === text ? emptyDraft() : { ...old, pending: false, intent: undefined },
+        old.value.trim() === text &&
+        sameFileIds(
+          old.files.map((file) => file.fileId),
+          fileIds,
+        )
+          ? emptyDraft()
+          : { ...old, pending: false, intent: undefined },
       );
     } else
       patchDraft(chatId, (old) => ({
@@ -349,6 +384,100 @@ export function App() {
         error: result.uncertain ? R.uncertain : result.error,
         uncertain: result.uncertain === true,
       }));
+  }
+
+  async function uploadFiles(kind: 'pick' | 'paste') {
+    const captured = snapshotRef.current;
+    const chatId = selectionRef.current;
+    if (
+      captured.epoch !== snapshot.epoch ||
+      typeof chatId !== 'number' ||
+      !captured.user ||
+      captured.connection !== 'online' ||
+      shownDetail?.canWrite !== true ||
+      shownDetail.chat.id !== chatId
+    )
+      return;
+    const current = draftsRef.current[chatId] ?? emptyDraft();
+    if (current.pending) return;
+    if (current.uploading) {
+      patchDraft(chatId, (old) => ({ ...old, uploadError: U.uploadBusy }));
+      return;
+    }
+    if (current.files.length >= 10) {
+      patchDraft(chatId, (old) => ({ ...old, uploadError: U.tooMany }));
+      return;
+    }
+    patchDraft(chatId, (old) => ({ ...old, uploading: true, uploadError: '' }));
+    const validOwner = () =>
+      captured.epoch === snapshotRef.current.epoch &&
+      captured.user?.id === snapshotRef.current.user?.id;
+    if (kind === 'pick') {
+      const result = await request({
+        kind: 'file.pick',
+        epoch: captured.epoch,
+        chatId,
+        limit: 10 - current.files.length,
+      });
+      if (!validOwner()) return;
+      if (!result.ok) {
+        patchDraft(chatId, (old) => ({ ...old, uploading: false, uploadError: result.error }));
+        return;
+      }
+      patchDraft(chatId, (old) => {
+        const known = new Set(old.files.map((file) => file.fileId));
+        const incoming = result.data.items.filter((file) => {
+          if (known.has(file.fileId)) return false;
+          known.add(file.fileId);
+          return true;
+        });
+        const files = [...old.files, ...incoming];
+        return {
+          ...old,
+          uploading: false,
+          files,
+          uploadError: result.data.error ?? '',
+          ...(incoming.length > 0 && { intent: undefined, uncertain: false, error: '' }),
+        };
+      });
+    } else {
+      const result = await request({ kind: 'file.paste', epoch: captured.epoch, chatId });
+      if (!validOwner()) return;
+      if (!result.ok) {
+        patchDraft(chatId, (old) => ({ ...old, uploading: false, uploadError: result.error }));
+        return;
+      }
+      const file = result.data;
+      patchDraft(chatId, (old) =>
+        file
+          ? {
+              ...old,
+              uploading: false,
+              files: [...old.files, file],
+              error: '',
+              uploadError: '',
+              intent: undefined,
+              uncertain: false,
+            }
+          : { ...old, uploading: false, uploadError: U.noClipboardImage },
+      );
+    }
+  }
+
+  function removeAttachment(chatId: number, fileId: number) {
+    if (snapshotRef.current.epoch !== snapshot.epoch) return;
+    patchDraft(chatId, (old) =>
+      old.pending || old.uploading
+        ? old
+        : {
+            ...old,
+            files: old.files.filter((file) => file.fileId !== fileId),
+            intent: undefined,
+            error: '',
+            uploadError: '',
+            uncertain: false,
+          },
+    );
   }
 
   async function action(action: Parameters<typeof request>[0]) {
@@ -877,20 +1006,88 @@ export function App() {
                             onError={(message) => {
                               if (snapshotRef.current.epoch === snapshot.epoch) setUiError(message);
                             }}
+                            reactionsEnabled={online}
+                            onReactions={(messageId, reactions) => {
+                              if (
+                                snapshotRef.current.epoch !== snapshot.epoch ||
+                                selectionRef.current !== selectedChat.id
+                              )
+                                return;
+                              setMessages((old) =>
+                                old.map((item) =>
+                                  item.id === messageId ? { ...item, reactions } : item,
+                                ),
+                              );
+                            }}
                           />
                         </Fragment>
                       ))
                     )}
                     <div ref={bottom} />
                   </div>
+                  {(draft.files.length > 0 || draft.uploading) && (
+                    <section
+                      className="composer-uploads"
+                      aria-label={U.attachments}
+                      data-chat-id={selectedChat.id}
+                    >
+                      {draft.files.length > 0 && (
+                        <ul className="composer-upload-list">
+                          {draft.files.map((file) => (
+                            <li
+                              key={file.fileId}
+                              className="composer-upload-chip"
+                              data-file-id={file.fileId}
+                            >
+                              <File size={19} weight="duotone" aria-hidden="true" />
+                              <span className="composer-upload-copy">
+                                <span title={file.fileName}>{file.fileName}</span>
+                                <small>{U.fileSize(file.size)}</small>
+                              </span>
+                              <button
+                                type="button"
+                                aria-label={U.remove(file.fileName)}
+                                disabled={draft.pending || draft.uploading}
+                                onClick={() => removeAttachment(selectedChat.id, file.fileId)}
+                              >
+                                <X size={15} weight="bold" />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {draft.uploading && (
+                        <span className="composer-upload-status" role="status">
+                          {U.uploading}
+                        </span>
+                      )}
+                    </section>
+                  )}
                   <form
                     className="composer"
+                    aria-busy={draft.uploading || draft.pending}
                     onSubmit={(event) => {
                       event.preventDefault();
                       void send();
                     }}
                   >
                     <div className="composer-field">
+                      <button
+                        type="button"
+                        className="composer-attach-button"
+                        aria-label={U.pickFiles}
+                        title={U.limits}
+                        disabled={
+                          !online ||
+                          draft.pending ||
+                          draft.uploading ||
+                          draft.files.length >= 10 ||
+                          shownDetail?.canWrite !== true
+                        }
+                        onClick={() => void uploadFiles('pick')}
+                      >
+                        <Paperclip size={21} weight="duotone" />
+                      </button>
                       <textarea
                         rows={1}
                         aria-label={R.messagePlaceholder}
@@ -920,6 +1117,16 @@ export function App() {
                             void send();
                           }
                         }}
+                        onPaste={(event) => {
+                          if (
+                            ![...event.clipboardData.items].some(
+                              (item) => item.kind === 'file' && item.type.startsWith('image/'),
+                            )
+                          )
+                            return;
+                          event.preventDefault();
+                          void uploadFiles('paste');
+                        }}
                       />
                     </div>
                     <button
@@ -929,28 +1136,36 @@ export function App() {
                       disabled={
                         !online ||
                         shownDetail?.canWrite !== true ||
-                        !draft.value.trim() ||
-                        draft.pending
+                        (!draft.value.trim() && !draft.files.length) ||
+                        draft.pending ||
+                        draft.uploading
                       }
                     >
                       <PaperPlaneTilt size={24} weight="fill" />
                     </button>
                   </form>
-                  <div className={`compose-meta${draft.error ? ' error-copy' : ''}`} role="status">
+                  <div className={`compose-meta${draftIssue ? ' error-copy' : ''}`} role="status">
                     <span>
-                      {draft.error ||
+                      {draftIssue ||
                         (shownDetail?.canWrite === false
                           ? R.readOnly
                           : !online
                             ? R.offlineHint
-                            : draft.pending
-                              ? R.sending
-                              : R.keys)}
+                            : draft.uploading
+                              ? U.uploading
+                              : draft.pending
+                                ? R.sending
+                                : R.keys)}
                     </span>
-                    {draft.error && draft.value.trim() && (
+                    {draft.error && (draft.value.trim() || draft.files.length > 0) && (
                       <button
                         className="secondary-button"
-                        disabled={!online || draft.pending || shownDetail?.canWrite !== true}
+                        disabled={
+                          !online ||
+                          draft.pending ||
+                          draft.uploading ||
+                          shownDetail?.canWrite !== true
+                        }
                         onClick={() => void send()}
                       >
                         {R.retrySend}

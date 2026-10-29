@@ -1,9 +1,11 @@
 import { ArrowSquareOut, Check, Checks, File, FolderOpen } from '@phosphor-icons/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ChatFile, ChatMessage } from '../shared/client';
+import type { ChatFile, ChatMessage, ChatReaction } from '../shared/client';
 import { request } from './bridge';
 import { colorClass, initials, timeLabel } from './model';
 import { R } from './strings';
+import { MessageReactions } from './reactions';
+import { ReactionText } from './reactionStrings';
 
 const previewQueue: { current: () => boolean; run: () => Promise<void> }[] = [];
 let activePreviews = 0;
@@ -313,11 +315,13 @@ function Attachment({
         <span>
           {file.fileName}
           <small>
-            {new Intl.NumberFormat('ru-RU', {
-              style: 'unit',
-              unit: 'kilobyte',
-              maximumFractionDigits: 1,
-            }).format(file.size / 1024)}
+            {file.size < 1024
+              ? ReactionText.bytes(file.size)
+              : new Intl.NumberFormat('ru-RU', {
+                  style: 'unit',
+                  unit: 'kilobyte',
+                  maximumFractionDigits: 1,
+                }).format(file.size / 1024)}
           </small>
         </span>
       </div>
@@ -348,21 +352,22 @@ export function MessageBubble({
   ownId,
   read,
   onError,
+  reactionsEnabled = true,
+  onReactions,
 }: {
   message: ChatMessage;
   epoch: number;
   ownId: number;
   read: boolean;
   onError: (message: string) => void;
+  reactionsEnabled?: boolean;
+  onReactions?: (messageId: number, reactions: ChatReaction[]) => void;
 }) {
   const own = message.author?.id === ownId;
   const name = message.author?.shortName ?? R.unknownAuthor;
   const hasRich =
     !message.deleted &&
-    (message.cards.length > 0 ||
-      message.sticker !== null ||
-      message.poll !== null ||
-      message.reactions.length > 0);
+    (message.cards.length > 0 || message.sticker !== null || message.poll !== null);
   const openWeb = async () => {
     const result = await request({
       kind: 'open.site',
@@ -378,7 +383,7 @@ export function MessageBubble({
       aria-label={`${name}, ${timeLabel(message.at)}`}
     >
       {!own && <Avatar name={name} id={message.author?.id ?? 0} small />}
-      <div className="message-bubble">
+      <div className={`message-bubble${!message.deleted ? ' message-with-reactions' : ''}`}>
         {!own && <span className="message-author">{name}</span>}
         {!message.deleted && message.replyTo && (
           <blockquote className="message-quote">
@@ -410,6 +415,18 @@ export function MessageBubble({
               {R.openMessageWeb}
             </button>
           </div>
+        )}
+        {!message.deleted && (
+          <MessageReactions
+            epoch={epoch}
+            chatId={message.chatId}
+            messageId={message.id}
+            ownId={ownId}
+            reactions={message.reactions}
+            enabled={reactionsEnabled}
+            onError={onError}
+            onChange={onReactions}
+          />
         )}
         <footer className="message-footer">
           {message.editedAt && <span>{R.edited}</span>}

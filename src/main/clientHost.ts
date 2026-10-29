@@ -1,6 +1,8 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
+  dialog,
   ipcMain,
   nativeTheme,
   nativeImage,
@@ -28,6 +30,7 @@ import type { ToastSpec } from './notifications/types';
 import { WindowsNotificationPolicy } from './desktop/notificationState';
 import { PathService } from './paths/service';
 import { AttachmentService } from './files/service';
+import { UploadService } from './files/uploads';
 import { statusBitmap, badgeBitmap } from './desktop/statusBitmap';
 import { encodePng } from './png';
 import type { Logger } from './logger';
@@ -61,6 +64,7 @@ export class ClientHost {
   private readonly login?: LoginWindow;
   private readonly paths: PathService;
   private readonly files: AttachmentService;
+  private readonly uploads: UploadService;
   private readonly fileSession = session.fromPartition('client-ui');
   private readonly policy = new WindowsNotificationPolicy();
   private readonly toasts: CustomToasts;
@@ -154,6 +158,33 @@ export class ClientHost {
     this.fileSession.protocol.handle('schema-attachment', (request) =>
       this.files.response(request),
     );
+    this.uploads = new UploadService({
+      api: this.api,
+      choose: () =>
+        dialog.showOpenDialog(o.main.win, {
+          title: 'Прикрепить файлы (до 50 МБ каждый)',
+          properties: ['openFile', 'multiSelections'],
+        }),
+      clipboardImage: async () => {
+        const items = await clipboard.read();
+        const item = items.find((entry) => entry.types.includes('image/png'));
+        if (!item) return null;
+        const blob = await item.getType('image/png');
+        if (blob.size > 50 * 1024 * 1024) throw new Error('image-size');
+        const bytes = Buffer.from(await blob.arrayBuffer());
+        if (
+          bytes.length < 24 ||
+          !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
+          bytes.toString('ascii', 12, 16) !== 'IHDR'
+        )
+          throw new Error('image-format');
+        const width = bytes.readUInt32BE(16),
+          height = bytes.readUInt32BE(20);
+        if (!width || !height || width > 8192 || height > 8192 || width * height > 20 * 1024 * 1024)
+          throw new Error('image-size');
+        return bytes;
+      },
+    });
     this.toasts = new CustomToasts({
       beforeShow: (spec) => this.beforeNotice(spec),
       onReply: async (spec, text) => {
@@ -241,6 +272,7 @@ export class ClientHost {
     this.realtime?.stop();
     this.paths.reset();
     this.files.reset();
+    this.uploads.reset();
     this.toasts.clear();
     this.counts.clear();
     this.activeChat = null;
@@ -265,6 +297,7 @@ export class ClientHost {
     this.realtime?.stop();
     this.paths.reset();
     this.files.reset();
+    this.uploads.reset();
     this.toasts.clear();
     this.activeChat = null;
     this.state = {
@@ -342,6 +375,7 @@ export class ClientHost {
       this.toasts.clear();
       this.paths.reset();
       this.files.reset();
+      this.uploads.reset();
       this.counts.clear();
     }
     this.state.user = user.data;
@@ -705,7 +739,12 @@ export class ClientHost {
           ...(r.around && { around: r.around }),
         });
       case 'chat.send': {
-        const result = await this.api.send(r.chatId, r.text, r.requestId);
+        const result = await this.api.send(r.chatId, r.text, r.requestId, r.fileIds);
+        if (result.ok) this.scheduleRefresh();
+        return result;
+      }
+      case 'chat.reaction': {
+        const result = await this.api.reactions(r.chatId, r.messageId, r.reaction, r.remove);
         if (result.ok) this.scheduleRefresh();
         return result;
       }
@@ -727,6 +766,10 @@ export class ClientHost {
         return ok(await this.paths.open({ ...r, reveal: true }));
       case 'file.preview':
         return this.files.preview(r);
+      case 'file.pick':
+        return this.uploads.pick(r, r.limit);
+      case 'file.paste':
+        return this.uploads.paste(r);
       case 'file.action':
         return this.files.action(r, r.action);
       case 'focus.set': {
@@ -860,6 +903,7 @@ export class ClientHost {
     this.toasts.destroy();
     this.paths.destroy();
     this.files.destroy();
+    this.uploads.destroy();
     this.fileSession.protocol.unhandle('schema-attachment');
     this.trayWindow?.destroy();
     ipcMain.removeHandler('client:request');

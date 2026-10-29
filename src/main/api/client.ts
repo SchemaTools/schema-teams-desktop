@@ -1,8 +1,10 @@
 import type {
   ApiResult,
   ChatDetail,
+  ChatFile,
   ChatList,
   ChatMessage,
+  ChatReaction,
   FocusState,
   FocusSummary,
   Health,
@@ -12,6 +14,7 @@ import type {
   SafeUser,
 } from '../../shared/client';
 import * as parse from './parse';
+import { validateUpload } from '../files/uploadPolicy';
 
 export interface TeamsApiOptions {
   fetch: (path: string, init?: RequestInit) => Promise<Response>;
@@ -19,6 +22,12 @@ export interface TeamsApiOptions {
 }
 export type MessageCursor = { before?: number; after?: number; around?: number };
 type Raw = { status: number; body: unknown };
+interface UploadBody {
+  bytes: Uint8Array;
+  fileName: string;
+  mime: string;
+}
+const REACTIONS = new Set(['like', 'done', 'look', 'heart', 'laugh', 'question']);
 const DEADLINE = 15000;
 const BODY_LIMIT = 2 * 1024 * 1024;
 export const FILE_LIMIT = 50 * 1024 * 1024;
@@ -42,6 +51,8 @@ const ERROR_TEXT: Record<string, string> = {
   invalid_file: 'Не удалось проверить файл. Повторите загрузку из актуального сообщения.',
   file_error: 'Не удалось сохранить или открыть файл. Проверьте доступ к папке «Загрузки».',
   busy: 'Дождитесь окончания загрузки файла.',
+  forbidden_type: 'Такие файлы нельзя прикладывать. Положите файл в папку объекта.',
+  too_large: 'Файл больше 50 МБ. Положите его в папку объекта.',
 };
 export function failure<T = never>(code: string, uncertain = false): ApiResult<T> {
   return {
@@ -153,31 +164,95 @@ export class TeamsApi {
       },
     );
   }
-  send(chatId: number, text: string, requestId: string): Promise<ApiResult<ChatMessage>> {
+  send(
+    chatId: number,
+    text: string,
+    requestId: string,
+    fileIds: number[] = [],
+  ): Promise<ApiResult<ChatMessage>> {
     if (
       !this.validId(chatId) ||
+      !Array.isArray(fileIds) ||
       typeof text !== 'string' ||
-      !text.trim() ||
+      (!text.trim() && fileIds.length === 0) ||
       text.trim().length > 4000 ||
       typeof requestId !== 'string' ||
-      !/^[A-Za-z0-9._:-]{8,100}$/.test(requestId)
+      !/^[A-Za-z0-9._:-]{8,100}$/.test(requestId) ||
+      fileIds.length > 10 ||
+      fileIds.some((id) => !this.validId(id)) ||
+      new Set(fileIds).size !== fileIds.length
     )
       return Promise.resolve(failure('validation'));
     const owner = this.owner;
     const expectedText = text.trim();
+    const expectedFiles = [...fileIds].sort((a, b) => a - b);
     return this.request(
       `/api/chats/${chatId}/messages`,
       'POST',
       (raw) => {
         const value = parse.message(raw);
-        if (value.chatId !== chatId || value.text !== expectedText || value.author?.id !== owner)
+        if (
+          value.chatId !== chatId ||
+          value.text !== expectedText ||
+          value.author?.id !== owner ||
+          value.files.length !== expectedFiles.length ||
+          value.files
+            .map((f) => f.fileId)
+            .sort((a, b) => a - b)
+            .some((id, i) => id !== expectedFiles[i])
+        )
           throw new parse.InvalidData();
         return value;
       },
-      { text: expectedText },
+      { text: expectedText, ...(fileIds.length > 0 && { fileIds: [...fileIds] }) },
       true,
       [200, 201],
       requestId,
+    );
+  }
+  upload(
+    chatId: number,
+    bytes: Uint8Array,
+    fileName: string,
+    mime: string,
+  ): Promise<ApiResult<ChatFile>> {
+    const safeMime = validateUpload(fileName, bytes, mime);
+    if (!this.validId(chatId) || safeMime === null) return Promise.resolve(failure('validation'));
+    const body: UploadBody = { bytes: Uint8Array.from(bytes), fileName, mime: safeMime };
+    return this.request(
+      `/api/chats/${chatId}/files`,
+      'POST',
+      (raw) => {
+        const value = parse.file(raw);
+        if (value.fileName !== fileName || value.size !== body.bytes.length)
+          throw new parse.InvalidData();
+        return value;
+      },
+      undefined,
+      true,
+      [201],
+      undefined,
+      body,
+    );
+  }
+  reactions(
+    chatId: number,
+    messageId: number,
+    kind: string,
+    remove: boolean,
+  ): Promise<ApiResult<ChatReaction[]>> {
+    if (
+      !this.validId(chatId) ||
+      !this.validId(messageId) ||
+      !REACTIONS.has(kind) ||
+      typeof remove !== 'boolean'
+    )
+      return Promise.resolve(failure('validation'));
+    return this.request(
+      `/api/chats/${chatId}/messages/${messageId}/reactions${remove ? `/${kind}` : ''}`,
+      remove ? 'DELETE' : 'POST',
+      parse.reactions,
+      remove ? undefined : { kind },
     );
   }
   read(chatId: number, upTo: number): Promise<ApiResult<null>> {
@@ -282,6 +357,7 @@ export class TeamsApi {
     protectedRoute = true,
     statuses = [200],
     requestId?: string,
+    upload?: UploadBody,
   ): Promise<ApiResult<T>> {
     const epoch = this.generation,
       owner = this.owner;
@@ -298,6 +374,8 @@ export class TeamsApi {
         epoch,
         protectedRoute ? this.csrf : null,
         requestId,
+        undefined,
+        upload,
       );
       if (epoch !== this.generation || (protectedRoute && owner !== this.owner))
         return failure('stale_session');
@@ -334,6 +412,7 @@ export class TeamsApi {
     csrf: string | null = null,
     requestId?: string,
     fileSize?: number,
+    upload?: UploadBody,
   ): Promise<ApiResult<Raw>> {
     const controller = new AbortController();
     this.pending.add(controller);
@@ -343,7 +422,7 @@ export class TeamsApi {
         timeout = true;
         controller.abort();
       },
-      fileSize === undefined ? DEADLINE : 60000,
+      fileSize === undefined && upload === undefined ? DEADLINE : 60000,
     );
     const aborted = new Promise<never>((_resolve, reject) =>
       controller.signal.addEventListener(
@@ -356,12 +435,17 @@ export class TeamsApi {
       const work = (async (): Promise<Raw> => {
         const headers: Record<string, string> = { accept: 'application/json' };
         if (body !== undefined) headers['content-type'] = 'application/json';
+        if (upload) {
+          headers['content-type'] = upload.mime;
+          headers['x-file-name'] = encodeURIComponent(upload.fileName);
+        }
         if (csrf && MUTATIONS.has(method)) headers['x-csrf-token'] = csrf;
         if (requestId) headers['idempotency-key'] = requestId;
         const response = await this.o.fetch(path, {
           method,
           headers,
           ...(body !== undefined && { body: JSON.stringify(body) }),
+          ...(upload && { body: new Uint8Array(upload.bytes).buffer }),
           signal: controller.signal,
           redirect: 'manual',
           credentials: 'include',

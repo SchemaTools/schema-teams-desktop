@@ -1,0 +1,38 @@
+[
+  {
+    "file": "like.png",
+    "repository": "https://github.com/microsoft/fluentui-emoji",
+    "path": "assets/Thumbs up/Default/3D/thumbs_up_3d_default.png",
+    "gitBlobSha": "f179654f56b4b2bad5669cde934d7eaefe971105"
+  },
+  {
+    "file": "done.png",
+    "repository": "https://github.com/microsoft/fluentui-emoji",
+    "path": "assets/Check mark button/3D/check_mark_button_3d.png",
+    "gitBlobSha": "3690e97e5144aafcf7acd44c7dbb1b5fe4c51c00"
+  },
+  {
+    "file": "look.png",
+    "repository": "https://github.com/microsoft/fluentui-emoji",
+    "path": "assets/Eyes/3D/eyes_3d.png",
+    "gitBlobSha": "f390e95d39bba4bca90f356f3b02f05271633d3f"
+  },
+  {
+    "file": "heart.png",
+    "repository": "https://github.com/microsoft/fluentui-emoji",
+    "path": "assets/Red heart/3D/red_heart_3d.png",
+    "gitBlobSha": "6389f0a6c7d4f7d13dbd5c4062d62051b7f76e7a"
+  },
+  {
+    "file": "laugh.png",
+    "repository": "https://github.com/microsoft/fluentui-emoji",
+    "path": "assets/Face with tears of joy/3D/face_with_tears_of_joy_3d.png",
+    "gitBlobSha": "e5c7cd692add6e53602be7ad058a9784211ca22d"
+  },
+  {
+    "file": "question.png",
+    "repository": "https://github.com/microsoft/fluentui-emoji",
+    "path": "assets/Red question mark/3D/red_question_mark_3d.png",
+    "gitBlobSha": "0ac084c4e2bea9bbb2b018f9d1c6138b87216f8c"
+  }
+]

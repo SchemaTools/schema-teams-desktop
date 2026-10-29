@@ -40,6 +40,11 @@ const h = vi.hoisted(() => ({
   fileAction: vi.fn(),
   fileReset: vi.fn(),
   fileDestroy: vi.fn(),
+  uploadPick: vi.fn(),
+  uploadPaste: vi.fn(),
+  uploadReset: vi.fn(),
+  uploadDestroy: vi.fn(),
+  reactions: vi.fn(),
   toastShow: vi.fn(),
   toastClear: vi.fn(),
   toastDestroy: vi.fn(),
@@ -110,6 +115,7 @@ vi.mock('../../src/main/api/client', async (original) => {
       setFocus = h.setFocus;
       focusSummary = h.focusSummary;
       notificationSettings = h.notificationSettings;
+      reactions = h.reactions;
     },
   };
 });
@@ -133,6 +139,14 @@ vi.mock('../../src/main/files/service', () => ({
     reset = h.fileReset;
     destroy = h.fileDestroy;
     response = vi.fn();
+  },
+}));
+vi.mock('../../src/main/files/uploads', () => ({
+  UploadService: class {
+    pick = h.uploadPick;
+    paste = h.uploadPaste;
+    reset = h.uploadReset;
+    destroy = h.uploadDestroy;
   },
 }));
 vi.mock('../../src/main/notifications/toasts', () => ({
@@ -252,6 +266,16 @@ describe('ClientHost: поколение входа проверяется в д
       { kind: 'open.path', epoch: 6, path: '\\\\server\\share\\folder', reveal: false },
       { kind: 'file.preview', epoch: 6, chatId: 4, messageId: 10, fileId: 90 },
       { kind: 'file.action', epoch: 6, chatId: 4, messageId: 10, fileId: 90, action: 'open' },
+      { kind: 'file.pick', epoch: 6, chatId: 4, limit: 10 },
+      { kind: 'file.paste', epoch: 6, chatId: 4 },
+      {
+        kind: 'chat.reaction',
+        epoch: 6,
+        chatId: 4,
+        messageId: 10,
+        reaction: 'like',
+        remove: false,
+      },
     ] satisfies DesktopRequest[])
       expect(await invoke(request)).toMatchObject({ ok: false, code: 'stale_session' });
     expect(h.send).not.toHaveBeenCalled();
@@ -259,6 +283,9 @@ describe('ClientHost: поколение входа проверяется в д
     expect(h.pathOpen).not.toHaveBeenCalled();
     expect(h.filePreview).not.toHaveBeenCalled();
     expect(h.fileAction).not.toHaveBeenCalled();
+    expect(h.uploadPick).not.toHaveBeenCalled();
+    expect(h.uploadPaste).not.toHaveBeenCalled();
+    expect(h.reactions).not.toHaveBeenCalled();
   });
   it('UNC из старого интерфейса всё равно только показывается в папке', async () => {
     const { invoke } = fixture();

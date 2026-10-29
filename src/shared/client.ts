@@ -49,6 +49,11 @@ export interface ChatFile {
   mime: string;
   isImage: boolean;
 }
+export interface FilePickResult {
+  items: ChatFile[];
+  canceled: boolean;
+  error?: string;
+}
 export interface ChatReaction {
   kind: string;
   users: PersonRef[];

@@ -1,10 +1,13 @@
 import type {
   ApiResult,
   ChatDetail,
+  ChatFile,
+  ChatReaction,
   ChatList,
   ChatMessage,
   ChatSummary,
   FocusState,
+  FilePickResult,
   MessagePage,
   NotificationItem,
   SafeUser,
@@ -44,13 +47,22 @@ export type DesktopRequest =
       | { kind: 'chat.list' }
       | { kind: 'chat.detail'; chatId: number }
       | { kind: 'chat.messages'; chatId: number; before?: number; after?: number; around?: number }
-      | { kind: 'chat.send'; chatId: number; text: string; requestId: string }
+      | { kind: 'chat.send'; chatId: number; text: string; requestId: string; fileIds?: number[] }
+      | {
+          kind: 'chat.reaction';
+          chatId: number;
+          messageId: number;
+          reaction: string;
+          remove: boolean;
+        }
       | { kind: 'chat.read'; chatId: number; upTo: number }
       | { kind: 'chat.view'; chatId: number | null }
       | { kind: 'open.site'; path: string }
       | { kind: 'open.link'; url: string }
       | { kind: 'open.path'; path: string; reveal: boolean }
       | { kind: 'file.preview'; chatId: number; messageId: number; fileId: number }
+      | { kind: 'file.pick'; chatId: number; limit: number }
+      | { kind: 'file.paste'; chatId: number }
       | {
           kind: 'file.action';
           chatId: number;
@@ -74,12 +86,15 @@ export interface DesktopResponseMap {
   'chat.detail': ChatDetail;
   'chat.messages': MessagePage;
   'chat.send': ChatMessage;
+  'chat.reaction': ChatReaction[];
   'chat.read': null;
   'chat.view': null;
   'open.site': null;
   'open.link': null;
   'open.path': 'ok' | 'blocked' | 'unavailable';
   'file.preview': { url: string };
+  'file.pick': FilePickResult;
+  'file.paste': ChatFile | null;
   'file.action': 'saved' | 'opened' | 'revealed' | 'canceled' | 'blocked';
   'focus.set': null;
   'notifications.read': null;
