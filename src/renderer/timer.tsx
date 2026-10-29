@@ -25,6 +25,7 @@ import {
 } from '../shared/time';
 import { request } from './bridge';
 import './timer.css';
+import { TimerSettings } from './timerSettings';
 
 export function TimerElapsed({
   timer,
@@ -647,6 +648,7 @@ export function TimerPanel({
               )}
             </section>
           ) : null}
+          <TimerSettings snapshot={snapshot} workdayEnd={options?.workday.end} />
           <p className="timer-footnote">
             Автопауза при блокировке и отложенные команды станут доступны после обновления сервера.
             Сейчас таймер управляется вручную.

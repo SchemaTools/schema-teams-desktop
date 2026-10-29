@@ -25,6 +25,13 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       );
     case 'timer.absenceDismiss':
       return only('id') && id(r.id);
+    case 'timer.preferences':
+      return (
+        only('reminderTime') &&
+        typeof r.reminderTime === 'string' &&
+        r.reminderTime.length === 5 &&
+        /^([01]\d|2[0-3]):(00|30)$/.test(r.reminderTime)
+      );
     case 'timer.start':
       return (
         only('taskId', 'expected') &&

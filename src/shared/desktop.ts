@@ -47,6 +47,7 @@ export interface ClientSnapshot {
   timerObservedAt?: number;
   recentTimeTaskIds?: number[];
   timerAbsence?: { id: number; from: number; to: number } | null;
+  timerReminderTime?: string;
   navigateTimer?: { mode: 'pick' | 'finish'; taskId?: number; nonce: number } | null;
 }
 export type DesktopRequest =
@@ -57,6 +58,7 @@ export type DesktopRequest =
       | { kind: 'timer.read' | 'timer.options' }
       | { kind: 'timer.open'; mode: 'pick' | 'finish'; taskId?: number }
       | { kind: 'timer.absenceDismiss'; id: number }
+      | { kind: 'timer.preferences'; reminderTime: string }
       | { kind: 'timer.start'; taskId: number; expected: TimerExpected | null }
       | { kind: 'timer.pause'; expected: TimerExpected }
       | { kind: 'timer.resume'; expected: TimerExpected }
@@ -116,6 +118,7 @@ export interface DesktopResponseMap {
   'timer.options': TimeOptions;
   'timer.open': null;
   'timer.absenceDismiss': null;
+  'timer.preferences': null;
   'timer.start': WorkTimer | null;
   'timer.pause': WorkTimer | null;
   'timer.resume': WorkTimer | null;

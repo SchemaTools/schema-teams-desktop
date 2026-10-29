@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startClientStub, type ClientStub } from './clientStub';
@@ -26,6 +26,12 @@ let stub: ClientStub, app: ElectronApplication | undefined, profile: string;
 test.beforeEach(async () => {
   stub = await startClientStub();
   profile = mkdtempSync(join(tmpdir(), 'stdesk-timer-'));
+  const now = new Date(),
+    day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  writeFileSync(
+    join(profile, 'settings.json'),
+    JSON.stringify({ timerReminderSeen: { '1': day, '2': day } }),
+  );
 });
 test.afterEach(async () => {
   await app?.close().catch(() => undefined);

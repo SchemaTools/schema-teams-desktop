@@ -24,6 +24,8 @@ import * as parse from './api/parse';
 import { workTimer } from './api/time';
 import type { WorkTimer } from '../shared/time';
 import { TimerAbsence } from './timer/absence';
+import { TimerReminders, isReminderTime, type ReminderTicket } from './timer/reminders';
+import { elapsedAt, timerClock } from '../shared/time';
 import { notificationAllowed } from './api/notificationPrefs';
 import { RealtimeClient, type RealtimeEvent } from './realtime/connection';
 import { CLIENT_FILE, CLIENT_URL, PARTITION, guardLocal, type MainWindow } from './mainWindow';
@@ -47,6 +49,8 @@ interface Options {
   tray: Tray;
 }
 interface Notice {
+  reminder?: ReminderTicket;
+  timerStopped?: boolean;
   epoch: number;
   owner: number;
   chatId: number | null;
@@ -95,6 +99,8 @@ export class ClientHost {
   private retry = 0;
   private timerRevision = 0;
   private readonly absence = new TimerAbsence();
+  private readonly reminders = new TimerReminders();
+  private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
   private readonly themeChanged = () => this.publish();
@@ -133,6 +139,8 @@ export class ClientHost {
     if (!this.loggingOut) void this.bootstrap();
   };
   constructor(private readonly o: Options) {
+    for (const [owner, date] of Object.entries(o.settings.get().timerReminderSeen))
+      this.reminders.remember(Number(owner), date);
     this.state = {
       connection: o.server ? 'connecting' : 'noServer',
       user: null,
@@ -216,6 +224,10 @@ export class ClientHost {
       onButton: (spec, index) => {
         const n = this.notices.get(spec);
         if (!n || !this.owned(n)) return;
+        if (n.reminder) {
+          if (this.current(n) && index === 0) this.openTimer('finish');
+          return;
+        }
         if (index === 0) this.openNotice(n);
         else if (n.chatId && n.messageId)
           void this.api.read(n.chatId, n.messageId).then(() => this.scheduleRefresh());
@@ -224,11 +236,26 @@ export class ClientHost {
       },
       onOpen: (spec) => {
         const n = this.notices.get(spec);
-        if (n && this.owned(n)) this.openNotice(n);
+        if (n && this.owned(n) && (!n.reminder || this.current(n))) this.openNotice(n);
       },
       onShow: (spec) => {
         const n = this.notices.get(spec);
-        if (n && this.current(n) && o.settings.get().notifications.sound) shell.beep();
+        if (n && this.current(n)) {
+          if (n.reminder) {
+            this.reminders.shown(n.reminder);
+            try {
+              o.settings.update({
+                timerReminderSeen: {
+                  ...o.settings.get().timerReminderSeen,
+                  [String(n.owner)]: n.reminder.date,
+                },
+              });
+            } catch {
+              o.log.warn('не удалось сохранить день напоминания');
+            }
+          }
+          if (o.settings.get().notifications.sound) shell.beep();
+        }
       },
       onClose: () => {},
     });
@@ -280,6 +307,8 @@ export class ClientHost {
     void this.bootstrap();
   }
   private invalidate(): void {
+    this.reminders.reset();
+    this.reminderId = null;
     this.absence.reset();
     this.timerRevision++;
     this.authCookie = null;
@@ -315,6 +344,8 @@ export class ClientHost {
     this.publish();
   }
   private signedOut(): void {
+    this.reminders.reset();
+    this.reminderId = null;
     this.absence.reset();
     this.timerRevision++;
     this.authCookie = null;
@@ -398,6 +429,7 @@ export class ClientHost {
     if (this.state.epoch !== this.api.epoch || this.state.user?.id !== user.data.id) {
       this.state.chats = [];
       this.absence.reset();
+      this.reminders.reset();
       this.state.unread = 0;
       this.state.notifications = [];
       this.state.notificationUnread = 0;
@@ -478,6 +510,7 @@ export class ClientHost {
       this.state.error = bad && !bad.ok ? bad.error : null;
       this.state.historyRevision = (this.state.historyRevision ?? 0) + 1;
       this.publish();
+      if (focus.ok) this.checkReminder();
     } finally {
       this.refreshing = false;
       if (this.again) {
@@ -491,6 +524,44 @@ export class ClientHost {
     this.state.timerReady = true;
     this.state.timerError = null;
     this.state.timerObservedAt = Date.now();
+    // Refresh also reads Focus. Wait for it before considering a popup.
+    if (!this.refreshing) this.checkReminder();
+  }
+  private checkReminder(): void {
+    if (this.destroyed) return;
+    const settings = this.o.settings.get(),
+      ticket = this.reminders.due(this.state, settings.timer.reminderTime);
+    if (!ticket || !this.state.timer) return;
+    const timer = this.state.timer;
+    const taskLabel = [timer.task.mark, timer.task.title].filter(Boolean).join(' · ');
+    const notice: Notice = {
+      epoch: this.api.epoch,
+      owner: ticket.owner,
+      chatId: null,
+      mention: false,
+      ordinary: true,
+      reminder: ticket,
+    };
+    if (!this.current(notice)) return;
+    const start = new Date(timer.startedAt).toLocaleTimeString('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const spec: ToastSpec = {
+      id: ticket.id,
+      key: ticket.id,
+      groupId: ticket.id,
+      title: 'Таймер ещё идёт',
+      body: settings.notifications.preview
+        ? `${taskLabel}\n${timerClock(elapsedAt(timer, this.state.timerObservedAt ?? Date.now()))} с ${start}`
+        : 'Таймер ещё идёт. Проверьте трудозатраты.',
+      hasReply: false,
+      buttons: ['■ Закончить работу', 'Ещё работаю'],
+      delayMs: 0,
+    };
+    this.reminderId = spec.id;
+    this.notices.set(spec, notice);
+    this.toasts.show(spec);
   }
   private async readTimer(): Promise<ApiResult<WorkTimer | null>> {
     const epoch = this.api.epoch,
@@ -633,7 +704,9 @@ export class ClientHost {
     const chat = item.link && /^\/chat\/(\d+)(?:\?m=(\d+))?$/.exec(item.link);
     this.showNotice(
       `notification:${item.id}`,
-      item.subject ?? item.task?.title ?? 'Schema Teams',
+      item.event === 'timer_stopped'
+        ? 'Вчерашний таймер остановлен в полночь'
+        : (item.subject ?? item.task?.title ?? 'Schema Teams'),
       item.reason ??
         item.changes.map((c) => `${c.field}: ${c.from ?? '—'} → ${c.to ?? '—'}`).join('\n'),
       {
@@ -643,8 +716,9 @@ export class ClientHost {
         ...(chat?.[2] && { messageId: Number(chat[2]) }),
         notificationId: item.id,
         link: item.link,
+        ...(item.event === 'timer_stopped' && { timerStopped: true }),
         mention: item.event === 'chat_mention',
-        ordinary: false,
+        ordinary: item.event === 'timer_stopped',
       },
     );
   }
@@ -654,9 +728,17 @@ export class ClientHost {
       key: id,
       groupId: notice.chatId ? `chat:${notice.chatId}` : id,
       title,
-      body: this.o.settings.get().notifications.preview ? body : 'Новое сообщение',
+      body: this.o.settings.get().notifications.preview
+        ? body
+        : notice.timerStopped
+          ? 'Запись трудозатрат требует проверки.'
+          : 'Новое сообщение',
       hasReply: notice.chatId !== null,
-      buttons: notice.chatId || notice.notificationId ? ['Открыть', 'Прочитано'] : ['Открыть'],
+      buttons: notice.timerStopped
+        ? ['Проверить запись', 'Прочитано']
+        : notice.chatId || notice.notificationId
+          ? ['Открыть', 'Прочитано']
+          : ['Открыть'],
       delayMs: 0,
     };
     this.notices.set(spec, notice);
@@ -668,6 +750,8 @@ export class ClientHost {
   private current(n: Notice): boolean {
     return (
       this.owned(n) &&
+      (!n.reminder ||
+        this.reminders.valid(n.reminder, this.state, this.o.settings.get().timer.reminderTime)) &&
       this.state.connection === 'online' &&
       this.o.settings.get().notifications.enabled &&
       !this.locked &&
@@ -704,7 +788,8 @@ export class ClientHost {
     return (after === 'active' || after === 'idle') && this.current(n);
   }
   private openNotice(n: Notice): void {
-    if (n.chatId) this.showChat(n.chatId, n.messageId);
+    if (n.reminder) this.openTimer('finish');
+    else if (n.chatId) this.showChat(n.chatId, n.messageId);
     else if (n.link) void this.site(n.link);
     else this.o.main.show();
   }
@@ -713,6 +798,16 @@ export class ClientHost {
       chatId,
       ...(messageId && { messageId }),
       nonce: (this.state.navigateChat?.nonce ?? 0) + 1,
+    };
+    this.o.main.show();
+    this.trayWindow?.hide();
+    this.publish();
+  }
+  private openTimer(mode: 'pick' | 'finish', taskId?: number): void {
+    this.state.navigateTimer = {
+      mode,
+      ...(taskId && { taskId }),
+      nonce: (this.state.navigateTimer?.nonce ?? 0) + 1,
     };
     this.o.main.show();
     this.trayWindow?.hide();
@@ -834,14 +929,26 @@ export class ClientHost {
     if (!this.api.owner || this.state.user?.mustChangePassword) return failure('unauthenticated');
     switch (r.kind) {
       case 'timer.open':
-        this.state.navigateTimer = {
-          mode: r.mode,
-          ...(r.taskId && { taskId: r.taskId }),
-          nonce: (this.state.navigateTimer?.nonce ?? 0) + 1,
-        };
-        this.o.main.show();
-        this.trayWindow?.hide();
+        this.openTimer(r.mode, r.taskId);
+        return ok(null);
+      case 'timer.preferences':
+        if (!isReminderTime(r.reminderTime)) return failure('validation');
+        try {
+          this.o.settings.update({
+            timer: { ...this.o.settings.get().timer, reminderTime: r.reminderTime },
+          });
+        } catch {
+          return {
+            ok: false,
+            code: 'settings_error',
+            error: 'Не удалось сохранить настройку. Повторите действие.',
+            retryable: false,
+          };
+        }
+        if (this.reminderId) this.toasts.dismiss(this.reminderId);
+        this.reminders.reset();
         this.publish();
+        this.checkReminder();
         return ok(null);
       case 'timer.absenceDismiss':
         if (this.absence.warning?.id === r.id) this.absence.dismiss();
@@ -1001,6 +1108,7 @@ export class ClientHost {
     }
   }
   private publish(): void {
+    this.state.timerReminderTime = this.o.settings.get().timer.reminderTime;
     this.absence.observe(this.state);
     const warning = this.absence.warning;
     this.state.timerAbsence = warning

@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isRect, type WindowState } from './windowState';
+import { isoDay } from '../shared/time';
 
 export interface Settings {
   /** Адрес сервера; пусто — адрес из сборки */
@@ -16,9 +17,10 @@ export interface Settings {
   trayHintShown: boolean;
   theme: 'system' | 'light' | 'dark';
   notifications: { enabled: boolean; sound: boolean; preview: boolean };
-  /** Сохранение настроек пробного таймера; его подключение относится к Д6 v4. */
+  /** Локальные настройки учёта времени; автопауза пока зависит от сервера. */
   timer: { pauseOnLock: boolean; askOnUnlock: boolean; reminderTime: string };
   recentTimeTaskIds: Record<string, number[]>;
+  timerReminderSeen: Record<string, string>;
 }
 
 export const DEFAULTS: Settings = {
@@ -30,6 +32,7 @@ export const DEFAULTS: Settings = {
   notifications: { enabled: true, sound: true, preview: true },
   timer: { pauseOnLock: true, askOnUnlock: true, reminderTime: '18:30' },
   recentTimeTaskIds: {},
+  timerReminderSeen: {},
 };
 
 export const ZOOM_MIN = -3;
@@ -43,9 +46,19 @@ export function normalizeSettings(raw: unknown): Settings {
     notifications: { ...DEFAULTS.notifications },
     timer: { ...DEFAULTS.timer },
     recentTimeTaskIds: {},
+    timerReminderSeen: {},
   };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
+  if (
+    typeof r.timerReminderSeen === 'object' &&
+    r.timerReminderSeen !== null &&
+    !Array.isArray(r.timerReminderSeen)
+  ) {
+    for (const [owner, date] of Object.entries(r.timerReminderSeen).slice(-30))
+      if (/^[1-9]\d{0,15}$/.test(owner) && Number.isSafeInteger(Number(owner)) && isoDay(date))
+        s.timerReminderSeen[owner] = date;
+  }
   if (
     typeof r.recentTimeTaskIds === 'object' &&
     r.recentTimeTaskIds !== null &&
@@ -81,7 +94,11 @@ export function normalizeSettings(raw: unknown): Settings {
     const t = r.timer as Record<string, unknown>;
     for (const key of ['pauseOnLock', 'askOnUnlock'] as const)
       if (typeof t[key] === 'boolean') s.timer[key] = t[key];
-    if (typeof t.reminderTime === 'string' && /^([01]\d|2[0-3]):(00|30)$/.test(t.reminderTime))
+    if (
+      typeof t.reminderTime === 'string' &&
+      t.reminderTime.length === 5 &&
+      /^([01]\d|2[0-3]):(00|30)$/.test(t.reminderTime)
+    )
       s.timer.reminderTime = t.reminderTime;
   }
   if (typeof r.zoomLevel === 'number' && Number.isFinite(r.zoomLevel)) {

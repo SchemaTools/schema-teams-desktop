@@ -662,6 +662,7 @@ export function App() {
   );
 
   function eventTitle(item: NotificationItem): string {
+    if (item.event === 'timer_stopped') return R.eventTimerStopped;
     if (item.event.includes('mention')) return R.eventMention;
     if (item.event.includes('assigned')) return R.eventAssigned;
     if (item.event === 'due_soon') return R.eventDueSoon;
@@ -682,7 +683,9 @@ export function App() {
         : item.event.includes('deadline') ||
             ['due_soon', 'overdue', 'due_changed'].includes(item.event)
           ? 'deadline'
-          : 'other';
+          : item.event === 'timer_stopped'
+            ? 'timer'
+            : 'other';
     return (
       <article
         className={`event-stack event-${category}`}
@@ -697,7 +700,7 @@ export function App() {
                 <At size={21} weight="duotone" />
               ) : category === 'assigned' ? (
                 <ClipboardText size={21} weight="duotone" />
-              ) : category === 'deadline' ? (
+              ) : category === 'deadline' || category === 'timer' ? (
                 <ClockCountdown size={21} weight="duotone" />
               ) : (
                 <Bell size={21} weight="duotone" />
@@ -716,14 +719,16 @@ export function App() {
           {item.subject && <p>{item.subject}</p>}
           {item.reason && (
             <p>
-              {R.eventReason}: {item.reason}
+              {category === 'timer' ? '' : `${R.eventReason}: `}
+              {item.reason}
             </p>
           )}
-          {item.changes.map((change, index) => (
-            <p key={index}>
-              {change.field}: {R.fromTo(change.from, change.to)}
-            </p>
-          ))}
+          {category !== 'timer' &&
+            item.changes.map((change, index) => (
+              <p key={index}>
+                {change.field}: {R.fromTo(change.from, change.to)}
+              </p>
+            ))}
           <div className="event-meta">
             {item.author?.shortName && `${item.author.shortName} · `}
             <time dateTime={item.at}>
@@ -749,7 +754,7 @@ export function App() {
               ) : (
                 <ArrowSquareOut size={16} weight="duotone" />
               )}
-              {target ? R.openChat : R.openSite}
+              {category === 'timer' ? R.checkTimeEntry : target ? R.openChat : R.openSite}
             </button>
           </div>
         )}

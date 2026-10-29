@@ -104,6 +104,8 @@ export const R = {
   eventDeadline: 'Изменён срок',
   eventDueSoon: 'Срок приближается',
   eventOverdue: 'Срок прошёл',
+  eventTimerStopped: 'Вчерашний таймер остановлен в полночь',
+  checkTimeEntry: 'Проверить запись',
   eventUpdated: 'Изменение в Teams',
   eventReason: 'Причина',
   eventSubject: 'Подробности',

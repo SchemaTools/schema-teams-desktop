@@ -4,7 +4,8 @@ import type { IpcMainInvokeEvent, Tray } from 'electron';
 import type { ApiResult, FocusState } from '../../src/shared/client';
 import type { ClientSnapshot, DesktopRequest } from '../../src/shared/desktop';
 import type { MainWindow } from '../../src/main/mainWindow';
-import type { SettingsStore } from '../../src/main/settings';
+import type { Settings, SettingsStore } from '../../src/main/settings';
+import type { ToastSpec } from '../../src/main/notifications/types';
 import type { Logger } from '../../src/main/logger';
 import { requestValid } from '../../src/shared/requests';
 import { timerFixture, proposalFixture } from '../fixtures/time';
@@ -60,6 +61,16 @@ const h = vi.hoisted(() => ({
   timerProposal: vi.fn(),
   timerFinish: vi.fn(),
   toastShow: vi.fn(),
+  toastDismiss: vi.fn(),
+  policyAllows: vi.fn(),
+  idleState: vi.fn(),
+  toastOptions: undefined as
+    | undefined
+    | {
+        beforeShow: (spec: ToastSpec) => Promise<boolean>;
+        onShow: (spec: ToastSpec) => void;
+        onButton: (spec: ToastSpec, index: number) => void;
+      },
   toastClear: vi.fn(),
   toastDestroy: vi.fn(),
   realtimeStart: vi.fn(),
@@ -87,7 +98,7 @@ vi.mock('electron', async () => {
       createEmpty: () => ({ addRepresentation: vi.fn() }),
       createFromBuffer: () => ({}),
     },
-    powerMonitor: Object.assign(new EventEmitter(), { getSystemIdleState: () => 'active' }),
+    powerMonitor: Object.assign(new EventEmitter(), { getSystemIdleState: h.idleState }),
     screen: { getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
     session: { fromPartition: () => ses },
     shell: { beep: h.beep, openExternal: h.openExternal },
@@ -178,16 +189,18 @@ vi.mock('../../src/main/files/uploads', () => ({
 }));
 vi.mock('../../src/main/notifications/toasts', () => ({
   CustomToasts: class {
+    constructor(options: NonNullable<typeof h.toastOptions>) {
+      h.toastOptions = options;
+    }
     show = h.toastShow;
+    dismiss = h.toastDismiss;
     clear = h.toastClear;
     destroy = h.toastDestroy;
   },
 }));
 vi.mock('../../src/main/desktop/notificationState', () => ({
   WindowsNotificationPolicy: class {
-    allows() {
-      return Promise.resolve(true);
-    }
+    allows = h.policyAllows;
   },
 }));
 vi.mock('../../src/main/realtime/connection', () => ({
@@ -208,7 +221,11 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-function fixture() {
+function fixture(patch: Partial<Settings> = {}) {
+  let settings = normalizeSettings(patch);
+  const settingsUpdate = vi.fn((change: Partial<Settings>) => {
+    settings = normalizeSettings({ ...settings, ...change });
+  });
   const frame = { url: URL };
   const wc = Object.assign(new EventEmitter(), {
     id: 1,
@@ -228,7 +245,7 @@ function fixture() {
   const host = new ClientHost({
     main: { win, show: vi.fn() } as unknown as MainWindow,
     server: new globalThis.URL('https://example.test/'),
-    settings: { get: () => normalizeSettings(null), update: vi.fn() } as unknown as SettingsStore,
+    settings: { get: () => settings, update: settingsUpdate } as unknown as SettingsStore,
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger,
     tray: {
       isDestroyed: () => false,
@@ -248,10 +265,19 @@ function fixture() {
     if (!handle) throw new Error('IPC handler missing');
     return (await handle(event, request)) as ApiResult<unknown>;
   };
-  return { host, win, invoke, state: owned.state, owned };
+  return {
+    host,
+    win,
+    invoke,
+    state: owned.state,
+    owned,
+    settingsUpdate,
+    getSettings: () => settings,
+  };
 }
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.setSystemTime(new Date(2026, 9, 29, 9));
   vi.resetAllMocks();
   h.handlers.clear();
   h.published.length = 0;
@@ -271,6 +297,13 @@ beforeEach(() => {
   h.send.mockResolvedValue({ ok: true, data: null });
   h.setFocus.mockResolvedValue({ ok: true, data: { until: null, startedAt: null } });
   h.pathOpen.mockResolvedValue('ok');
+  h.toastOptions = undefined;
+  h.policyAllows.mockResolvedValue(true);
+  h.idleState.mockReturnValue('active');
+  h.notificationSettings.mockResolvedValue({
+    ok: true,
+    data: { rows: [], digestHourly: false, quiet: null },
+  });
   h.timer.mockResolvedValue({ ok: true, data: null });
 });
 afterEach(() => {
@@ -280,6 +313,126 @@ afterEach(() => {
 });
 
 describe('ClientHost: поколение входа проверяется в доверенном main-frame IPC', () => {
+  it('personal-task reminder has no empty mark separator', () => {
+    vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
+    const { host } = fixture();
+    (
+      host as unknown as { acceptTimer: (timer: ReturnType<typeof timerFixture>) => void }
+    ).acceptTimer(timerFixture('run', 23));
+    expect((h.toastShow.mock.calls[0]?.[0] as ToastSpec).body).toMatch(/^Обучение\n/);
+  });
+  it('reminder appears only after policy permits; shown day persists and finish button only opens review', async () => {
+    vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
+    const { host, owned, getSettings } = fixture();
+    (
+      host as unknown as { acceptTimer: (timer: ReturnType<typeof timerFixture>) => void }
+    ).acceptTimer(timerFixture());
+    const spec = h.toastShow.mock.calls[0]?.[0] as ToastSpec;
+    expect(spec).toMatchObject({
+      title: 'Таймер ещё идёт',
+      hasReply: false,
+      buttons: ['■ Закончить работу', 'Ещё работаю'],
+    });
+    if (!h.toastOptions) throw Error('Missing toast callbacks');
+    expect(await h.toastOptions.beforeShow(spec)).toBe(true);
+    expect(getSettings().timerReminderSeen).toEqual({});
+    h.toastOptions.onShow(spec);
+    expect(getSettings().timerReminderSeen).toEqual({ '1': '2026-10-29' });
+    h.toastOptions.onButton(spec, 0);
+    expect(owned.state.navigateTimer?.mode).toBe('finish');
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(h.timerFinish).not.toHaveBeenCalled();
+    expect(h.beep).toHaveBeenCalledTimes(1);
+    (host as unknown as { checkReminder: () => void }).checkReminder();
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+  });
+  it.each(['dnd', 'locked', 'quiet'] as const)(
+    'suppressed reminder %s does not consume shown day or play sound',
+    async (reason) => {
+      vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
+      const { host, getSettings } = fixture();
+      if (reason === 'dnd') h.policyAllows.mockResolvedValue(false);
+      if (reason === 'locked') h.idleState.mockReturnValue('locked');
+      if (reason === 'quiet')
+        h.notificationSettings.mockResolvedValue({
+          ok: true,
+          data: { rows: [], digestHourly: false, quiet: { from: '20:00', to: '08:00' } },
+        });
+      (
+        host as unknown as { acceptTimer: (timer: ReturnType<typeof timerFixture>) => void }
+      ).acceptTimer(timerFixture());
+      const spec = h.toastShow.mock.calls[0]?.[0] as ToastSpec;
+      if (!h.toastOptions) throw Error('Missing toast callbacks');
+      expect(await h.toastOptions.beforeShow(spec)).toBe(false);
+      expect(getSettings().timerReminderSeen).toEqual({});
+      expect(h.beep).not.toHaveBeenCalled();
+    },
+  );
+  it('Focus suppresses local reminder; disabled preview does not leak task name', () => {
+    vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
+    const { host, owned } = fixture({
+      notifications: { enabled: true, sound: false, preview: false },
+    });
+    owned.state.focus.until = new Date(Date.now() + 60000).toISOString();
+    const ownedHost = host as unknown as {
+      acceptTimer: (timer: ReturnType<typeof timerFixture>) => void;
+      checkReminder: () => void;
+    };
+    ownedHost.acceptTimer(timerFixture());
+    expect(h.toastShow).not.toHaveBeenCalled();
+    vi.setSystemTime(new Date(2026, 9, 29, 18, 31));
+    owned.state.focus.until = null;
+    ownedHost.checkReminder();
+    const spec = h.toastShow.mock.calls[0]?.[0] as ToastSpec;
+    expect(spec.body).not.toContain('План первого этажа');
+    expect(spec.body).toContain('Проверьте трудозатраты');
+    h.toastOptions?.onShow(spec);
+    expect(h.beep).not.toHaveBeenCalled();
+  });
+  it('late policy result and old reminder button cannot act after owner/timer changes', async () => {
+    vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
+    const { host, owned } = fixture();
+    const wait = deferred<boolean>();
+    h.policyAllows.mockReturnValueOnce(wait.promise);
+    const ownedHost = host as unknown as {
+      acceptTimer: (timer: ReturnType<typeof timerFixture>) => void;
+    };
+    ownedHost.acceptTimer(timerFixture());
+    const spec = h.toastShow.mock.calls[0]?.[0] as ToastSpec;
+    if (!h.toastOptions) throw Error('Missing toast callbacks');
+    const before = h.toastOptions.beforeShow(spec);
+    await Promise.resolve();
+    await Promise.resolve();
+    ownedHost.acceptTimer(timerFixture('pause'));
+    wait.resolve(true);
+    expect(await before).toBe(false);
+    h.toastOptions.onButton(spec, 0);
+    expect(owned.state.navigateTimer).toBeUndefined();
+    expect(h.timerPause).not.toHaveBeenCalled();
+  });
+  it('preferences save is scoped and keeps other settings; save failure is explicit', async () => {
+    const { invoke, getSettings, settingsUpdate } = fixture();
+    expect(
+      await invoke({ kind: 'timer.preferences', epoch: 6, reminderTime: '19:00' }),
+    ).toMatchObject({ code: 'stale_session' });
+    expect(settingsUpdate).not.toHaveBeenCalled();
+    expect(await invoke({ kind: 'timer.preferences', epoch: 7, reminderTime: '19:00' })).toEqual({
+      ok: true,
+      data: null,
+    });
+    expect(getSettings().timer).toEqual({
+      pauseOnLock: true,
+      askOnUnlock: true,
+      reminderTime: '19:00',
+    });
+    settingsUpdate.mockImplementationOnce(() => {
+      throw Error('private path');
+    });
+    expect(
+      await invoke({ kind: 'timer.preferences', epoch: 7, reminderTime: '20:00' }),
+    ).toMatchObject({ code: 'settings_error' });
+    expect(getSettings().timer.reminderTime).toBe('19:00');
+  });
   it('timer socket state wins over an older read response', async () => {
     const { host, invoke, owned } = fixture(),
       wait = deferred<ApiResult<null>>();
