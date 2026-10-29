@@ -5,6 +5,7 @@ import {
   ChatCircleDots,
   Check,
   GearSix,
+  Info,
   Moon,
   PaperPlaneTilt,
   SignIn,
@@ -279,6 +280,20 @@ export function TraySurface() {
           <span>{R.login}</span>
         </button>
       )}
+      <button
+        className="tray-item"
+        onClick={() => void act({ kind: 'settings.open', tab: 'general' })}
+      >
+        <GearSix size={20} weight="duotone" />
+        <span>Настройки</span>
+      </button>
+      <button
+        className="tray-item"
+        onClick={() => void act({ kind: 'settings.open', tab: 'about' })}
+      >
+        <Info size={20} weight="duotone" />
+        <span>О программе</span>
+      </button>
       <button
         className="tray-item"
         disabled={!snapshot?.user}

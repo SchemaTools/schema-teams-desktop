@@ -54,6 +54,7 @@ import { EmojiPicker } from './emojiPicker';
 import { ObjectInfoPanel } from './objectInfo';
 import './events.css';
 import { TimerPanel } from './timer';
+import { PreferencesPanel } from './preferences';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -106,6 +107,8 @@ export function App() {
   const objectInfoButton = useRef<HTMLButtonElement>(null);
   const [uiError, setUiError] = useState('');
   const [timerView, setTimerView] = useState<ClientSnapshot['navigateTimer']>(null);
+  const [settingsView, setSettingsView] = useState<ClientSnapshot['navigateSettings']>(null);
+  const menuButton = useRef<HTMLButtonElement>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [messageOwner, setMessageOwner] = useState('');
@@ -170,8 +173,17 @@ export function App() {
         readUpTo.current.clear();
       }
       snapshotRef.current = next;
-      if (next.navigateTimer && next.navigateTimer.nonce !== previous.navigateTimer?.nonce)
+      if (
+        next.navigateSettings &&
+        next.navigateSettings.nonce !== previous.navigateSettings?.nonce
+      ) {
+        setSettingsView(next.navigateSettings);
+        setMenu(false);
+      }
+      if (next.navigateTimer && next.navigateTimer.nonce !== previous.navigateTimer?.nonce) {
         setTimerView(next.navigateTimer);
+        setSettingsView(null);
+      }
       setSnapshot(next);
       document.documentElement.dataset.theme = next.theme;
     };
@@ -815,20 +827,42 @@ export function App() {
 
   return (
     <div className="app-shell" data-connection={snapshot.connection}>
-      {timerView && snapshot.user && (
-        <TimerPanel
-          key={`${owner}:${timerView.nonce}`}
+      {settingsView && (
+        <PreferencesPanel
+          key={settingsView.nonce}
           snapshot={snapshot}
-          mode={timerView.mode}
-          taskId={timerView.taskId}
-          onClose={() => setTimerView(null)}
+          initialTab={settingsView.tab}
+          onClose={() => {
+            setSettingsView(null);
+            requestAnimationFrame(() => {
+              if (timerView)
+                document
+                  .querySelector<HTMLButtonElement>(
+                    '.timer-panel button[aria-label="Закрыть таймер"]',
+                  )
+                  ?.focus();
+              else menuButton.current?.focus();
+            });
+          }}
         />
+      )}
+      {timerView && snapshot.user && (
+        <div hidden={Boolean(settingsView)}>
+          <TimerPanel
+            key={`${owner}:${timerView.nonce}`}
+            snapshot={snapshot}
+            mode={timerView.mode}
+            taskId={timerView.taskId}
+            onClose={() => setTimerView(null)}
+          />
+        </div>
       )}
       <nav className="folder-rail" aria-label={R.folders}>
         <button
           className="folder-button menu-button"
           aria-label={R.menu}
           aria-expanded={menu}
+          ref={menuButton}
           onClick={() => setMenu(!menu)}
         >
           <List size={24} weight="duotone" />
@@ -892,6 +926,13 @@ export function App() {
       {menu && (
         <section className="settings-popover" aria-label={R.settings}>
           <h2>{snapshot.user?.shortName ?? R.appName}</h2>
+          <button onClick={() => void action({ kind: 'settings.open', tab: 'general' })}>
+            <GearSix size={18} weight="duotone" />
+            Настройки
+          </button>
+          <button onClick={() => void action({ kind: 'settings.open', tab: 'about' })}>
+            <Info size={18} weight="duotone" />О программе
+          </button>
           <label>
             <GearSix size={18} weight="duotone" />
             {R.theme}

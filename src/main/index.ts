@@ -1,5 +1,5 @@
 // Точка входа главного процесса.
-import { app, Menu, protocol, session, type Tray } from 'electron';
+import { app, Menu, protocol, session, shell, type Tray } from 'electron';
 import { release } from 'node:os';
 import { join } from 'node:path';
 import { readBuildConfig, resolveServerUrl } from './config';
@@ -9,6 +9,7 @@ import { isServerUrl } from './navigation';
 import { SettingsStore } from './settings';
 import { createTray } from './tray';
 import { ClientHost } from './clientHost';
+import { applyAutostart, autostartAvailable } from './desktop/autostart';
 
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
@@ -61,7 +62,9 @@ function start(): void {
   });
 
   restrictPermissions(server);
-  applyAutostart(settings.get().autostart);
+  const setAutostart = (enabled: boolean) =>
+    applyAutostart(app, enabled, process.env.SCHEMA_TEAMS_USER_DATA);
+  setAutostart(settings.get().autostart);
 
   main = new MainWindow({ server, settings, log, isQuitting: () => quitting });
   tray = createTray({
@@ -71,7 +74,16 @@ function start(): void {
     onQuit: () => app.quit(),
     onMenu: (bounds) => client?.showMenu(bounds),
   });
-  client = new ClientHost({ main, server, settings, log, tray });
+  client = new ClientHost({
+    main,
+    server,
+    settings,
+    log,
+    tray,
+    applyAutostart: setAutostart,
+    autostartAvailable: autostartAvailable(app, process.env.SCHEMA_TEAMS_USER_DATA),
+    openLogs: () => shell.openPath(join(app.getPath('userData'), 'logs')),
+  });
   if (!hidden) main.win.once('ready-to-show', () => main?.show());
 }
 
@@ -91,12 +103,6 @@ app.on('before-quit', (e) => {
       app.quit();
     });
 });
-
-/** Автозапуск с Windows (ТЗ, 4.4). Только у установленного приложения, не у разработки. */
-function applyAutostart(enabled: boolean): void {
-  if (!app.isPackaged) return;
-  app.setLoginItemSettings({ openAtLogin: enabled, args: [HIDDEN_ARG] });
-}
 
 /**
  * Разрешения страницам: только копирование в буфер и полный экран, и только серверу.

@@ -6,9 +6,11 @@ import { request } from './bridge';
 export function TimerSettings({
   snapshot,
   workdayEnd,
+  expanded = false,
 }: {
   snapshot: ClientSnapshot;
   workdayEnd?: number;
+  expanded?: boolean;
 }) {
   const saved = snapshot.timerReminderTime ?? '18:30';
   const [time, setTime] = useState(saved),
@@ -41,7 +43,7 @@ export function TimerSettings({
     setFeedback(result.ok ? 'Время напоминания сохранено на этом компьютере.' : result.error);
   }
   return (
-    <details className="timer-settings">
+    <details className="timer-settings" open={expanded || undefined}>
       <summary>Настройки учёта времени</summary>
       <div>
         <label>

@@ -132,15 +132,16 @@ export class SettingsStore {
   }
 
   update(patch: Partial<Settings>): void {
-    this.value = normalizeSettings({ ...this.value, ...patch });
-    this.save();
+    const next = normalizeSettings({ ...this.value, ...patch });
+    this.save(next);
+    this.value = next;
   }
 
-  private save(): void {
+  private save(next: Settings): void {
     mkdirSync(dirname(this.file), { recursive: true });
     // запись через временный файл: при сбое посреди записи старые настройки не теряются
     const tmp = `${this.file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.value, null, 2), 'utf8');
+    writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
     renameSync(tmp, this.file);
   }
 }

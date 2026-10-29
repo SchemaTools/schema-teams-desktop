@@ -14,6 +14,7 @@ import type {
   ObjectInfo,
 } from './client';
 import type { TimeOptions, WorkTimer, TimerExpected, TimerPrepared, TimerRow } from './time';
+import type { LocalPreferences, PreferencesPatch, PreferencesTab } from './preferences';
 
 export interface ClientSnapshot {
   connection:
@@ -49,10 +50,15 @@ export interface ClientSnapshot {
   timerAbsence?: { id: number; from: number; to: number } | null;
   timerReminderTime?: string;
   navigateTimer?: { mode: 'pick' | 'finish'; taskId?: number; nonce: number } | null;
+  preferences?: LocalPreferences;
+  navigateSettings?: { tab: PreferencesTab; nonce: number } | null;
 }
 export type DesktopRequest =
   | { kind: 'init' | 'login' | 'retry' | 'window.hide' | 'app.quit' }
   | { kind: 'theme'; mode: 'system' | 'light' | 'dark' }
+  | { kind: 'settings.read' | 'logs.open' }
+  | { kind: 'settings.open'; tab: PreferencesTab }
+  | { kind: 'settings.patch'; patch: PreferencesPatch }
   | ({ epoch: number } & (
       | { kind: 'logout' }
       | { kind: 'timer.read' | 'timer.options' }
@@ -126,6 +132,10 @@ export interface DesktopResponseMap {
   'timer.proposal': TimerPrepared;
   'timer.finish': WorkTimer | null;
   theme: null;
+  'settings.read': LocalPreferences;
+  'settings.open': null;
+  'settings.patch': LocalPreferences;
+  'logs.open': null;
   'window.show': null;
   'window.hide': null;
   'app.quit': null;

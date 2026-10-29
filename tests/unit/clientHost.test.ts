@@ -79,6 +79,8 @@ const h = vi.hoisted(() => ({
   beep: vi.fn(),
   openExternal: vi.fn(),
   traySetImage: vi.fn(),
+  applyAutostart: vi.fn(),
+  openLogs: vi.fn(),
   setOverlayIcon: vi.fn(),
   published: [] as { channel: string; state: ClientSnapshot }[],
 }));
@@ -247,6 +249,9 @@ function fixture(patch: Partial<Settings> = {}) {
     server: new globalThis.URL('https://example.test/'),
     settings: { get: () => settings, update: settingsUpdate } as unknown as SettingsStore,
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger,
+    applyAutostart: h.applyAutostart,
+    autostartAvailable: true,
+    openLogs: h.openLogs,
     tray: {
       isDestroyed: () => false,
       setToolTip: vi.fn(),
@@ -297,6 +302,7 @@ beforeEach(() => {
   h.send.mockResolvedValue({ ok: true, data: null });
   h.setFocus.mockResolvedValue({ ok: true, data: { until: null, startedAt: null } });
   h.pathOpen.mockResolvedValue('ok');
+  h.openLogs.mockResolvedValue('');
   h.toastOptions = undefined;
   h.policyAllows.mockResolvedValue(true);
   h.idleState.mockReturnValue('active');
@@ -313,6 +319,66 @@ afterEach(() => {
 });
 
 describe('ClientHost: поколение входа проверяется в доверенном main-frame IPC', () => {
+  it('local settings expose a projection and work signed out, preserving timer/history', async () => {
+    const { invoke, owned, getSettings } = fixture({
+      serverUrl: 'https://private.example.test',
+      timer: { pauseOnLock: false, askOnUnlock: false, reminderTime: '19:00' },
+      recentTimeTaskIds: { '1': [21] },
+    });
+    h.api.owner = null;
+    owned.state.user = null;
+    owned.state.connection = 'signedOut';
+    expect(await invoke({ kind: 'settings.read' })).toEqual({
+      ok: true,
+      data: {
+        autostart: true,
+        autostartAvailable: true,
+        theme: 'system',
+        notifications: { enabled: true, sound: true, preview: true },
+      },
+    });
+    const result = await invoke({
+      kind: 'settings.patch',
+      patch: { notifications: { sound: false } },
+    });
+    expect(result.ok).toBe(true);
+    expect(getSettings().notifications).toEqual({ enabled: true, sound: false, preview: true });
+    expect(getSettings().timer.reminderTime).toBe('19:00');
+    expect(getSettings().recentTimeTaskIds).toEqual({ '1': [21] });
+    expect(JSON.stringify(result)).not.toContain('private.example.test');
+    expect(h.toastClear).toHaveBeenCalled();
+  });
+  it('settings save failure rolls back the autostart backend and never reports success', async () => {
+    const { invoke, settingsUpdate, getSettings } = fixture();
+    settingsUpdate.mockImplementationOnce(() => {
+      throw Error('private path');
+    });
+    expect(await invoke({ kind: 'settings.patch', patch: { autostart: false } })).toMatchObject({
+      ok: false,
+      code: 'settings_error',
+    });
+    expect(h.applyAutostart.mock.calls).toEqual([[false], [true]]);
+    expect(getSettings().autostart).toBe(true);
+  });
+  it('autostart backend error leaves saved settings untouched', async () => {
+    const { invoke, settingsUpdate } = fixture();
+    h.applyAutostart.mockImplementationOnce(() => {
+      throw Error('private OS error');
+    });
+    const result = await invoke({ kind: 'settings.patch', patch: { autostart: false } });
+    expect(result).toMatchObject({ ok: false, code: 'settings_error' });
+    expect(settingsUpdate).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('private OS error');
+  });
+  it('logs open uses the fixed main callback, reports failure without paths', async () => {
+    const { invoke } = fixture();
+    expect(await invoke({ kind: 'logs.open' })).toEqual({ ok: true, data: null });
+    h.openLogs.mockResolvedValueOnce('C:/private/path inaccessible');
+    const result = await invoke({ kind: 'logs.open' });
+    expect(result).toMatchObject({ ok: false, code: 'logs_error' });
+    expect(JSON.stringify(result)).not.toContain('private/path');
+    expect(h.openLogs).toHaveBeenCalledTimes(2);
+  });
   it('personal-task reminder has no empty mark separator', () => {
     vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
     const { host } = fixture();

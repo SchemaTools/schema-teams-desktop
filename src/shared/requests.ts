@@ -1,19 +1,38 @@
 import type { DesktopRequest } from './desktop';
 import { expectedValid, timerRowsValid } from './time';
+import { preferenceTabs, preferencesPatchValid } from './preferences';
 const id = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const text = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
 export function requestValid(raw: unknown): raw is DesktopRequest {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;
   const r = raw as Record<string, unknown>;
   if (typeof r.kind !== 'string') return false;
-  const scoped = !['init', 'login', 'retry', 'theme', 'window.hide', 'app.quit'].includes(
-    String(r.kind),
-  );
+  const scoped = ![
+    'init',
+    'login',
+    'retry',
+    'theme',
+    'window.hide',
+    'app.quit',
+    'settings.read',
+    'settings.patch',
+    'settings.open',
+    'logs.open',
+  ].includes(String(r.kind));
   if (scoped && (typeof r.epoch !== 'number' || !Number.isSafeInteger(r.epoch) || r.epoch < 0))
     return false;
   const only = (...keys: string[]) =>
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
+    case 'settings.read':
+    case 'logs.open':
+      return only();
+    case 'settings.open':
+      return (
+        only('tab') && preferenceTabs.includes(r.tab as import('./preferences').PreferencesTab)
+      );
+    case 'settings.patch':
+      return only('patch') && preferencesPatchValid(r.patch);
     case 'timer.read':
     case 'timer.options':
       return only();

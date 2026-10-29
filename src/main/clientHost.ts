@@ -40,6 +40,11 @@ import { statusBitmap, badgeBitmap } from './desktop/statusBitmap';
 import { encodePng } from './png';
 import type { Logger } from './logger';
 import type { SettingsStore } from './settings';
+import {
+  preferencesPatchValid,
+  type PreferencesPatch,
+  type LocalPreferences,
+} from '../shared/preferences';
 
 interface Options {
   main: MainWindow;
@@ -47,6 +52,9 @@ interface Options {
   settings: SettingsStore;
   log: Logger;
   tray: Tray;
+  applyAutostart: (enabled: boolean) => void;
+  autostartAvailable: boolean;
+  openLogs: () => Promise<string>;
 }
 interface Notice {
   reminder?: ReminderTicket;
@@ -852,6 +860,31 @@ export class ClientHost {
   }
   private async request(r: DesktopRequest): Promise<unknown> {
     switch (r.kind) {
+      case 'settings.read':
+        return ok(this.preferences());
+      case 'settings.patch':
+        return this.savePreferences(r.patch);
+      case 'settings.open':
+        this.state.navigateSettings = {
+          tab: r.tab,
+          nonce: (this.state.navigateSettings?.nonce ?? 0) + 1,
+        };
+        this.o.main.show();
+        this.trayWindow?.hide();
+        this.publish();
+        return ok(null);
+      case 'logs.open':
+        try {
+          if (!(await this.o.openLogs())) return ok(null);
+        } catch {
+          /* Never expose a filesystem path or OS error. */
+        }
+        return {
+          ok: false,
+          code: 'logs_error',
+          error: 'Не удалось открыть папку журналов.',
+          retryable: false,
+        };
       case 'init':
         return ok(this.state);
       case 'login':
@@ -892,10 +925,10 @@ export class ClientHost {
           if (this.state.connection === 'connecting') void this.bootstrap();
         }
       }
-      case 'theme':
-        this.o.settings.update({ theme: r.mode });
-        this.publish();
-        return ok(null);
+      case 'theme': {
+        const result = this.savePreferences({ theme: r.mode });
+        return result.ok ? ok(null) : result;
+      }
       case 'app.quit':
         app.quit();
         return ok(null);
@@ -1108,6 +1141,7 @@ export class ClientHost {
     }
   }
   private publish(): void {
+    this.state.preferences = this.preferences();
     this.state.timerReminderTime = this.o.settings.get().timer.reminderTime;
     this.absence.observe(this.state);
     const warning = this.absence.warning;
@@ -1164,6 +1198,48 @@ export class ClientHost {
         `Schema Teams · ${this.state.connection === 'online' ? `Непрочитанных: ${n}` : 'Нет связи'}`,
       );
     }
+  }
+  private preferences(): LocalPreferences {
+    const value = this.o.settings.get();
+    return {
+      autostart: value.autostart,
+      autostartAvailable: this.o.autostartAvailable,
+      theme: value.theme,
+      notifications: { ...value.notifications },
+    };
+  }
+  private savePreferences(patch: PreferencesPatch): ApiResult<LocalPreferences> {
+    if (!preferencesPatchValid(patch)) return failure('validation');
+    const before = this.o.settings.get(),
+      autoChanged = patch.autostart !== undefined && patch.autostart !== before.autostart;
+    try {
+      if (autoChanged) this.o.applyAutostart(Boolean(patch.autostart));
+      this.o.settings.update({
+        ...(patch.autostart !== undefined && { autostart: patch.autostart }),
+        ...(patch.theme !== undefined && { theme: patch.theme }),
+        ...(patch.notifications && {
+          notifications: { ...before.notifications, ...patch.notifications },
+        }),
+      });
+    } catch {
+      if (autoChanged)
+        try {
+          this.o.applyAutostart(before.autostart);
+        } catch {
+          this.o.log.warn('не удалось восстановить настройку автозапуска');
+        }
+      return {
+        ok: false,
+        code: 'settings_error',
+        error: autoChanged
+          ? 'Не удалось применить автозапуск или сохранить настройку. Проверьте автозапуск Windows.'
+          : 'Не удалось сохранить настройки. Повторите действие.',
+        retryable: false,
+      };
+    }
+    if (patch.notifications) this.toasts.clear();
+    this.publish();
+    return ok(this.preferences());
   }
   showMenu(bounds: Rectangle): void {
     if (!this.trayWindow || this.trayWindow.isDestroyed()) {
