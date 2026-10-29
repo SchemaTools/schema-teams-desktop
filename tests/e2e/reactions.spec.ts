@@ -71,10 +71,15 @@ test('реакция ставится и снимается по ответу AP
   await expect(badge(page, 'like')).toHaveAttribute('data-reaction-count', '1');
   await expect(badge(page, 'like')).toHaveAttribute('aria-pressed', 'false');
   await message(page).hover();
-  const panel = await message(page).locator('.message-quick-reactions').boundingBox();
-  const bubble = await message(page).locator('.message-bubble').boundingBox();
-  if (!panel || !bubble) throw Error('Missing reaction geometry');
-  expect(panel.y + panel.height).toBeLessThanOrEqual(bubble.y);
+  await expect
+    .poll(() =>
+      message(page).evaluate((row) => {
+        const panel = row.querySelector('.message-quick-reactions')?.getBoundingClientRect();
+        const bubble = row.querySelector('.message-bubble')?.getBoundingClientRect();
+        return !!panel && !!bubble && panel.bottom <= bubble.top;
+      }),
+    )
+    .toBe(true);
   await expect(choice(page, 'like')).toHaveAccessibleName('Поставить реакцию «Нравится»');
   await choice(page, 'like').click();
   await expect(badge(page, 'like')).toHaveAttribute('data-reaction-count', '2');

@@ -15,6 +15,7 @@ import type {
   NotificationSettings,
   PersonRef,
   SafeUser,
+  ObjectInfo,
 } from '../../shared/client';
 
 export class InvalidData extends Error {}
@@ -226,6 +227,58 @@ export function detail(v: unknown): ChatDetail {
         preview: text(y.preview),
       };
     }),
+  };
+}
+export function objectInfo(v: unknown): ObjectInfo {
+  const x = object(v);
+  if (!['active', 'paused', 'archive'].includes(String(x.status))) throw new InvalidData();
+  const day = (value: unknown) => {
+    const result = text(value, 10);
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(result) ||
+      !Number.isFinite(Date.parse(result)) ||
+      new Date(result).toISOString().slice(0, 10) !== result
+    )
+      throw new InvalidData();
+    return result;
+  };
+  const stages = array(
+    x.stages,
+    (v) => {
+      const s = object(v);
+      return {
+        id: id(s.id),
+        code: text(s.code, 100),
+        name: text(s.name, 1000),
+        startDate: day(s.startDate),
+        endDate: day(s.endDate),
+        closed: flag(s.closed),
+      };
+    },
+    100,
+  );
+  const currentStageId = nullable(x.currentStageId, id);
+  if (
+    new Set(stages.map((s) => s.id)).size !== stages.length ||
+    (currentStageId !== null && !stages.some((s) => s.id === currentStageId))
+  )
+    throw new InvalidData();
+  return {
+    id: id(x.id),
+    code: text(x.code, 100),
+    name: text(x.name, 1000),
+    fullName: nullable(x.fullName, (v) => text(v, 4000)),
+    client: nullable(x.client, (v) => text(v, 4000)),
+    address: nullable(x.address, (v) => text(v, 4000)),
+    status: x.status as ObjectInfo['status'],
+    statusNote: nullable(x.statusNote, (v) => text(v, 4000)),
+    gip: nullable(x.gip, person),
+    gap: nullable(x.gap, person),
+    pm: nullable(x.pm, person),
+    folderRoot: nullable(x.folderRoot, (v) => text(v, 32767)),
+    modelPath: nullable(x.modelPath, (v) => text(v, 32767)),
+    currentStageId,
+    stages,
   };
 }
 export function notification(v: unknown): NotificationItem {

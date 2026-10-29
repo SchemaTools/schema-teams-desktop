@@ -35,6 +35,7 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
         only('mode') && typeof r.mode === 'string' && ['system', 'light', 'dark'].includes(r.mode)
       );
     case 'chat.detail':
+    case 'chat.objectInfo':
     case 'chat.markRead':
     case 'chat.typing':
       return only('chatId') && id(r.chatId);

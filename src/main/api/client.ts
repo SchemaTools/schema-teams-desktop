@@ -12,6 +12,7 @@ import type {
   NotificationPage,
   NotificationSettings,
   SafeUser,
+  ObjectInfo,
 } from '../../shared/client';
 import * as parse from './parse';
 import { validateUpload } from '../files/uploadPolicy';
@@ -138,6 +139,20 @@ export class TeamsApi {
           return value;
         })
       : Promise.resolve(failure('validation'));
+  }
+  async objectInfo(chatId: number): Promise<ApiResult<ObjectInfo>> {
+    const epoch = this.epoch,
+      owner = this.owner;
+    const detail = await this.detail(chatId);
+    if (epoch !== this.epoch || owner !== this.owner) return failure('stale_session');
+    if (!detail.ok) return detail;
+    const objectId = detail.data.chat.objectId;
+    if (detail.data.chat.kind !== 'object' || objectId === null) return failure('validation');
+    return this.request(`/api/objects/${objectId}`, 'GET', (raw) => {
+      const value = parse.objectInfo(raw);
+      if (value.id !== objectId) throw new parse.InvalidData();
+      return value;
+    });
   }
   messages(chatId: number, cursor: MessageCursor = {}): Promise<ApiResult<MessagePage>> {
     if (typeof cursor !== 'object' || cursor === null || Array.isArray(cursor))

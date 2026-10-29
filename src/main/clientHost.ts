@@ -780,6 +780,8 @@ export class ClientHost {
       }
       case 'chat.search':
         return this.api.search(r.chatId, r.q);
+      case 'chat.objectInfo':
+        return this.api.objectInfo(r.chatId);
       case 'chat.markRead': {
         if (!this.o.main.win.isVisible() || !this.o.main.win.isFocused())
           return failure('validation');

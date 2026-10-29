@@ -5,7 +5,7 @@
   position: absolute;
   z-index: 3;
   top: auto;
-  bottom: calc(100% + 3px);
+  bottom: calc(100% + 6px);
   right: 0;
   display: flex;
   align-items: center;

@@ -11,6 +11,7 @@ import type {
   MessagePage,
   NotificationItem,
   SafeUser,
+  ObjectInfo,
 } from './client';
 
 export interface ClientSnapshot {
@@ -48,6 +49,7 @@ export type DesktopRequest =
       | { kind: 'window.show'; target?: 'events'; chatId?: number; messageId?: number }
       | { kind: 'chat.list' }
       | { kind: 'chat.detail'; chatId: number }
+      | { kind: 'chat.objectInfo'; chatId: number }
       | { kind: 'chat.search'; chatId: number; q: string }
       | { kind: 'chat.markRead'; chatId: number }
       | { kind: 'chat.messages'; chatId: number; before?: number; after?: number; around?: number }
@@ -99,6 +101,7 @@ export interface DesktopResponseMap {
   'app.quit': null;
   'chat.list': ChatList;
   'chat.detail': ChatDetail;
+  'chat.objectInfo': ObjectInfo;
   'chat.search': ChatMessage[];
   'chat.markRead': null;
   'chat.messages': MessagePage;

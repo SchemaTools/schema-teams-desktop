@@ -1,0 +1,42 @@
+.event-stack {
+  --event-accent: var(--accent-text);
+  --event-soft: var(--accent-soft);
+}
+.event-mention {
+  --event-accent: #7246a8;
+  --event-soft: #efe5fa;
+}
+.event-assigned {
+  --event-accent: #247a51;
+  --event-soft: #e1f3e8;
+}
+.event-deadline {
+  --event-accent: #a15a0b;
+  --event-soft: #fff0d9;
+}
+.event-stack .event-card {
+  border-top: 3px solid var(--event-accent);
+}
+.event-stack .event-icon {
+  background: var(--event-soft);
+  color: var(--event-accent);
+}
+.event-stack .event-actions button {
+  background: color-mix(in srgb, var(--panel) 65%, transparent);
+  backdrop-filter: blur(12px);
+  color: var(--event-accent);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+}
+html[data-theme='dark'] .event-mention {
+  --event-accent: #d3b0f6;
+  --event-soft: #392b50;
+}
+html[data-theme='dark'] .event-assigned {
+  --event-accent: #91d6af;
+  --event-soft: #203b30;
+}
+html[data-theme='dark'] .event-deadline {
+  --event-accent: #f0c17c;
+  --event-soft: #443623;
+}

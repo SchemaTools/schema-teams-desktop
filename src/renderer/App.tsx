@@ -5,9 +5,12 @@ import {
   Bell,
   Buildings,
   ChatCircleDots,
+  ClipboardText,
+  ClockCountdown,
   Check,
   File,
   GearSix,
+  Info,
   List,
   Moon,
   PaperPlaneTilt,
@@ -48,6 +51,8 @@ import './composer.css';
 import { TypingStatus } from './typing';
 import { ChatSearch } from './chatSearch';
 import { EmojiPicker } from './emojiPicker';
+import { ObjectInfoPanel } from './objectInfo';
+import './events.css';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -96,6 +101,8 @@ export function App() {
   const selectionRef = useRef<Selection>(null);
   const [search, setSearch] = useState('');
   const [menu, setMenu] = useState(false);
+  const [objectInfoOpen, setObjectInfoOpen] = useState(false);
+  const objectInfoButton = useRef<HTMLButtonElement>(null);
   const [uiError, setUiError] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [detail, setDetail] = useState<ChatDetail | null>(null);
@@ -147,6 +154,7 @@ export function App() {
         setSelection(null);
         setMessages([]);
         setDetail(null);
+        setObjectInfoOpen(false);
         setMessageOwner('');
         setHistoryChat(null);
         aroundRef.current = null;
@@ -189,6 +197,7 @@ export function App() {
           ? { chatId: next, messageId: around }
           : null;
       setMenu(false);
+      setObjectInfoOpen(false);
       setMessageError('');
       setUiError('');
       if (typeof next === 'number') {
@@ -650,17 +659,44 @@ export function App() {
   function eventTitle(item: NotificationItem): string {
     if (item.event.includes('mention')) return R.eventMention;
     if (item.event.includes('assigned')) return R.eventAssigned;
-    if (item.event.includes('deadline')) return R.eventDeadline;
+    if (item.event === 'due_soon') return R.eventDueSoon;
+    if (item.event === 'overdue') return R.eventOverdue;
+    if (
+      item.event.includes('deadline') ||
+      ['due_soon', 'overdue', 'due_changed'].includes(item.event)
+    )
+      return R.eventDeadline;
     return item.task ? R.eventUpdated : (item.subject ?? R.notification);
   }
   function eventCard(item: NotificationItem) {
     const target = chatLink(item.link);
+    const category = item.event.includes('mention')
+      ? 'mention'
+      : item.event.includes('assigned')
+        ? 'assigned'
+        : item.event.includes('deadline') ||
+            ['due_soon', 'overdue', 'due_changed'].includes(item.event)
+          ? 'deadline'
+          : 'other';
     return (
-      <article className="event-stack" key={item.id} data-notification-id={item.id}>
+      <article
+        className={`event-stack event-${category}`}
+        key={item.id}
+        data-notification-id={item.id}
+        data-event-kind={category}
+      >
         <div className={`event-card${item.read ? '' : ' unread-event'}`}>
           <header>
             <span className="event-icon">
-              {target ? <At size={21} weight="duotone" /> : <Bell size={21} weight="duotone" />}
+              {category === 'mention' ? (
+                <At size={21} weight="duotone" />
+              ) : category === 'assigned' ? (
+                <ClipboardText size={21} weight="duotone" />
+              ) : category === 'deadline' ? (
+                <ClockCountdown size={21} weight="duotone" />
+              ) : (
+                <Bell size={21} weight="duotone" />
+              )}
             </span>
             <div>
               <h2>{eventTitle(item)}</h2>
@@ -1014,6 +1050,20 @@ export function App() {
                     online={online}
                     onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
                   />
+                  {selectedChat.kind === 'object' && selectedChat.objectId !== null && (
+                    <button
+                      type="button"
+                      className="icon-button"
+                      ref={objectInfoButton}
+                      aria-label="Об объекте"
+                      aria-expanded={objectInfoOpen}
+                      aria-controls={objectInfoOpen ? 'object-info-panel' : undefined}
+                      disabled={!online}
+                      onClick={() => setObjectInfoOpen((value) => !value)}
+                    >
+                      <Info size={20} weight="duotone" />
+                    </button>
+                  )}
                   <button
                     className="icon-button"
                     title={R.openChatWeb}
@@ -1029,404 +1079,420 @@ export function App() {
                     <ArrowSquareOut size={20} weight="duotone" />
                   </button>
                 </header>
-                <div className="chat-wall">
-                  {shownDetail?.pinned && (
-                    <section className="pinned-message" aria-label="Закреплённое сообщение">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          select(selectedChat.id, shownDetail.pinned?.id, snapshot.epoch)
-                        }
-                      >
-                        <PushPin size={19} weight="duotone" />
-                        <span className="pinned-copy">
-                          <strong>
-                            {shownDetail.pinned.authorShortName ?? 'Закреплённое сообщение'}
-                          </strong>
-                          <span>{shownDetail.pinned.preview}</span>
-                        </span>
-                      </button>
-                      {shownDetail.canPin && (
+                <div className="conversation-workspace">
+                  <div className="chat-wall">
+                    {shownDetail?.pinned && (
+                      <section className="pinned-message" aria-label="Закреплённое сообщение">
                         <button
                           type="button"
-                          className="unpin-message"
-                          aria-label="Открепить сообщение"
-                          disabled={!online || !shownDetail.canWrite}
+                          onClick={() =>
+                            select(selectedChat.id, shownDetail.pinned?.id, snapshot.epoch)
+                          }
+                        >
+                          <PushPin size={19} weight="duotone" />
+                          <span className="pinned-copy">
+                            <strong>
+                              {shownDetail.pinned.authorShortName ?? 'Закреплённое сообщение'}
+                            </strong>
+                            <span>{shownDetail.pinned.preview}</span>
+                          </span>
+                        </button>
+                        {shownDetail.canPin && (
+                          <button
+                            type="button"
+                            className="unpin-message"
+                            aria-label="Открепить сообщение"
+                            disabled={!online || !shownDetail.canWrite}
+                            onClick={() => {
+                              void action({
+                                kind: 'chat.pin',
+                                epoch: snapshot.epoch,
+                                chatId: selectedChat.id,
+                                messageId: null,
+                              });
+                            }}
+                          >
+                            <X size={18} />
+                          </button>
+                        )}
+                      </section>
+                    )}
+                    <div
+                      className="messages-scroll"
+                      ref={scroll}
+                      onScroll={() => {
+                        markVisible();
+                        const viewport = scroll.current;
+                        if (viewport) {
+                          const away =
+                            viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight >
+                            100;
+                          setAwayFromBottom(away);
+                          if (!away) setNewMessages(0);
+                        }
+                      }}
+                      aria-label={R.conversation}
+                      data-chat-id={historyChat}
+                      data-owner={messageOwner}
+                    >
+                      {hasMore && shownMessages.length > 0 && (
+                        <button
+                          className="history-button"
+                          disabled={loading || !online}
                           onClick={() => {
-                            void action({
-                              kind: 'chat.pin',
-                              epoch: snapshot.epoch,
-                              chatId: selectedChat.id,
-                              messageId: null,
-                            });
+                            const first = shownMessages[0];
+                            if (first) void loadHistory(selectedChat.id, first.id);
                           }}
                         >
-                          <X size={18} />
+                          {loading ? R.loadingHistory : R.loadOlder}
                         </button>
                       )}
-                    </section>
-                  )}
-                  <div
-                    className="messages-scroll"
-                    ref={scroll}
-                    onScroll={() => {
-                      markVisible();
-                      const viewport = scroll.current;
-                      if (viewport) {
-                        const away =
-                          viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100;
-                        setAwayFromBottom(away);
-                        if (!away) setNewMessages(0);
-                      }
-                    }}
-                    aria-label={R.conversation}
-                    data-chat-id={historyChat}
-                    data-owner={messageOwner}
-                  >
-                    {hasMore && shownMessages.length > 0 && (
+                      {messageError && (
+                        <div className="inline-status error-copy" role="status">
+                          {messageError}
+                          <button
+                            className="secondary-button"
+                            onClick={() => void loadHistory(selectedChat.id)}
+                            disabled={!online}
+                          >
+                            {R.retry}
+                          </button>
+                        </div>
+                      )}
+                      {loading && !shownMessages.length ? (
+                        <Empty title={R.loadingHistory} text="" />
+                      ) : !shownMessages.length && !messageError ? (
+                        <Empty title={R.noMessages} text={R.noMessagesHint} />
+                      ) : (
+                        shownMessages.map((message, index) => (
+                          <Fragment key={message.id}>
+                            {dateLabel(shownMessages[index - 1]?.at ?? '') !==
+                              dateLabel(message.at) && (
+                              <div className="day-divider">
+                                <span>{dateLabel(message.at)}</span>
+                              </div>
+                            )}
+                            <MessageBubble
+                              message={message}
+                              firstInGroup={
+                                !message.author ||
+                                shownMessages[index - 1]?.author?.id !== message.author.id ||
+                                dateLabel(shownMessages[index - 1]?.at ?? '') !==
+                                  dateLabel(message.at)
+                              }
+                              lastInGroup={
+                                !message.author ||
+                                shownMessages[index + 1]?.author?.id !== message.author.id ||
+                                dateLabel(shownMessages[index + 1]?.at ?? '') !==
+                                  dateLabel(message.at)
+                              }
+                              epoch={snapshot.epoch}
+                              ownId={snapshot.user?.id ?? 0}
+                              read={
+                                shownDetail?.members.some(
+                                  (member) =>
+                                    member.user.id !== snapshot.user?.id &&
+                                    (member.readUpTo ?? 0) >= message.id,
+                                ) ?? false
+                              }
+                              onError={(message) => {
+                                if (snapshotRef.current.epoch === snapshot.epoch)
+                                  setUiError(message);
+                              }}
+                              reactionsEnabled={online}
+                              canWrite={shownDetail?.canWrite === true}
+                              canPin={shownDetail?.canPin === true}
+                              pinned={shownDetail?.pinned?.id === message.id}
+                              onReply={() => {
+                                if (
+                                  snapshotRef.current.epoch !== snapshot.epoch ||
+                                  !online ||
+                                  !shownDetail?.canWrite ||
+                                  message.deleted
+                                )
+                                  return;
+                                patchDraft(selectedChat.id, (old) =>
+                                  old.pending || old.uploading
+                                    ? old
+                                    : {
+                                        ...old,
+                                        reply: {
+                                          id: message.id,
+                                          author: message.author?.shortName ?? R.unknownAuthor,
+                                          preview: message.text || 'Вложение',
+                                        },
+                                        intent: undefined,
+                                        error: '',
+                                        uncertain: false,
+                                      },
+                                );
+                                requestAnimationFrame(() => composerInput.current?.focus());
+                              }}
+                              onChange={(updated) => {
+                                if (
+                                  snapshotRef.current.epoch !== snapshot.epoch ||
+                                  selectionRef.current !== selectedChat.id
+                                )
+                                  return;
+                                setMessages((old) => mergeMessages(old, [updated]));
+                              }}
+                              onPin={() => {
+                                if (
+                                  snapshotRef.current.epoch === snapshot.epoch &&
+                                  selectionRef.current === selectedChat.id
+                                )
+                                  void loadHistory(selectedChat.id, undefined, undefined, true);
+                              }}
+                              onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
+                              onReactions={(messageId, reactions) => {
+                                if (
+                                  snapshotRef.current.epoch !== snapshot.epoch ||
+                                  selectionRef.current !== selectedChat.id
+                                )
+                                  return;
+                                setMessages((old) =>
+                                  old.map((item) =>
+                                    item.id === messageId ? { ...item, reactions } : item,
+                                  ),
+                                );
+                              }}
+                            />
+                          </Fragment>
+                        ))
+                      )}
+                      <div ref={bottom} />
+                    </div>
+                    {(awayFromBottom || newMessages > 0 || hasNewer) && (
                       <button
-                        className="history-button"
-                        disabled={loading || !online}
+                        type="button"
+                        className="new-messages-button"
                         onClick={() => {
-                          const first = shownMessages[0];
-                          if (first) void loadHistory(selectedChat.id, first.id);
+                          aroundRef.current = null;
+                          setNewMessages(0);
+                          setAwayFromBottom(false);
+                          select(selectedChat.id, undefined, snapshot.epoch);
                         }}
                       >
-                        {loading ? R.loadingHistory : R.loadOlder}
+                        К новым сообщениям{newMessages > 0 ? ` · ${newMessages}` : ''}
                       </button>
                     )}
-                    {messageError && (
-                      <div className="inline-status error-copy" role="status">
-                        {messageError}
+                    {draft.reply && (
+                      <section className="composer-context" aria-label="Ответ с цитатой">
+                        <div className="composer-context-copy">
+                          <strong>{draft.reply.author}</strong>
+                          <span>{draft.reply.preview}</span>
+                        </div>
                         <button
-                          className="secondary-button"
-                          onClick={() => void loadHistory(selectedChat.id)}
-                          disabled={!online}
+                          type="button"
+                          aria-label="Отменить ответ с цитатой"
+                          disabled={draft.pending || draft.uploading}
+                          onClick={() =>
+                            patchDraft(selectedChat.id, (old) => ({
+                              ...old,
+                              reply: undefined,
+                              intent: undefined,
+                              error: '',
+                              uncertain: false,
+                            }))
+                          }
                         >
-                          {R.retry}
+                          <X size={16} />
                         </button>
-                      </div>
+                      </section>
                     )}
-                    {loading && !shownMessages.length ? (
-                      <Empty title={R.loadingHistory} text="" />
-                    ) : !shownMessages.length && !messageError ? (
-                      <Empty title={R.noMessages} text={R.noMessagesHint} />
-                    ) : (
-                      shownMessages.map((message, index) => (
-                        <Fragment key={message.id}>
-                          {dateLabel(shownMessages[index - 1]?.at ?? '') !==
-                            dateLabel(message.at) && (
-                            <div className="day-divider">
-                              <span>{dateLabel(message.at)}</span>
-                            </div>
-                          )}
-                          <MessageBubble
-                            message={message}
-                            firstInGroup={
-                              !message.author ||
-                              shownMessages[index - 1]?.author?.id !== message.author.id ||
-                              dateLabel(shownMessages[index - 1]?.at ?? '') !==
-                                dateLabel(message.at)
-                            }
-                            lastInGroup={
-                              !message.author ||
-                              shownMessages[index + 1]?.author?.id !== message.author.id ||
-                              dateLabel(shownMessages[index + 1]?.at ?? '') !==
-                                dateLabel(message.at)
-                            }
-                            epoch={snapshot.epoch}
-                            ownId={snapshot.user?.id ?? 0}
-                            read={
-                              shownDetail?.members.some(
-                                (member) =>
-                                  member.user.id !== snapshot.user?.id &&
-                                  (member.readUpTo ?? 0) >= message.id,
-                              ) ?? false
-                            }
-                            onError={(message) => {
-                              if (snapshotRef.current.epoch === snapshot.epoch) setUiError(message);
-                            }}
-                            reactionsEnabled={online}
-                            canWrite={shownDetail?.canWrite === true}
-                            canPin={shownDetail?.canPin === true}
-                            pinned={shownDetail?.pinned?.id === message.id}
-                            onReply={() => {
-                              if (
-                                snapshotRef.current.epoch !== snapshot.epoch ||
-                                !online ||
-                                !shownDetail?.canWrite ||
-                                message.deleted
-                              )
-                                return;
-                              patchDraft(selectedChat.id, (old) =>
-                                old.pending || old.uploading
-                                  ? old
-                                  : {
-                                      ...old,
-                                      reply: {
-                                        id: message.id,
-                                        author: message.author?.shortName ?? R.unknownAuthor,
-                                        preview: message.text || 'Вложение',
-                                      },
-                                      intent: undefined,
-                                      error: '',
-                                      uncertain: false,
-                                    },
-                              );
-                              requestAnimationFrame(() => composerInput.current?.focus());
-                            }}
-                            onChange={(updated) => {
-                              if (
-                                snapshotRef.current.epoch !== snapshot.epoch ||
-                                selectionRef.current !== selectedChat.id
-                              )
-                                return;
-                              setMessages((old) => mergeMessages(old, [updated]));
-                            }}
-                            onPin={() => {
-                              if (
-                                snapshotRef.current.epoch === snapshot.epoch &&
-                                selectionRef.current === selectedChat.id
-                              )
-                                void loadHistory(selectedChat.id, undefined, undefined, true);
-                            }}
-                            onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
-                            onReactions={(messageId, reactions) => {
-                              if (
-                                snapshotRef.current.epoch !== snapshot.epoch ||
-                                selectionRef.current !== selectedChat.id
-                              )
-                                return;
-                              setMessages((old) =>
-                                old.map((item) =>
-                                  item.id === messageId ? { ...item, reactions } : item,
-                                ),
-                              );
-                            }}
-                          />
-                        </Fragment>
-                      ))
+                    {(draft.files.length > 0 || draft.uploading) && (
+                      <section
+                        className="composer-uploads"
+                        aria-label={U.attachments}
+                        data-chat-id={selectedChat.id}
+                      >
+                        {draft.files.length > 0 && (
+                          <ul className="composer-upload-list">
+                            {draft.files.map((file) => (
+                              <li
+                                key={file.fileId}
+                                className="composer-upload-chip"
+                                data-file-id={file.fileId}
+                              >
+                                <File size={19} weight="duotone" aria-hidden="true" />
+                                <span className="composer-upload-copy">
+                                  <span title={file.fileName}>{file.fileName}</span>
+                                  <small>{U.fileSize(file.size)}</small>
+                                </span>
+                                <button
+                                  type="button"
+                                  aria-label={U.remove(file.fileName)}
+                                  disabled={draft.pending || draft.uploading}
+                                  onClick={() => removeAttachment(selectedChat.id, file.fileId)}
+                                >
+                                  <X size={15} weight="bold" />
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {draft.uploading && (
+                          <span className="composer-upload-status" role="status">
+                            {U.uploading}
+                          </span>
+                        )}
+                      </section>
                     )}
-                    <div ref={bottom} />
-                  </div>
-                  {(awayFromBottom || newMessages > 0 || hasNewer) && (
-                    <button
-                      type="button"
-                      className="new-messages-button"
-                      onClick={() => {
-                        aroundRef.current = null;
-                        setNewMessages(0);
-                        setAwayFromBottom(false);
-                        select(selectedChat.id, undefined, snapshot.epoch);
+                    <form
+                      className="composer"
+                      aria-busy={draft.uploading || draft.pending}
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void send();
                       }}
                     >
-                      К новым сообщениям{newMessages > 0 ? ` · ${newMessages}` : ''}
-                    </button>
-                  )}
-                  {draft.reply && (
-                    <section className="composer-context" aria-label="Ответ с цитатой">
-                      <div className="composer-context-copy">
-                        <strong>{draft.reply.author}</strong>
-                        <span>{draft.reply.preview}</span>
+                      <div className="composer-field">
+                        <button
+                          type="button"
+                          className="composer-attach-button"
+                          aria-label={U.pickFiles}
+                          title={U.limits}
+                          disabled={
+                            !online ||
+                            draft.pending ||
+                            draft.uploading ||
+                            draft.files.length >= 10 ||
+                            shownDetail?.canWrite !== true
+                          }
+                          onClick={() => void uploadFiles('pick')}
+                        >
+                          <Paperclip size={21} weight="duotone" />
+                        </button>
+                        <textarea
+                          ref={composerInput}
+                          rows={1}
+                          aria-label={R.messagePlaceholder}
+                          placeholder={R.messagePlaceholder}
+                          maxLength={4000}
+                          value={draft.value}
+                          disabled={!online || draft.pending || shownDetail?.canWrite !== true}
+                          onChange={(event) => {
+                            if (snapshotRef.current.epoch !== snapshot.epoch) return;
+                            const value = event.target.value;
+                            if (value.trim() && online && shownDetail?.canWrite)
+                              void request({
+                                kind: 'chat.typing',
+                                epoch: snapshot.epoch,
+                                chatId: selectedChat.id,
+                              });
+                            patchDraft(selectedChat.id, (old) => ({
+                              ...old,
+                              value,
+                              error: '',
+                              uncertain: false,
+                              ...(old.intent?.text !== value.trim() && { intent: undefined }),
+                            }));
+                          }}
+                          onKeyDown={(event) => {
+                            if (
+                              event.key === 'Enter' &&
+                              !event.shiftKey &&
+                              !event.nativeEvent.isComposing &&
+                              !event.repeat
+                            ) {
+                              event.preventDefault();
+                              void send();
+                            }
+                          }}
+                          onPaste={(event) => {
+                            if (
+                              ![...event.clipboardData.items].some(
+                                (item) => item.kind === 'file' && item.type.startsWith('image/'),
+                              )
+                            )
+                              return;
+                            event.preventDefault();
+                            void uploadFiles('paste');
+                          }}
+                        />
+                        <EmojiPicker
+                          key={`${owner}:${selectedChat.id}`}
+                          disabled={!online || draft.pending || shownDetail?.canWrite !== true}
+                          onPick={(emoji) => {
+                            if (snapshotRef.current.epoch !== snapshot.epoch) return;
+                            const input = composerInput.current,
+                              start = input?.selectionStart ?? draft.value.length,
+                              end = input?.selectionEnd ?? start;
+                            patchDraft(selectedChat.id, (old) =>
+                              old.value.length - (end - start) + emoji.length > 4000
+                                ? { ...old, error: R.tooLong }
+                                : {
+                                    ...old,
+                                    value: old.value.slice(0, start) + emoji + old.value.slice(end),
+                                    intent: undefined,
+                                    error: '',
+                                    uncertain: false,
+                                  },
+                            );
+                            requestAnimationFrame(() => {
+                              if (snapshotRef.current.epoch !== snapshot.epoch) return;
+                              input?.focus();
+                              input?.setSelectionRange(start + emoji.length, start + emoji.length);
+                            });
+                          }}
+                        />
                       </div>
                       <button
-                        type="button"
-                        aria-label="Отменить ответ с цитатой"
-                        disabled={draft.pending || draft.uploading}
-                        onClick={() =>
-                          patchDraft(selectedChat.id, (old) => ({
-                            ...old,
-                            reply: undefined,
-                            intent: undefined,
-                            error: '',
-                            uncertain: false,
-                          }))
-                        }
-                      >
-                        <X size={16} />
-                      </button>
-                    </section>
-                  )}
-                  {(draft.files.length > 0 || draft.uploading) && (
-                    <section
-                      className="composer-uploads"
-                      aria-label={U.attachments}
-                      data-chat-id={selectedChat.id}
-                    >
-                      {draft.files.length > 0 && (
-                        <ul className="composer-upload-list">
-                          {draft.files.map((file) => (
-                            <li
-                              key={file.fileId}
-                              className="composer-upload-chip"
-                              data-file-id={file.fileId}
-                            >
-                              <File size={19} weight="duotone" aria-hidden="true" />
-                              <span className="composer-upload-copy">
-                                <span title={file.fileName}>{file.fileName}</span>
-                                <small>{U.fileSize(file.size)}</small>
-                              </span>
-                              <button
-                                type="button"
-                                aria-label={U.remove(file.fileName)}
-                                disabled={draft.pending || draft.uploading}
-                                onClick={() => removeAttachment(selectedChat.id, file.fileId)}
-                              >
-                                <X size={15} weight="bold" />
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {draft.uploading && (
-                        <span className="composer-upload-status" role="status">
-                          {U.uploading}
-                        </span>
-                      )}
-                    </section>
-                  )}
-                  <form
-                    className="composer"
-                    aria-busy={draft.uploading || draft.pending}
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void send();
-                    }}
-                  >
-                    <div className="composer-field">
-                      <button
-                        type="button"
-                        className="composer-attach-button"
-                        aria-label={U.pickFiles}
-                        title={U.limits}
+                        type="submit"
+                        className="send-button"
+                        aria-label={draft.pending ? R.sending : R.send}
                         disabled={
                           !online ||
+                          shownDetail?.canWrite !== true ||
+                          (!draft.value.trim() && !draft.files.length) ||
                           draft.pending ||
-                          draft.uploading ||
-                          draft.files.length >= 10 ||
-                          shownDetail?.canWrite !== true
+                          draft.uploading
                         }
-                        onClick={() => void uploadFiles('pick')}
                       >
-                        <Paperclip size={21} weight="duotone" />
+                        <PaperPlaneTilt size={24} weight="fill" />
                       </button>
-                      <textarea
-                        ref={composerInput}
-                        rows={1}
-                        aria-label={R.messagePlaceholder}
-                        placeholder={R.messagePlaceholder}
-                        maxLength={4000}
-                        value={draft.value}
-                        disabled={!online || draft.pending || shownDetail?.canWrite !== true}
-                        onChange={(event) => {
-                          if (snapshotRef.current.epoch !== snapshot.epoch) return;
-                          const value = event.target.value;
-                          if (value.trim() && online && shownDetail?.canWrite)
-                            void request({
-                              kind: 'chat.typing',
-                              epoch: snapshot.epoch,
-                              chatId: selectedChat.id,
-                            });
-                          patchDraft(selectedChat.id, (old) => ({
-                            ...old,
-                            value,
-                            error: '',
-                            uncertain: false,
-                            ...(old.intent?.text !== value.trim() && { intent: undefined }),
-                          }));
-                        }}
-                        onKeyDown={(event) => {
-                          if (
-                            event.key === 'Enter' &&
-                            !event.shiftKey &&
-                            !event.nativeEvent.isComposing &&
-                            !event.repeat
-                          ) {
-                            event.preventDefault();
-                            void send();
+                    </form>
+                    <div className={`compose-meta${draftIssue ? ' error-copy' : ''}`} role="status">
+                      <span>
+                        {draftIssue ||
+                          (shownDetail?.canWrite === false
+                            ? R.readOnly
+                            : !online
+                              ? R.offlineHint
+                              : draft.uploading
+                                ? U.uploading
+                                : draft.pending
+                                  ? R.sending
+                                  : R.keys)}
+                      </span>
+                      {draft.error && (draft.value.trim() || draft.files.length > 0) && (
+                        <button
+                          className="secondary-button"
+                          disabled={
+                            !online ||
+                            draft.pending ||
+                            draft.uploading ||
+                            shownDetail?.canWrite !== true
                           }
-                        }}
-                        onPaste={(event) => {
-                          if (
-                            ![...event.clipboardData.items].some(
-                              (item) => item.kind === 'file' && item.type.startsWith('image/'),
-                            )
-                          )
-                            return;
-                          event.preventDefault();
-                          void uploadFiles('paste');
-                        }}
-                      />
-                      <EmojiPicker
-                        key={`${owner}:${selectedChat.id}`}
-                        disabled={!online || draft.pending || shownDetail?.canWrite !== true}
-                        onPick={(emoji) => {
-                          if (snapshotRef.current.epoch !== snapshot.epoch) return;
-                          const input = composerInput.current,
-                            start = input?.selectionStart ?? draft.value.length,
-                            end = input?.selectionEnd ?? start;
-                          patchDraft(selectedChat.id, (old) =>
-                            old.value.length - (end - start) + emoji.length > 4000
-                              ? { ...old, error: R.tooLong }
-                              : {
-                                  ...old,
-                                  value: old.value.slice(0, start) + emoji + old.value.slice(end),
-                                  intent: undefined,
-                                  error: '',
-                                  uncertain: false,
-                                },
-                          );
-                          requestAnimationFrame(() => {
-                            if (snapshotRef.current.epoch !== snapshot.epoch) return;
-                            input?.focus();
-                            input?.setSelectionRange(start + emoji.length, start + emoji.length);
-                          });
-                        }}
-                      />
+                          onClick={() => void send()}
+                        >
+                          {R.retrySend}
+                        </button>
+                      )}
                     </div>
-                    <button
-                      type="submit"
-                      className="send-button"
-                      aria-label={draft.pending ? R.sending : R.send}
-                      disabled={
-                        !online ||
-                        shownDetail?.canWrite !== true ||
-                        (!draft.value.trim() && !draft.files.length) ||
-                        draft.pending ||
-                        draft.uploading
-                      }
-                    >
-                      <PaperPlaneTilt size={24} weight="fill" />
-                    </button>
-                  </form>
-                  <div className={`compose-meta${draftIssue ? ' error-copy' : ''}`} role="status">
-                    <span>
-                      {draftIssue ||
-                        (shownDetail?.canWrite === false
-                          ? R.readOnly
-                          : !online
-                            ? R.offlineHint
-                            : draft.uploading
-                              ? U.uploading
-                              : draft.pending
-                                ? R.sending
-                                : R.keys)}
-                    </span>
-                    {draft.error && (draft.value.trim() || draft.files.length > 0) && (
-                      <button
-                        className="secondary-button"
-                        disabled={
-                          !online ||
-                          draft.pending ||
-                          draft.uploading ||
-                          shownDetail?.canWrite !== true
-                        }
-                        onClick={() => void send()}
-                      >
-                        {R.retrySend}
-                      </button>
-                    )}
                   </div>
+                  {objectInfoOpen && selectedChat.kind === 'object' && (
+                    <ObjectInfoPanel
+                      key={`${owner}:${selectedChat.id}`}
+                      epoch={snapshot.epoch}
+                      chatId={selectedChat.id}
+                      online={online}
+                      onClose={() => {
+                        setObjectInfoOpen(false);
+                        requestAnimationFrame(() => objectInfoButton.current?.focus());
+                      }}
+                    />
+                  )}
                 </div>
               </>
             ) : (

@@ -49,6 +49,7 @@ const h = vi.hoisted(() => ({
   delete: vi.fn(),
   pin: vi.fn(),
   search: vi.fn(),
+  objectInfo: vi.fn(),
   toastShow: vi.fn(),
   toastClear: vi.fn(),
   toastDestroy: vi.fn(),
@@ -124,6 +125,7 @@ vi.mock('../../src/main/api/client', async (original) => {
       delete = h.delete;
       pin = h.pin;
       search = h.search;
+      objectInfo = h.objectInfo;
     },
   };
 });
@@ -276,6 +278,7 @@ describe('ClientHost: поколение входа проверяется в д
       { kind: 'file.action', epoch: 6, chatId: 4, messageId: 10, fileId: 90, action: 'open' },
       { kind: 'file.pick', epoch: 6, chatId: 4, limit: 10 },
       { kind: 'file.paste', epoch: 6, chatId: 4 },
+      { kind: 'chat.objectInfo', epoch: 6, chatId: 4 },
       { kind: 'chat.edit', epoch: 6, chatId: 4, messageId: 10, text: 'Правка' },
       { kind: 'chat.delete', epoch: 6, chatId: 4, messageId: 10 },
       { kind: 'chat.pin', epoch: 6, chatId: 4, messageId: null },
@@ -297,6 +300,7 @@ describe('ClientHost: поколение входа проверяется в д
     expect(h.uploadPick).not.toHaveBeenCalled();
     expect(h.uploadPaste).not.toHaveBeenCalled();
     expect(h.reactions).not.toHaveBeenCalled();
+    expect(h.objectInfo).not.toHaveBeenCalled();
     expect(h.edit).not.toHaveBeenCalled();
     expect(h.delete).not.toHaveBeenCalled();
     expect(h.pin).not.toHaveBeenCalled();

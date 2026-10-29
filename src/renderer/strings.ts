@@ -102,6 +102,8 @@ export const R = {
   eventMention: 'Вас упомянули',
   eventAssigned: 'Назначена задача',
   eventDeadline: 'Изменён срок',
+  eventDueSoon: 'Срок приближается',
+  eventOverdue: 'Срок прошёл',
   eventUpdated: 'Изменение в Teams',
   eventReason: 'Причина',
   eventSubject: 'Подробности',

@@ -2,7 +2,13 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
-import type { ChatFile, ChatMessage, ChatSummary, NotificationItem } from '../../src/shared/client';
+import type {
+  ChatFile,
+  ChatMessage,
+  ChatSummary,
+  NotificationItem,
+  ObjectInfo,
+} from '../../src/shared/client';
 
 export interface FixtureCall {
   method: string;
@@ -35,9 +41,39 @@ export interface FixtureState {
   mutationStatus: number | null;
   mutationDelayMs: number;
   typingReceived: number[];
+  objectChat: boolean;
+  objectInfoStatus: number | null;
+  objectInfoDelayMs: number;
+  objectInfo: ObjectInfo;
 }
 const names: Record<number, string> = { 1: 'Иванова И.И.', 2: 'Петров П.П.' };
 const csrfFor = (id: number) => `csrf-test-only-user-${id}`;
+export const fixtureObject = (): ObjectInfo => ({
+  id: 7,
+  code: 'ОБ-А',
+  name: 'Объект А',
+  fullName: 'Тестовый объект бюро',
+  client: 'Тестовый заказчик',
+  address: 'Условный адрес',
+  status: 'active',
+  statusNote: null,
+  gip: { id: 1, shortName: names[1] ?? '' },
+  gap: { id: 2, shortName: names[2] ?? '' },
+  pm: null,
+  folderRoot: '\\\\server\\share\\object-a',
+  modelPath: '\\\\server\\share\\object-a\\model.rvt',
+  currentStageId: 71,
+  stages: [
+    {
+      id: 71,
+      code: 'Р',
+      name: 'Рабочая документация',
+      startDate: '2026-01-01',
+      endDate: '2026-12-31',
+      closed: false,
+    },
+  ],
+});
 const json = (res: ServerResponse, status: number, body: unknown) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
@@ -89,6 +125,10 @@ export async function startClientStub() {
     mutationStatus: null,
     mutationDelayMs: 0,
     typingReceived: [],
+    objectChat: false,
+    objectInfoStatus: null,
+    objectInfoDelayMs: 0,
+    objectInfo: fixtureObject(),
   };
   const sessions = new Map<string, number>();
   const uploads = new Map<number, { file: ChatFile; chatId: number; userId: number }>();
@@ -138,13 +178,16 @@ export async function startClientStub() {
   const chatOf = (user: number) => (user === 1 ? 4 : 8);
   const summary = (chatId: number, user: number): ChatSummary => {
     const last = conversations.get(chatId)?.at(-1) ?? null;
+    const isObject = state.objectChat && chatId === 4;
     return {
       id: chatId,
-      kind: 'direct',
-      title: user === 1 ? 'Тестовый чат' : 'Другой разговор',
-      peer: { id: user === 1 ? 2 : 1, shortName: names[user === 1 ? 2 : 1] ?? '' },
-      objectId: null,
-      objectCode: null,
+      kind: isObject ? 'object' : 'direct',
+      title: isObject ? 'ОБ-А · Объект А' : user === 1 ? 'Тестовый чат' : 'Другой разговор',
+      peer: isObject
+        ? null
+        : { id: user === 1 ? 2 : 1, shortName: names[user === 1 ? 2 : 1] ?? '' },
+      objectId: isObject ? 7 : null,
+      objectCode: isObject ? 'ОБ-А' : null,
       memberCount: 2,
       last: last
         ? {
@@ -264,6 +307,20 @@ export async function startClientStub() {
         },
         csrfToken: csrfFor(user),
       });
+      return;
+    }
+    if (path === '/api/objects/7' && method === 'GET') {
+      if (user !== 1 || !state.objectChat) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      if (state.objectInfoDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.objectInfoDelayMs));
+      if (state.objectInfoStatus) {
+        denied(res, 'forbidden', state.objectInfoStatus);
+        return;
+      }
+      json(res, 200, state.objectInfo);
       return;
     }
     const fileRoute = /^\/api\/files\/(\d+)$/.exec(path);
@@ -640,6 +697,7 @@ export async function startClientStub() {
     url: `http://127.0.0.1:${port}/`,
     state,
     files,
+    notifications: events,
     messages: (chatId = 4) => conversations.get(chatId) ?? [],
     push: (text: string, chatId = 4, emit = true) => {
       const message = fixtureMessage(nextId++, chatId, text, chatId === 4 ? 2 : 1);

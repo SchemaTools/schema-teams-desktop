@@ -105,6 +105,31 @@ export interface ChatDetail {
   canPin: boolean;
   taskStageId: number | null;
 }
+/** Read-only projection of ObjectDetail; authorization remains on the Teams server. */
+export interface ObjectInfo {
+  id: number;
+  code: string;
+  name: string;
+  fullName: string | null;
+  client: string | null;
+  address: string | null;
+  status: 'active' | 'paused' | 'archive';
+  statusNote: string | null;
+  gip: PersonRef | null;
+  gap: PersonRef | null;
+  pm: PersonRef | null;
+  folderRoot: string | null;
+  modelPath: string | null;
+  currentStageId: number | null;
+  stages: {
+    id: number;
+    code: string;
+    name: string;
+    startDate: string;
+    endDate: string;
+    closed: boolean;
+  }[];
+}
 export interface NotificationItem {
   id: number;
   event: string;
