@@ -53,6 +53,9 @@ export interface FixtureState {
   timerFinishLostAck: boolean;
   timerDelayMs: number;
   timerWrites: { userId: number; rows: TimerRow[]; note: string | null }[];
+  latest: unknown | null;
+  latestStatus: number | null;
+  latestDelayMs: number;
 }
 const names: Record<number, string> = { 1: 'Иванова И.И.', 2: 'Петров П.П.' };
 const csrfFor = (id: number) => `csrf-test-only-user-${id}`;
@@ -143,6 +146,9 @@ export async function startClientStub() {
     timerFinishLostAck: false,
     timerDelayMs: 0,
     timerWrites: [],
+    latest: null,
+    latestStatus: null,
+    latestDelayMs: 0,
   };
   const sessions = new Map<string, number>();
   const uploads = new Map<number, { file: ChatFile; chatId: number; userId: number }>();
@@ -292,6 +298,20 @@ export async function startClientStub() {
         db: state.healthOnline ? 'ok' : 'down',
         version: '0.11.2',
       });
+      return;
+    }
+    if (path === '/api/desktop/latest' && method === 'GET') {
+      if (state.latestDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.latestDelayMs));
+      if (state.latestStatus) {
+        denied(res, state.latestStatus === 404 ? 'not_found' : 'internal', state.latestStatus);
+        return;
+      }
+      if (state.latest === null) {
+        denied(res, 'no_release', 404);
+        return;
+      }
+      json(res, 200, state.latest);
       return;
     }
     if (path === '/api/auth/login' && method === 'POST') {

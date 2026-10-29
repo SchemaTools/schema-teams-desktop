@@ -1,6 +1,7 @@
 import type { DesktopRequest } from './desktop';
 import { expectedValid, timerRowsValid } from './time';
 import { preferenceTabs, preferencesPatchValid } from './preferences';
+import { releaseVersionValid } from './updates';
 const id = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const text = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
 export function requestValid(raw: unknown): raw is DesktopRequest {
@@ -18,12 +19,18 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     'settings.patch',
     'settings.open',
     'logs.open',
+    'updates.check',
+    'updates.later',
   ].includes(String(r.kind));
   if (scoped && (typeof r.epoch !== 'number' || !Number.isSafeInteger(r.epoch) || r.epoch < 0))
     return false;
   const only = (...keys: string[]) =>
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
+    case 'updates.check':
+      return only();
+    case 'updates.later':
+      return only('version') && releaseVersionValid(r.version);
     case 'settings.read':
     case 'logs.open':
       return only();

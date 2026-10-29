@@ -55,6 +55,7 @@ import { ObjectInfoPanel } from './objectInfo';
 import './events.css';
 import { TimerPanel } from './timer';
 import { PreferencesPanel } from './preferences';
+import { UpdateBanner } from './updates';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -1066,6 +1067,7 @@ export function App() {
         </footer>
       </aside>
       <main className="conversation">
+        <UpdateBanner snapshot={snapshot} />
         {snapshot.user && snapshot.connection !== 'passwordChange' ? (
           <>
             {snapshot.connection === 'offline' && (

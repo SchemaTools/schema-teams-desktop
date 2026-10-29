@@ -45,6 +45,7 @@ import {
   type PreferencesPatch,
   type LocalPreferences,
 } from '../shared/preferences';
+import { UpdateChecker } from './desktop/updateChecker';
 
 interface Options {
   main: MainWindow;
@@ -108,6 +109,7 @@ export class ClientHost {
   private timerRevision = 0;
   private readonly absence = new TimerAbsence();
   private readonly reminders = new TimerReminders();
+  private readonly updates: UpdateChecker;
   private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
@@ -307,6 +309,17 @@ export class ClientHost {
     });
     o.main.win.on('hide', () => this.publish());
     o.main.win.on('focus', () => this.scheduleRefresh());
+    this.updates = new UpdateChecker({
+      enabled: Boolean(o.server),
+      currentVersion: app.getVersion(),
+      read: () => this.api.latestRelease(),
+      onChange: (state) => {
+        this.state.updates = state;
+        this.publish();
+      },
+    });
+    this.state.updates = this.updates.state;
+    this.updates.start();
     this.tick = setInterval(() => {
       if (this.state.focus.until && Date.parse(this.state.focus.until) <= Date.now())
         this.updateFocus({ until: null, startedAt: null });
@@ -860,6 +873,10 @@ export class ClientHost {
   }
   private async request(r: DesktopRequest): Promise<unknown> {
     switch (r.kind) {
+      case 'updates.check':
+        return ok(await this.updates.check());
+      case 'updates.later':
+        return this.updates.later(r.version) ? ok(null) : failure('validation');
       case 'settings.read':
         return ok(this.preferences());
       case 'settings.patch':
@@ -1288,6 +1305,7 @@ export class ClientHost {
     }
   }
   destroy(): void {
+    this.updates.destroy();
     clearInterval(this.tick);
     this.destroyed = true;
     this.boot++;

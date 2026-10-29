@@ -16,6 +16,8 @@ import type {
 } from '../../shared/client';
 import * as parse from './parse';
 import * as time from './time';
+import { desktopRelease } from './updates';
+import type { DesktopRelease } from '../../shared/updates';
 import {
   expectedValid,
   matchesTimer,
@@ -144,6 +146,25 @@ export class TeamsApi {
   }
   health(): Promise<ApiResult<Health>> {
     return this.request('/api/health', 'GET', parse.health, undefined, false, [200, 503]);
+  }
+  async latestRelease(): Promise<ApiResult<DesktopRelease | null>> {
+    const epoch = this.epoch;
+    const result = await this.raw('/api/desktop/latest', 'GET', undefined, epoch);
+    if (!result.ok) return result;
+    if (result.data.status === 404) {
+      try {
+        if (parse.object(parse.object(result.data.body).error).code === 'no_release')
+          return { ok: true, data: null };
+      } catch {
+        /* A generic 404 is not an empty release feed. */
+      }
+    }
+    if (result.data.status !== 200) return this.httpFailure(result.data, false);
+    try {
+      return { ok: true, data: desktopRelease(result.data.body) };
+    } catch {
+      return failure('invalid_data');
+    }
   }
   listChats(): Promise<ApiResult<ChatList>> {
     return this.request('/api/chats', 'GET', parse.list);

@@ -15,6 +15,7 @@ import type {
 } from './client';
 import type { TimeOptions, WorkTimer, TimerExpected, TimerPrepared, TimerRow } from './time';
 import type { LocalPreferences, PreferencesPatch, PreferencesTab } from './preferences';
+import type { UpdateState } from './updates';
 
 export interface ClientSnapshot {
   connection:
@@ -52,6 +53,7 @@ export interface ClientSnapshot {
   navigateTimer?: { mode: 'pick' | 'finish'; taskId?: number; nonce: number } | null;
   preferences?: LocalPreferences;
   navigateSettings?: { tab: PreferencesTab; nonce: number } | null;
+  updates?: UpdateState;
 }
 export type DesktopRequest =
   | { kind: 'init' | 'login' | 'retry' | 'window.hide' | 'app.quit' }
@@ -59,6 +61,8 @@ export type DesktopRequest =
   | { kind: 'settings.read' | 'logs.open' }
   | { kind: 'settings.open'; tab: PreferencesTab }
   | { kind: 'settings.patch'; patch: PreferencesPatch }
+  | { kind: 'updates.check' }
+  | { kind: 'updates.later'; version: string }
   | ({ epoch: number } & (
       | { kind: 'logout' }
       | { kind: 'timer.read' | 'timer.options' }
@@ -136,6 +140,8 @@ export interface DesktopResponseMap {
   'settings.open': null;
   'settings.patch': LocalPreferences;
   'logs.open': null;
+  'updates.check': UpdateState;
+  'updates.later': null;
   'window.show': null;
   'window.hide': null;
   'app.quit': null;

@@ -294,6 +294,16 @@ export function TraySurface() {
         <Info size={20} weight="duotone" />
         <span>О программе</span>
       </button>
+      {snapshot?.updates?.available &&
+        snapshot.updates.dismissedVersion !== snapshot.updates.available.version && (
+          <button
+            className="tray-item"
+            onClick={() => void act({ kind: 'settings.open', tab: 'about' })}
+          >
+            <ArrowSquareOut size={20} />
+            <span>Доступна версия {snapshot.updates.available.version}</span>
+          </button>
+        )}
       <button
         className="tray-item"
         disabled={!snapshot?.user}

@@ -19,6 +19,7 @@ import {
 import { request } from './bridge';
 import { TimerSettings } from './timerSettings';
 import './preferences.css';
+import { UpdatePreferences } from './updates';
 const tabs = {
   general: ['Общие', GearSix],
   notifications: ['Уведомления', Bell],
@@ -405,10 +406,7 @@ export function PreferencesPanel({
                   Папка открывается на этом компьютере. Журналы никуда не отправляются
                   автоматически.
                 </p>
-                <div className="preferences-note">
-                  <b>Обновление программы</b>
-                  <p>Обновления пока устанавливаются вручную.</p>
-                </div>
+                <UpdatePreferences snapshot={snapshot} />
               </>
             )}
           </div>

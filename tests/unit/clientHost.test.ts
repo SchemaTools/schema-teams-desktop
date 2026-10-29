@@ -9,6 +9,7 @@ import type { ToastSpec } from '../../src/main/notifications/types';
 import type { Logger } from '../../src/main/logger';
 import { requestValid } from '../../src/shared/requests';
 import { timerFixture, proposalFixture } from '../fixtures/time';
+import { releaseFixture } from '../fixtures/updates';
 
 const URL = 'file:///unit/client.html';
 type Handler = (event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>;
@@ -16,6 +17,7 @@ const h = vi.hoisted(() => ({
   handlers: new Map<string, Handler>(),
   api: { epoch: 7, owner: 1 as number | null },
   health: vi.fn(),
+  latestRelease: vi.fn(),
   authenticate: vi.fn(),
   clear: vi.fn(),
   logout: vi.fn(),
@@ -89,7 +91,7 @@ vi.mock('electron', async () => {
   const cookies = Object.assign(new EventEmitter(), { get: h.cookiesGet, remove: h.cookiesRemove });
   const ses = { cookies, fetch: h.fetch, protocol: { handle: vi.fn(), unhandle: vi.fn() } };
   return {
-    app: { getVersion: () => '0.4.0-test', quit: h.quit },
+    app: { getVersion: () => '0.6.0', quit: h.quit },
     BrowserWindow: class extends EventEmitter {},
     ipcMain: {
       handle: (name: string, fn: Handler) => h.handlers.set(name, fn),
@@ -129,6 +131,7 @@ vi.mock('../../src/main/api/client', async (original) => {
         h.api.owner = null;
       }
       health = h.health;
+      latestRelease = h.latestRelease;
       authenticate = h.authenticate;
       logout = h.logout;
       listChats = h.listChats;
@@ -291,6 +294,7 @@ beforeEach(() => {
   // Не запускаем bootstrap/сокет: эти тесты проверяют только маршрутизацию
   // настоящего IPC handler при управляемых поколениях API и cookie jar.
   h.health.mockImplementation(() => new Promise(() => {}));
+  h.latestRelease.mockResolvedValue({ ok: true, data: null });
   h.cookiesGet.mockResolvedValue([{ name: 'st_session', value: 'cookie-A' }]);
   h.cookiesRemove.mockResolvedValue(undefined);
   h.logout.mockImplementation(async () => {
@@ -319,6 +323,28 @@ afterEach(() => {
 });
 
 describe('ClientHost: поколение входа проверяется в доверенном main-frame IPC', () => {
+  it('public update check is device-scoped, returns only safe metadata and dismisses the shown version', async () => {
+    const { invoke, owned } = fixture();
+    h.api.owner = null;
+    owned.state.user = null;
+    owned.state.connection = 'signedOut';
+    h.latestRelease.mockResolvedValue({ ok: true, data: releaseFixture() });
+    const result = await invoke({ kind: 'updates.check' });
+    expect(result).toMatchObject({
+      ok: true,
+      data: { status: 'available', available: { version: '1.1.0' } },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/sha256|Setup|\/api\/desktop\/files/);
+    expect(await invoke({ kind: 'updates.later', version: '0.1.0' })).toMatchObject({
+      ok: false,
+      code: 'validation',
+    });
+    expect(await invoke({ kind: 'updates.later', version: '1.1.0' })).toEqual({
+      ok: true,
+      data: null,
+    });
+    expect(owned.state.updates?.dismissedVersion).toBe('1.1.0');
+  });
   it('local settings expose a projection and work signed out, preserving timer/history', async () => {
     const { invoke, owned, getSettings } = fixture({
       serverUrl: 'https://private.example.test',
