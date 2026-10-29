@@ -31,6 +31,10 @@ export interface FixtureState {
   reactionStatus: number | null;
   reactionDelayMs: number;
   canWrite: boolean;
+  canPin: boolean;
+  mutationStatus: number | null;
+  mutationDelayMs: number;
+  typingReceived: number[];
 }
 const names: Record<number, string> = { 1: 'Иванова И.И.', 2: 'Петров П.П.' };
 const csrfFor = (id: number) => `csrf-test-only-user-${id}`;
@@ -81,9 +85,14 @@ export async function startClientStub() {
     reactionStatus: null,
     reactionDelayMs: 0,
     canWrite: true,
+    canPin: true,
+    mutationStatus: null,
+    mutationDelayMs: 0,
+    typingReceived: [],
   };
   const sessions = new Map<string, number>();
   const uploads = new Map<number, { file: ChatFile; chatId: number; userId: number }>();
+  const pins = new Map<number, number>();
   let nextFileId = 2000;
   const conversations = new Map<number, ChatMessage[]>([
     [
@@ -171,6 +180,9 @@ export async function startClientStub() {
   });
   io.on('connection', (socket) => {
     state.socketConnections++;
+    socket.on('chat:typing', (data: { chatId?: unknown }) => {
+      if (typeof data?.chatId === 'number') state.typingReceived.push(data.chatId);
+    });
     void socket.join(`user:${socket.data.userId}`);
   });
 
@@ -375,7 +387,76 @@ export async function startClientStub() {
       io.to(`user:${user}`).emit('chat:reaction', { chatId, messageId, reactions: values });
       return;
     }
-    const chat = /^\/api\/chats\/(\d+)(?:\/(messages|read))?$/.exec(path);
+    const mutation = /^\/api\/chats\/(\d+)\/messages\/(\d+)$/.exec(path);
+    const search = /^\/api\/chats\/(\d+)\/search$/.exec(path);
+    if (search && method === 'GET') {
+      const id = Number(search[1]);
+      if (id !== chatOf(user)) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      const q = url.searchParams.get('q')?.trim().slice(0, 100) ?? '';
+      json(
+        res,
+        200,
+        q.length < 2
+          ? []
+          : (conversations.get(id) ?? [])
+              .filter(
+                (m) => !m.deleted && m.text.toLocaleLowerCase().includes(q.toLocaleLowerCase()),
+              )
+              .slice(-30)
+              .reverse(),
+      );
+      return;
+    }
+    if (mutation && ['PATCH', 'DELETE'].includes(method)) {
+      const chatId = Number(mutation[1]),
+        messageId = Number(mutation[2]),
+        target = conversations.get(chatId)?.find((m) => m.id === messageId);
+      if (chatId !== chatOf(user) || !target) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      if (!state.canWrite || !target.canEdit || target.author?.id !== user || target.deleted) {
+        denied(res, 'forbidden', 403);
+        return;
+      }
+      if (state.mutationDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.mutationDelayMs));
+      if (state.mutationStatus) {
+        denied(res, 'forbidden', state.mutationStatus);
+        return;
+      }
+      if (method === 'PATCH') {
+        if (typeof body?.text !== 'string' || !body.text.trim() || body.text.length > 4000) {
+          denied(res, 'validation', 400);
+          return;
+        }
+        target.text = body.text.trim();
+        target.editedAt = new Date().toISOString();
+      } else {
+        target.deleted = true;
+        target.text = '';
+        target.files = [];
+        target.reactions = [];
+        target.mentions = [];
+        target.canEdit = false;
+        if (pins.get(chatId) === messageId) pins.delete(chatId);
+      }
+      for (const m of conversations.get(chatId) ?? [])
+        if (m.replyTo?.id === messageId)
+          m.replyTo = {
+            id: messageId,
+            authorShortName: target.author?.shortName ?? null,
+            preview: target.text.slice(0, 200),
+            deleted: target.deleted,
+          };
+      json(res, 200, target);
+      io.to(`user:${user}`).emit('chat:update', target);
+      return;
+    }
+    const chat = /^\/api\/chats\/(\d+)(?:\/(messages|read|pin))?$/.exec(path);
     if (chat) {
       const id = Number(chat[1]);
       if (id !== chatOf(user)) {
@@ -393,10 +474,38 @@ export async function startClientStub() {
           canManageMembers: false,
           canLeave: false,
           canWrite: state.canWrite,
-          pinned: null,
-          canPin: false,
+          pinned: (() => {
+            const m = messages.find((m) => m.id === pins.get(id) && !m.deleted);
+            return m
+              ? { id: m.id, authorShortName: m.author?.shortName ?? null, preview: m.text }
+              : null;
+          })(),
+          canPin: state.canPin,
           taskStageId: null,
         });
+        return;
+      }
+      if (chat[2] === 'pin' && method === 'POST') {
+        if (!state.canPin || !state.canWrite) {
+          denied(res, 'forbidden', 403);
+          return;
+        }
+        if (state.mutationStatus) {
+          denied(res, 'forbidden', state.mutationStatus);
+          return;
+        }
+        const target =
+          body?.messageId === null
+            ? null
+            : messages.find((m) => m.id === body?.messageId && !m.deleted);
+        if (target === undefined) {
+          denied(res, 'validation', 400);
+          return;
+        }
+        if (target) pins.set(id, target.id);
+        else pins.delete(id);
+        json(res, 200, { ok: true });
+        io.to(`user:${user}`).emit('chat:pin', { chatId: id });
         return;
       }
       if (chat[2] === 'messages' && method === 'GET') {
@@ -405,7 +514,18 @@ export async function startClientStub() {
         const found = messages.filter(
           (message) => (!before || message.id < before) && (!after || message.id > after),
         );
-        json(res, 200, { items: found.slice(-50), hasMore: found.length > 50, hasNewer: false });
+        const around = Number(url.searchParams.get('around')) || null;
+        const index = around === null ? -1 : found.findIndex((m) => m.id === around);
+        const start =
+          index >= 0
+            ? Math.max(0, Math.min(index - 25, found.length - 50))
+            : Math.max(0, found.length - 50);
+        const items = found.slice(start, start + 50);
+        json(res, 200, {
+          items,
+          hasMore: start > 0,
+          hasNewer: start + items.length < found.length,
+        });
         return;
       }
       if (chat[2] === 'messages' && method === 'POST') {
@@ -418,8 +538,11 @@ export async function startClientStub() {
         const requestId =
           typeof req.headers['idempotency-key'] === 'string' ? req.headers['idempotency-key'] : '';
         const fileIds = body?.fileIds ?? [];
+        const replyTarget =
+          body?.replyTo === undefined ? null : messages.find((m) => m.id === body.replyTo);
         if (
           !requestId ||
+          (body?.replyTo !== undefined && !replyTarget) ||
           typeof body?.text !== 'string' ||
           (!body.text.trim() && !(Array.isArray(fileIds) && fileIds.length > 0)) ||
           body.text.length > 4000 ||
@@ -441,6 +564,13 @@ export async function startClientStub() {
         let message = idempotency.get(key);
         if (!message) {
           message = fixtureMessage(nextId++, id, body.text, user);
+          if (replyTarget)
+            message.replyTo = {
+              id: replyTarget.id,
+              authorShortName: replyTarget.author?.shortName ?? null,
+              preview: replyTarget.text.slice(0, 200),
+              deleted: replyTarget.deleted,
+            };
           message.files = fileIds.flatMap((fileId) => {
             const uploaded = uploads.get(Number(fileId));
             return uploaded ? [uploaded.file] : [];
@@ -457,6 +587,7 @@ export async function startClientStub() {
           }
         } else if (
           message.text !== body.text ||
+          (message.replyTo?.id ?? null) !== (body?.replyTo ?? null) ||
           JSON.stringify(message.files.map((f) => f.fileId)) !== JSON.stringify(fileIds)
         ) {
           denied(res, 'idempotency_conflict', 409);
@@ -518,6 +649,8 @@ export async function startClientStub() {
       return message;
     },
     disconnect: () => io.disconnectSockets(true),
+    typing: (shortName = 'Петров П.П.', chatId = 4, userId = 2) =>
+      io.to(`user:${chatId === 4 ? 1 : 2}`).emit('chat:typing', { chatId, userId, shortName }),
     close: () => new Promise<void>((done) => io.close(() => done())),
   };
 }

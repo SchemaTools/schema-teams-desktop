@@ -12,6 +12,7 @@ import {
   Moon,
   PaperPlaneTilt,
   Paperclip,
+  PushPin,
   SignIn,
   SignOut,
   Stack,
@@ -44,6 +45,9 @@ import {
 import { R } from './strings';
 import { U } from './uploadStrings';
 import './composer.css';
+import { TypingStatus } from './typing';
+import { ChatSearch } from './chatSearch';
+import { EmojiPicker } from './emojiPicker';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -69,7 +73,8 @@ interface Draft {
   error: string;
   uploadError: string;
   uncertain: boolean;
-  intent?: { text: string; fileIds: number[]; requestId: string };
+  reply?: { id: number; author: string; preview: string };
+  intent?: { text: string; fileIds: number[]; requestId: string; replyTo?: number };
 }
 const emptyDraft = (): Draft => ({
   value: '',
@@ -98,18 +103,24 @@ export function App() {
   const [historyChat, setHistoryChat] = useState<number | null>(null);
   const [selectionRevision, setSelectionRevision] = useState(0);
   const aroundRef = useRef<{ chatId: number; messageId: number } | null>(null);
+  const navigationPending = useRef(false);
   const [loading, setLoading] = useState(false);
   const [messageError, setMessageError] = useState('');
   const [hasMore, setHasMore] = useState(false);
+  const [hasNewer, setHasNewer] = useState(false);
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
   const draftsRef = useRef(drafts);
   const [draftOwner, setDraftOwner] = useState('');
   const loadId = useRef(0);
   const scroll = useRef<HTMLDivElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
+  const composerInput = useRef<HTMLTextAreaElement>(null);
   const readPending = useRef(new Set<number>());
   const readUpTo = useRef(new Map<number, number>());
   const markFrame = useRef(0);
+  const displayedSelectionRevision = useRef(-1);
+  const [newMessages, setNewMessages] = useState(0);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
   const owner = `${snapshot.epoch}:${snapshot.user?.id ?? ''}`;
   const online = snapshot.connection === 'online';
 
@@ -171,6 +182,7 @@ export function App() {
       if (snapshotRef.current.epoch !== expectedEpoch) return;
       selectionRef.current = next;
       setSelection(next);
+      navigationPending.current = true;
       setSelectionRevision((value) => value + 1);
       aroundRef.current =
         typeof next === 'number' && around !== undefined
@@ -188,13 +200,22 @@ export function App() {
     [],
   );
 
-  async function loadHistory(chatId: number, before?: number, around?: number) {
+  async function loadHistory(chatId: number, before?: number, around?: number, refresh = false) {
     const captured = snapshotRef.current;
     if (captured.epoch !== snapshot.epoch) return;
     if (!captured.user || captured.connection !== 'online') return;
     const ticket = ++loadId.current;
     const oldTop = scroll.current?.scrollTop ?? 0;
     const oldHeight = scroll.current?.scrollHeight ?? 0;
+    const nearBottom = !scroll.current || oldHeight - oldTop - scroll.current.clientHeight < 100;
+    const visibleId = scroll.current
+      ? [...scroll.current.querySelectorAll<HTMLElement>('[data-message-id]')].find(
+          (el) =>
+            el.getBoundingClientRect().bottom > (scroll.current?.getBoundingClientRect().top ?? 0),
+        )?.dataset.messageId
+      : undefined;
+    const targetAround =
+      around ?? (refresh && !nearBottom && visibleId ? Number(visibleId) : undefined);
     setLoading(true);
     setMessageError('');
     const [page, info] = await Promise.all([
@@ -203,7 +224,7 @@ export function App() {
         epoch: captured.epoch,
         chatId,
         ...(before !== undefined ? { before } : {}),
-        ...(around !== undefined ? { around } : {}),
+        ...(targetAround !== undefined ? { around: targetAround } : {}),
       }),
       request({ kind: 'chat.detail', epoch: captured.epoch, chatId }),
     ]);
@@ -224,21 +245,39 @@ export function App() {
       return;
     }
     setDetail(info.data);
+    displayedSelectionRevision.current = selectionRevision;
     setMessageOwner(`${captured.epoch}:${captured.user.id}`);
     setHistoryChat(chatId);
     setMessages((old) =>
-      before !== undefined ? mergeMessages(page.data.items, old) : page.data.items,
+      before !== undefined || refresh ? mergeMessages(old, page.data.items) : page.data.items,
     );
-    setHasMore(page.data.hasMore);
+    if (!refresh) setHasMore(page.data.hasMore);
+    if (before === undefined && !refresh) setHasNewer(page.data.hasNewer);
+    else if (refresh && nearBottom && targetAround === undefined) setHasNewer(false);
+    if (refresh && !nearBottom) {
+      const newest = info.data.chat.last?.id ?? 0;
+      const oldNewest = messages[messages.length - 1]?.id ?? 0;
+      if (newest > oldNewest)
+        setNewMessages((value) => Math.max(value, info.data.chat.unread || 1));
+    } else if (!refresh || nearBottom) setNewMessages(0);
     requestAnimationFrame(() => {
+      if (
+        ticket !== loadId.current ||
+        captured.epoch !== snapshotRef.current.epoch ||
+        selectionRef.current !== chatId
+      )
+        return;
       const viewport = scroll.current;
       if (!viewport) return;
-      if (before !== undefined) viewport.scrollTop = oldTop + viewport.scrollHeight - oldHeight;
+      if (before !== undefined)
+        viewport.scrollTo({ top: oldTop + viewport.scrollHeight - oldHeight, behavior: 'instant' });
+      else if (refresh && !nearBottom) viewport.scrollTo({ top: oldTop, behavior: 'instant' });
       else if (around !== undefined)
         viewport
           .querySelector(`[data-message-id="${around}"]`)
-          ?.scrollIntoView({ block: 'center' });
-      else bottom.current?.scrollIntoView({ block: 'end' });
+          ?.scrollIntoView({ block: 'center', behavior: 'instant' });
+      else viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' });
+      if (before === undefined && !refresh) navigationPending.current = false;
       markVisible();
     });
   }
@@ -247,8 +286,19 @@ export function App() {
     if (typeof selection !== 'number' || !online) return;
     const around =
       aroundRef.current?.chatId === selection ? aroundRef.current.messageId : undefined;
-    void loadHistory(selection, undefined, around);
-  }, [selection, selectionRevision, snapshot.epoch, snapshot.revision, online]);
+    const refresh =
+      historyChat === selection &&
+      !navigationPending.current &&
+      messageOwner === owner &&
+      displayedSelectionRevision.current === selectionRevision;
+    void loadHistory(selection, undefined, refresh ? undefined : around, refresh);
+  }, [
+    selection,
+    selectionRevision,
+    snapshot.epoch,
+    snapshot.historyRevision ?? snapshot.revision,
+    online,
+  ]);
 
   useEffect(() => {
     const target = snapshot.navigateChat;
@@ -342,9 +392,11 @@ export function App() {
       return;
     }
     const intent =
-      current.intent?.text === text && sameFileIds(current.intent.fileIds, fileIds)
+      current.intent?.text === text &&
+      sameFileIds(current.intent.fileIds, fileIds) &&
+      current.intent.replyTo === current.reply?.id
         ? current.intent
-        : { text, fileIds, requestId: crypto.randomUUID() };
+        : { text, fileIds, requestId: crypto.randomUUID(), replyTo: current.reply?.id };
     patchDraft(chatId, (old) => ({ ...old, intent, pending: true, error: '', uncertain: false }));
     const result = await request({
       kind: 'chat.send',
@@ -353,6 +405,7 @@ export function App() {
       text,
       requestId: intent.requestId,
       ...(fileIds.length && { fileIds }),
+      ...(intent.replyTo !== undefined && { replyTo: intent.replyTo }),
     });
     if (
       captured.epoch !== snapshotRef.current.epoch ||
@@ -370,6 +423,7 @@ export function App() {
       }
       patchDraft(chatId, (old) =>
         old.value.trim() === text &&
+        old.reply?.id === intent.replyTo &&
         sameFileIds(
           old.files.map((file) => file.fileId),
           fileIds,
@@ -519,38 +573,53 @@ export function App() {
     const title = chatTitle(chat);
     const own = chat.last?.authorId === snapshot.user?.id;
     return (
-      <button
-        type="button"
-        className={`chat-row${selection === chat.id ? ' selected' : ''}`}
-        key={chat.id}
-        onClick={() => select(chat.id, undefined, snapshot.epoch)}
-        aria-pressed={selection === chat.id}
-        data-chat-id={chat.id}
-      >
-        <Avatar
-          name={chat.kind === 'object' ? chat.objectCode || title : title}
-          id={chat.peer?.id ?? chat.id}
-          object={chat.kind === 'object'}
-        />
-        <span className="row-copy">
-          <span className="row-top">
-            <span className="row-name">{title}</span>
-            <span className="row-meta">{rowDate(chat.last?.at)}</span>
-          </span>
-          <span className="row-bottom">
-            <span className="preview">
-              {chat.last
-                ? `${own ? R.you : chat.last.authorShortName || ''}${chat.last.authorShortName || own ? ': ' : ''}${chat.last.deleted ? R.deleted : chat.last.preview}`
-                : R.emptyPreview}
+      <div className="chat-row-wrap" key={chat.id}>
+        <button
+          type="button"
+          className={`chat-row${selection === chat.id ? ' selected' : ''}`}
+          onClick={() => select(chat.id, undefined, snapshot.epoch)}
+          aria-pressed={selection === chat.id}
+          data-chat-id={chat.id}
+        >
+          <Avatar
+            name={chat.kind === 'object' ? chat.objectCode || title : title}
+            id={chat.peer?.id ?? chat.id}
+            object={chat.kind === 'object'}
+          />
+          <span className="row-copy">
+            <span className="row-top">
+              <span className="row-name">{title}</span>
+              <span className="row-meta">{rowDate(chat.last?.at)}</span>
             </span>
-            {chat.unread > 0 ? (
-              <span className="unread-badge">{chat.unread > 99 ? '99+' : chat.unread}</span>
-            ) : own ? (
-              <Check size={15} />
-            ) : null}
+            <span className="row-bottom">
+              <span className="preview">
+                {chat.last
+                  ? `${own ? R.you : chat.last.authorShortName || ''}${chat.last.authorShortName || own ? ': ' : ''}${chat.last.deleted ? R.deleted : chat.last.preview}`
+                  : R.emptyPreview}
+              </span>
+              {chat.unread > 0 ? (
+                <span className="unread-badge">{chat.unread > 99 ? '99+' : chat.unread}</span>
+              ) : own ? (
+                <Check size={15} />
+              ) : null}
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+        {chat.unread > 0 && chat.last && (
+          <button
+            type="button"
+            className="chat-read-action"
+            aria-label={`Прочитано: ${title}`}
+            title="Прочитано"
+            disabled={!online}
+            onClick={() =>
+              void action({ kind: 'chat.markRead', epoch: snapshot.epoch, chatId: chat.id })
+            }
+          >
+            <Check size={16} />
+          </button>
+        )}
+      </div>
     );
   }
   const serviceRow = (
@@ -922,7 +991,14 @@ export function App() {
                     <h1>{chatTitle(selectedChat)}</h1>
                     <small>
                       {selectedChat.objectCode ? `${selectedChat.objectCode} · ` : ''}
-                      {R.members(shownDetail?.members.length ?? selectedChat.memberCount)}
+                      <TypingStatus
+                        entries={snapshot.typing}
+                        chatId={selectedChat.id}
+                        online={online}
+                        fallback={R.members(
+                          shownDetail?.members.length ?? selectedChat.memberCount,
+                        )}
+                      />
                     </small>
                   </div>
                   {activeFocus && (
@@ -931,6 +1007,13 @@ export function App() {
                       {R.focusUntil(timeLabel(snapshot.focus.until ?? ''))}
                     </span>
                   )}
+                  <ChatSearch
+                    key={`${owner}:${selectedChat.id}`}
+                    epoch={snapshot.epoch}
+                    chatId={selectedChat.id}
+                    online={online}
+                    onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
+                  />
                   <button
                     className="icon-button"
                     title={R.openChatWeb}
@@ -947,10 +1030,55 @@ export function App() {
                   </button>
                 </header>
                 <div className="chat-wall">
+                  {shownDetail?.pinned && (
+                    <section className="pinned-message" aria-label="Закреплённое сообщение">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          select(selectedChat.id, shownDetail.pinned?.id, snapshot.epoch)
+                        }
+                      >
+                        <PushPin size={19} weight="duotone" />
+                        <span className="pinned-copy">
+                          <strong>
+                            {shownDetail.pinned.authorShortName ?? 'Закреплённое сообщение'}
+                          </strong>
+                          <span>{shownDetail.pinned.preview}</span>
+                        </span>
+                      </button>
+                      {shownDetail.canPin && (
+                        <button
+                          type="button"
+                          className="unpin-message"
+                          aria-label="Открепить сообщение"
+                          disabled={!online || !shownDetail.canWrite}
+                          onClick={() => {
+                            void action({
+                              kind: 'chat.pin',
+                              epoch: snapshot.epoch,
+                              chatId: selectedChat.id,
+                              messageId: null,
+                            });
+                          }}
+                        >
+                          <X size={18} />
+                        </button>
+                      )}
+                    </section>
+                  )}
                   <div
                     className="messages-scroll"
                     ref={scroll}
-                    onScroll={markVisible}
+                    onScroll={() => {
+                      markVisible();
+                      const viewport = scroll.current;
+                      if (viewport) {
+                        const away =
+                          viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > 100;
+                        setAwayFromBottom(away);
+                        if (!away) setNewMessages(0);
+                      }
+                    }}
                     aria-label={R.conversation}
                     data-chat-id={historyChat}
                     data-owner={messageOwner}
@@ -994,6 +1122,18 @@ export function App() {
                           )}
                           <MessageBubble
                             message={message}
+                            firstInGroup={
+                              !message.author ||
+                              shownMessages[index - 1]?.author?.id !== message.author.id ||
+                              dateLabel(shownMessages[index - 1]?.at ?? '') !==
+                                dateLabel(message.at)
+                            }
+                            lastInGroup={
+                              !message.author ||
+                              shownMessages[index + 1]?.author?.id !== message.author.id ||
+                              dateLabel(shownMessages[index + 1]?.at ?? '') !==
+                                dateLabel(message.at)
+                            }
                             epoch={snapshot.epoch}
                             ownId={snapshot.user?.id ?? 0}
                             read={
@@ -1007,6 +1147,50 @@ export function App() {
                               if (snapshotRef.current.epoch === snapshot.epoch) setUiError(message);
                             }}
                             reactionsEnabled={online}
+                            canWrite={shownDetail?.canWrite === true}
+                            canPin={shownDetail?.canPin === true}
+                            pinned={shownDetail?.pinned?.id === message.id}
+                            onReply={() => {
+                              if (
+                                snapshotRef.current.epoch !== snapshot.epoch ||
+                                !online ||
+                                !shownDetail?.canWrite ||
+                                message.deleted
+                              )
+                                return;
+                              patchDraft(selectedChat.id, (old) =>
+                                old.pending || old.uploading
+                                  ? old
+                                  : {
+                                      ...old,
+                                      reply: {
+                                        id: message.id,
+                                        author: message.author?.shortName ?? R.unknownAuthor,
+                                        preview: message.text || 'Вложение',
+                                      },
+                                      intent: undefined,
+                                      error: '',
+                                      uncertain: false,
+                                    },
+                              );
+                              requestAnimationFrame(() => composerInput.current?.focus());
+                            }}
+                            onChange={(updated) => {
+                              if (
+                                snapshotRef.current.epoch !== snapshot.epoch ||
+                                selectionRef.current !== selectedChat.id
+                              )
+                                return;
+                              setMessages((old) => mergeMessages(old, [updated]));
+                            }}
+                            onPin={() => {
+                              if (
+                                snapshotRef.current.epoch === snapshot.epoch &&
+                                selectionRef.current === selectedChat.id
+                              )
+                                void loadHistory(selectedChat.id, undefined, undefined, true);
+                            }}
+                            onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
                             onReactions={(messageId, reactions) => {
                               if (
                                 snapshotRef.current.epoch !== snapshot.epoch ||
@@ -1025,6 +1209,44 @@ export function App() {
                     )}
                     <div ref={bottom} />
                   </div>
+                  {(awayFromBottom || newMessages > 0 || hasNewer) && (
+                    <button
+                      type="button"
+                      className="new-messages-button"
+                      onClick={() => {
+                        aroundRef.current = null;
+                        setNewMessages(0);
+                        setAwayFromBottom(false);
+                        select(selectedChat.id, undefined, snapshot.epoch);
+                      }}
+                    >
+                      К новым сообщениям{newMessages > 0 ? ` · ${newMessages}` : ''}
+                    </button>
+                  )}
+                  {draft.reply && (
+                    <section className="composer-context" aria-label="Ответ с цитатой">
+                      <div className="composer-context-copy">
+                        <strong>{draft.reply.author}</strong>
+                        <span>{draft.reply.preview}</span>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="Отменить ответ с цитатой"
+                        disabled={draft.pending || draft.uploading}
+                        onClick={() =>
+                          patchDraft(selectedChat.id, (old) => ({
+                            ...old,
+                            reply: undefined,
+                            intent: undefined,
+                            error: '',
+                            uncertain: false,
+                          }))
+                        }
+                      >
+                        <X size={16} />
+                      </button>
+                    </section>
+                  )}
                   {(draft.files.length > 0 || draft.uploading) && (
                     <section
                       className="composer-uploads"
@@ -1089,6 +1311,7 @@ export function App() {
                         <Paperclip size={21} weight="duotone" />
                       </button>
                       <textarea
+                        ref={composerInput}
                         rows={1}
                         aria-label={R.messagePlaceholder}
                         placeholder={R.messagePlaceholder}
@@ -1098,6 +1321,12 @@ export function App() {
                         onChange={(event) => {
                           if (snapshotRef.current.epoch !== snapshot.epoch) return;
                           const value = event.target.value;
+                          if (value.trim() && online && shownDetail?.canWrite)
+                            void request({
+                              kind: 'chat.typing',
+                              epoch: snapshot.epoch,
+                              chatId: selectedChat.id,
+                            });
                           patchDraft(selectedChat.id, (old) => ({
                             ...old,
                             value,
@@ -1126,6 +1355,32 @@ export function App() {
                             return;
                           event.preventDefault();
                           void uploadFiles('paste');
+                        }}
+                      />
+                      <EmojiPicker
+                        key={`${owner}:${selectedChat.id}`}
+                        disabled={!online || draft.pending || shownDetail?.canWrite !== true}
+                        onPick={(emoji) => {
+                          if (snapshotRef.current.epoch !== snapshot.epoch) return;
+                          const input = composerInput.current,
+                            start = input?.selectionStart ?? draft.value.length,
+                            end = input?.selectionEnd ?? start;
+                          patchDraft(selectedChat.id, (old) =>
+                            old.value.length - (end - start) + emoji.length > 4000
+                              ? { ...old, error: R.tooLong }
+                              : {
+                                  ...old,
+                                  value: old.value.slice(0, start) + emoji + old.value.slice(end),
+                                  intent: undefined,
+                                  error: '',
+                                  uncertain: false,
+                                },
+                          );
+                          requestAnimationFrame(() => {
+                            if (snapshotRef.current.epoch !== snapshot.epoch) return;
+                            input?.focus();
+                            input?.setSelectionRange(start + emoji.length, start + emoji.length);
+                          });
                         }}
                       />
                     </div>

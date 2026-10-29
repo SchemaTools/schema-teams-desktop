@@ -35,6 +35,8 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
         only('mode') && typeof r.mode === 'string' && ['system', 'light', 'dark'].includes(r.mode)
       );
     case 'chat.detail':
+    case 'chat.markRead':
+    case 'chat.typing':
       return only('chatId') && id(r.chatId);
     case 'chat.messages':
       return (
@@ -43,10 +45,15 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
         ['before', 'after', 'around'].filter((k) => r[k] !== undefined).length <= 1 &&
         ['before', 'after', 'around'].every((k) => r[k] === undefined || id(r[k]))
       );
+    case 'chat.search':
+      return (
+        only('chatId', 'q') && id(r.chatId) && text(r.q, 100) && (r.q as string).trim().length >= 2
+      );
     case 'chat.send':
       return (
-        only('chatId', 'text', 'requestId', 'fileIds') &&
+        only('chatId', 'text', 'requestId', 'fileIds', 'replyTo') &&
         id(r.chatId) &&
+        (r.replyTo === undefined || id(r.replyTo)) &&
         text(r.text, 4000) &&
         (r.fileIds === undefined ||
           (Array.isArray(r.fileIds) &&
@@ -57,6 +64,20 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
           (Array.isArray(r.fileIds) && r.fileIds.length > 0)) &&
         typeof r.requestId === 'string' &&
         /^[A-Za-z0-9._:-]{8,100}$/.test(r.requestId)
+      );
+    case 'chat.edit':
+      return (
+        only('chatId', 'messageId', 'text') &&
+        id(r.chatId) &&
+        id(r.messageId) &&
+        text(r.text, 4000) &&
+        (r.text as string).trim().length > 0
+      );
+    case 'chat.delete':
+      return only('chatId', 'messageId') && id(r.chatId) && id(r.messageId);
+    case 'chat.pin':
+      return (
+        only('chatId', 'messageId') && id(r.chatId) && (r.messageId === null || id(r.messageId))
       );
     case 'chat.reaction':
       return (

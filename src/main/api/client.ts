@@ -164,14 +164,32 @@ export class TeamsApi {
       },
     );
   }
+  search(chatId: number, q: string): Promise<ApiResult<ChatMessage[]>> {
+    if (!this.validId(chatId) || typeof q !== 'string' || q.trim().length < 2 || q.length > 100)
+      return Promise.resolve(failure('validation'));
+    return this.request(
+      `/api/chats/${chatId}/search?q=${encodeURIComponent(q.trim())}`,
+      'GET',
+      (raw) => {
+        if (!Array.isArray(raw) || raw.length > 30) throw new parse.InvalidData();
+        return raw.map((item) => {
+          const value = parse.message(item);
+          if (value.chatId !== chatId) throw new parse.InvalidData();
+          return value;
+        });
+      },
+    );
+  }
   send(
     chatId: number,
     text: string,
     requestId: string,
     fileIds: number[] = [],
+    replyTo?: number,
   ): Promise<ApiResult<ChatMessage>> {
     if (
       !this.validId(chatId) ||
+      (replyTo !== undefined && !this.validId(replyTo)) ||
       !Array.isArray(fileIds) ||
       typeof text !== 'string' ||
       (!text.trim() && fileIds.length === 0) ||
@@ -195,6 +213,7 @@ export class TeamsApi {
           value.chatId !== chatId ||
           value.text !== expectedText ||
           value.author?.id !== owner ||
+          (value.replyTo?.id ?? null) !== (replyTo ?? null) ||
           value.files.length !== expectedFiles.length ||
           value.files
             .map((f) => f.fileId)
@@ -204,11 +223,67 @@ export class TeamsApi {
           throw new parse.InvalidData();
         return value;
       },
-      { text: expectedText, ...(fileIds.length > 0 && { fileIds: [...fileIds] }) },
+      {
+        text: expectedText,
+        ...(fileIds.length > 0 && { fileIds: [...fileIds] }),
+        ...(replyTo !== undefined && { replyTo }),
+      },
       true,
       [200, 201],
       requestId,
     );
+  }
+  edit(chatId: number, messageId: number, text: string): Promise<ApiResult<ChatMessage>> {
+    if (
+      !this.validId(chatId) ||
+      !this.validId(messageId) ||
+      typeof text !== 'string' ||
+      !text.trim() ||
+      text.trim().length > 4000
+    )
+      return Promise.resolve(failure('validation'));
+    const owner = this.owner,
+      expected = text.trim();
+    return this.request(
+      `/api/chats/${chatId}/messages/${messageId}`,
+      'PATCH',
+      (raw) => {
+        const value = parse.message(raw);
+        if (
+          value.id !== messageId ||
+          value.chatId !== chatId ||
+          value.author?.id !== owner ||
+          value.deleted ||
+          value.text !== expected
+        )
+          throw new parse.InvalidData();
+        return value;
+      },
+      { text: expected },
+    );
+  }
+  delete(chatId: number, messageId: number): Promise<ApiResult<ChatMessage>> {
+    if (!this.validId(chatId) || !this.validId(messageId))
+      return Promise.resolve(failure('validation'));
+    const owner = this.owner;
+    return this.request(`/api/chats/${chatId}/messages/${messageId}`, 'DELETE', (raw) => {
+      const value = parse.message(raw);
+      if (
+        value.id !== messageId ||
+        value.chatId !== chatId ||
+        value.author?.id !== owner ||
+        !value.deleted ||
+        value.text ||
+        value.files.length
+      )
+        throw new parse.InvalidData();
+      return value;
+    });
+  }
+  pin(chatId: number, messageId: number | null): Promise<ApiResult<null>> {
+    return this.validId(chatId) && (messageId === null || this.validId(messageId))
+      ? this.request(`/api/chats/${chatId}/pin`, 'POST', parse.acknowledged, { messageId })
+      : Promise.resolve(failure('validation'));
   }
   upload(
     chatId: number,

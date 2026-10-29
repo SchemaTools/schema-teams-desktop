@@ -26,6 +26,7 @@ export interface RealtimeSocket {
   off(event: string, listener: Listener): void;
   connect(): void;
   disconnect(): void;
+  emit(event: string, data: unknown): void;
 }
 export interface RealtimeSocketOptions {
   path: '/socket.io';
@@ -67,6 +68,9 @@ const createSocket: SocketFactory = (url, options) => {
     disconnect: () => {
       socket.disconnect();
     },
+    emit: (event, data) => {
+      socket.emit(event, data);
+    },
   };
 };
 
@@ -75,6 +79,7 @@ interface Active {
   listeners: [string, Listener][];
   generation: number;
   epoch: number;
+  typingAt?: number;
 }
 
 export class RealtimeClient {
@@ -116,6 +121,22 @@ export class RealtimeClient {
   stop(): void {
     this.retire();
     this.publish(false);
+  }
+  typing(chatId: number): boolean {
+    const active = this.active;
+    if (
+      !active ||
+      !Number.isSafeInteger(chatId) ||
+      chatId <= 0 ||
+      !this.status ||
+      !this.current(active.generation, active.epoch)
+    )
+      return false;
+    const now = Date.now();
+    if (active.typingAt !== undefined && now - active.typingAt < 3000) return false;
+    active.typingAt = now;
+    active.socket.emit('chat:typing', { chatId });
+    return true;
   }
 
   private current(generation: number, epoch: number): boolean {

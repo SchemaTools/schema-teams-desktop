@@ -45,6 +45,30 @@ afterEach(() => {
 });
 
 describe('main Socket.IO session lifecycle', () => {
+  it('typing emits only on a connected current socket, throttles at three seconds and resets per connection', async () => {
+    const f = fixture();
+    await f.client.start();
+    const socket = f.sockets[0];
+    if (!socket) throw Error('Missing socket');
+    const emit = vi.spyOn(socket, 'emit');
+    expect(f.client.typing(4)).toBe(false);
+    socket.emit('connect');
+    expect(f.client.typing(0)).toBe(false);
+    expect(f.client.typing(4)).toBe(true);
+    expect(f.client.typing(4)).toBe(false);
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(f.client.typing(4)).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.client.typing(4)).toBe(true);
+    expect(emit.mock.calls.filter((c) => c[0] === 'chat:typing')).toEqual([
+      ['chat:typing', { chatId: 4 }],
+      ['chat:typing', { chatId: 4 }],
+    ]);
+    f.nextEpoch();
+    expect(f.client.typing(4)).toBe(false);
+    f.client.stop();
+    expect(f.client.typing(4)).toBe(false);
+  });
   it('uses a private websocket connection with the URL-scoped cookie header', async () => {
     const f = fixture();
     await Promise.all([f.client.start(), f.client.start(), f.client.start()]);

@@ -45,6 +45,10 @@ const h = vi.hoisted(() => ({
   uploadReset: vi.fn(),
   uploadDestroy: vi.fn(),
   reactions: vi.fn(),
+  edit: vi.fn(),
+  delete: vi.fn(),
+  pin: vi.fn(),
+  search: vi.fn(),
   toastShow: vi.fn(),
   toastClear: vi.fn(),
   toastDestroy: vi.fn(),
@@ -116,6 +120,10 @@ vi.mock('../../src/main/api/client', async (original) => {
       focusSummary = h.focusSummary;
       notificationSettings = h.notificationSettings;
       reactions = h.reactions;
+      edit = h.edit;
+      delete = h.delete;
+      pin = h.pin;
+      search = h.search;
     },
   };
 });
@@ -268,6 +276,9 @@ describe('ClientHost: поколение входа проверяется в д
       { kind: 'file.action', epoch: 6, chatId: 4, messageId: 10, fileId: 90, action: 'open' },
       { kind: 'file.pick', epoch: 6, chatId: 4, limit: 10 },
       { kind: 'file.paste', epoch: 6, chatId: 4 },
+      { kind: 'chat.edit', epoch: 6, chatId: 4, messageId: 10, text: 'Правка' },
+      { kind: 'chat.delete', epoch: 6, chatId: 4, messageId: 10 },
+      { kind: 'chat.pin', epoch: 6, chatId: 4, messageId: null },
       {
         kind: 'chat.reaction',
         epoch: 6,
@@ -286,6 +297,9 @@ describe('ClientHost: поколение входа проверяется в д
     expect(h.uploadPick).not.toHaveBeenCalled();
     expect(h.uploadPaste).not.toHaveBeenCalled();
     expect(h.reactions).not.toHaveBeenCalled();
+    expect(h.edit).not.toHaveBeenCalled();
+    expect(h.delete).not.toHaveBeenCalled();
+    expect(h.pin).not.toHaveBeenCalled();
   });
   it('UNC из старого интерфейса всё равно только показывается в папке', async () => {
     const { invoke } = fixture();

@@ -27,6 +27,8 @@ export interface ClientSnapshot {
   appVersion: string;
   epoch: number;
   revision: number;
+  historyRevision?: number;
+  typing?: { chatId: number; userId: number; shortName: string; until: number }[];
   theme: 'light' | 'dark';
   themePreference: 'system' | 'light' | 'dark';
   chats: ChatSummary[];
@@ -46,8 +48,20 @@ export type DesktopRequest =
       | { kind: 'window.show'; target?: 'events'; chatId?: number; messageId?: number }
       | { kind: 'chat.list' }
       | { kind: 'chat.detail'; chatId: number }
+      | { kind: 'chat.search'; chatId: number; q: string }
+      | { kind: 'chat.markRead'; chatId: number }
       | { kind: 'chat.messages'; chatId: number; before?: number; after?: number; around?: number }
-      | { kind: 'chat.send'; chatId: number; text: string; requestId: string; fileIds?: number[] }
+      | {
+          kind: 'chat.send';
+          chatId: number;
+          text: string;
+          requestId: string;
+          fileIds?: number[];
+          replyTo?: number;
+        }
+      | { kind: 'chat.edit'; chatId: number; messageId: number; text: string }
+      | { kind: 'chat.delete'; chatId: number; messageId: number }
+      | { kind: 'chat.pin'; chatId: number; messageId: number | null }
       | {
           kind: 'chat.reaction';
           chatId: number;
@@ -56,6 +70,7 @@ export type DesktopRequest =
           remove: boolean;
         }
       | { kind: 'chat.read'; chatId: number; upTo: number }
+      | { kind: 'chat.typing'; chatId: number }
       | { kind: 'chat.view'; chatId: number | null }
       | { kind: 'open.site'; path: string }
       | { kind: 'open.link'; url: string }
@@ -84,10 +99,16 @@ export interface DesktopResponseMap {
   'app.quit': null;
   'chat.list': ChatList;
   'chat.detail': ChatDetail;
+  'chat.search': ChatMessage[];
+  'chat.markRead': null;
   'chat.messages': MessagePage;
   'chat.send': ChatMessage;
+  'chat.edit': ChatMessage;
+  'chat.delete': ChatMessage;
+  'chat.pin': null;
   'chat.reaction': ChatReaction[];
   'chat.read': null;
+  'chat.typing': null;
   'chat.view': null;
   'open.site': null;
   'open.link': null;

@@ -127,6 +127,8 @@ export class ClientHost {
       appVersion: app.getVersion(),
       epoch: 0,
       revision: 0,
+      historyRevision: 0,
+      typing: [],
       theme: 'light',
       themePreference: o.settings.get().theme,
       chats: [],
@@ -436,7 +438,7 @@ export class ClientHost {
       if (focus.ok) this.updateFocus(focus.data);
       const bad = [chats, notifications, focus].find((r) => !r.ok);
       this.state.error = bad && !bad.ok ? bad.error : null;
-      this.state.revision++;
+      this.state.historyRevision = (this.state.historyRevision ?? 0) + 1;
       this.publish();
     } finally {
       this.refreshing = false;
@@ -447,6 +449,39 @@ export class ClientHost {
     }
   }
   private event(name: RealtimeEvent, data: unknown): void {
+    if (name === 'chat:typing') {
+      try {
+        const p = parse.object(data);
+        if (
+          this.state.connection !== 'online' ||
+          !this.state.user ||
+          typeof p.chatId !== 'number' ||
+          !Number.isSafeInteger(p.chatId) ||
+          typeof p.userId !== 'number' ||
+          !Number.isSafeInteger(p.userId) ||
+          p.userId <= 0 ||
+          p.userId === this.api.owner ||
+          !this.state.chats.some((c) => c.id === p.chatId) ||
+          typeof p.shortName !== 'string' ||
+          !p.shortName.trim() ||
+          p.shortName.length > 200
+        )
+          return;
+        this.state.typing = [
+          ...(this.state.typing ?? [])
+            .filter(
+              (t) => t.until > Date.now() && !(t.chatId === p.chatId && t.userId === p.userId),
+            )
+            .slice(-99),
+          { chatId: p.chatId, userId: p.userId, shortName: p.shortName, until: Date.now() + 5000 },
+        ];
+        this.publish();
+      } catch {
+        /* Malformed presence data never reaches the renderer. */
+      }
+      return;
+    }
+    if (name === 'chat:presence') return;
     this.o.log.info('событие клиента', { event: name });
     if (name === 'session') {
       this.invalidate();
@@ -739,7 +774,32 @@ export class ClientHost {
           ...(r.around && { around: r.around }),
         });
       case 'chat.send': {
-        const result = await this.api.send(r.chatId, r.text, r.requestId, r.fileIds);
+        const result = await this.api.send(r.chatId, r.text, r.requestId, r.fileIds, r.replyTo);
+        if (result.ok) this.scheduleRefresh();
+        return result;
+      }
+      case 'chat.search':
+        return this.api.search(r.chatId, r.q);
+      case 'chat.markRead': {
+        if (!this.o.main.win.isVisible() || !this.o.main.win.isFocused())
+          return failure('validation');
+        const last = this.state.chats.find((c) => c.id === r.chatId)?.last?.id;
+        if (!last) return failure('not_found');
+        const result = await this.api.read(r.chatId, last);
+        if (result.ok) this.scheduleRefresh();
+        return result;
+      }
+      case 'chat.edit':
+      case 'chat.delete': {
+        const result =
+          r.kind === 'chat.edit'
+            ? await this.api.edit(r.chatId, r.messageId, r.text)
+            : await this.api.delete(r.chatId, r.messageId);
+        if (result.ok) this.scheduleRefresh();
+        return result;
+      }
+      case 'chat.pin': {
+        const result = await this.api.pin(r.chatId, r.messageId);
         if (result.ok) this.scheduleRefresh();
         return result;
       }
@@ -761,6 +821,18 @@ export class ClientHost {
       }
       case 'chat.view':
         this.activeChat = r.chatId;
+        return ok(null);
+      case 'chat.typing':
+        if (
+          this.state.connection !== 'online' ||
+          !this.state.user ||
+          this.state.user.mustChangePassword ||
+          this.activeChat !== r.chatId ||
+          !this.o.main.win.isVisible() ||
+          !this.o.main.win.isFocused()
+        )
+          return failure('validation');
+        this.realtime?.typing(r.chatId);
         return ok(null);
       case 'open.path':
         return ok(await this.paths.open({ ...r, reveal: true }));
@@ -796,6 +868,7 @@ export class ClientHost {
   }
   private publish(): void {
     if (this.destroyed) return;
+    if (this.state.connection !== 'online') this.state.typing = [];
     this.state.revision++;
     this.state.epoch = this.api?.epoch ?? 0;
     this.state.themePreference = this.o.settings.get().theme;

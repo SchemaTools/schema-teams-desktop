@@ -6,6 +6,7 @@ import { colorClass, initials, timeLabel } from './model';
 import { R } from './strings';
 import { MessageReactions } from './reactions';
 import { ReactionText } from './reactionStrings';
+import { MessageActions } from './messageActions';
 
 const previewQueue: { current: () => boolean; run: () => Promise<void> }[] = [];
 let activePreviews = 0;
@@ -354,6 +355,15 @@ export function MessageBubble({
   onError,
   reactionsEnabled = true,
   onReactions,
+  canWrite = false,
+  canPin = false,
+  pinned = false,
+  onReply,
+  onChange,
+  onPin,
+  onJump,
+  firstInGroup = true,
+  lastInGroup = true,
 }: {
   message: ChatMessage;
   epoch: number;
@@ -362,6 +372,15 @@ export function MessageBubble({
   onError: (message: string) => void;
   reactionsEnabled?: boolean;
   onReactions?: (messageId: number, reactions: ChatReaction[]) => void;
+  canWrite?: boolean;
+  canPin?: boolean;
+  pinned?: boolean;
+  onReply?: () => void;
+  onChange?: (message: ChatMessage) => void;
+  onPin?: () => void;
+  onJump?: (messageId: number) => void;
+  firstInGroup?: boolean;
+  lastInGroup?: boolean;
 }) {
   const own = message.author?.id === ownId;
   const name = message.author?.shortName ?? R.unknownAuthor;
@@ -378,18 +397,32 @@ export function MessageBubble({
   };
   return (
     <article
-      className={`message-row${own ? ' outgoing' : ''}`}
+      className={`message-row${own ? ' outgoing' : ''}${lastInGroup ? ' group-last' : ' group-middle'}`}
       data-message-id={message.id}
       aria-label={`${name}, ${timeLabel(message.at)}`}
     >
-      {!own && <Avatar name={name} id={message.author?.id ?? 0} small />}
+      {!own &&
+        (lastInGroup ? (
+          <Avatar name={name} id={message.author?.id ?? 0} small />
+        ) : (
+          <span className="avatar-gap" aria-hidden="true" />
+        ))}
       <div className={`message-bubble${!message.deleted ? ' message-with-reactions' : ''}`}>
-        {!own && <span className="message-author">{name}</span>}
+        {!own && firstInGroup && (
+          <span className={`message-author ${colorClass(message.author?.id ?? 0)}`}>{name}</span>
+        )}
         {!message.deleted && message.replyTo && (
-          <blockquote className="message-quote">
-            <b>{message.replyTo.authorShortName ?? R.unknownAuthor}</b>
-            {message.replyTo.deleted ? R.deleted : message.replyTo.preview}
-          </blockquote>
+          <button
+            type="button"
+            className="message-quote-button"
+            aria-label="Перейти к исходному сообщению"
+            onClick={() => message.replyTo && onJump?.(message.replyTo.id)}
+          >
+            <blockquote className="message-quote">
+              <b>{message.replyTo.authorShortName ?? R.unknownAuthor}</b>
+              {message.replyTo.deleted ? R.deleted : message.replyTo.preview}
+            </blockquote>
+          </button>
         )}
         <MessageText
           text={message.deleted ? R.deleted : message.text}
@@ -423,9 +456,22 @@ export function MessageBubble({
             messageId={message.id}
             ownId={ownId}
             reactions={message.reactions}
-            enabled={reactionsEnabled}
+            enabled={reactionsEnabled && canWrite && message.author !== null}
             onError={onError}
             onChange={onReactions}
+          />
+        )}
+        {onReply && onChange && onPin && (
+          <MessageActions
+            message={message}
+            epoch={epoch}
+            ownId={ownId}
+            canWrite={canWrite && reactionsEnabled}
+            canPin={canPin}
+            pinned={pinned}
+            onReply={onReply}
+            onChange={onChange}
+            onPin={onPin}
           />
         )}
         <footer className="message-footer">

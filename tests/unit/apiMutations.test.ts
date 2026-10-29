@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TeamsApi, type TeamsApiOptions } from '../../src/main/api/client';
 import { validateUpload, MAX_UPLOAD_BYTES } from '../../src/main/files/uploadPolicy';
 import type { ChatFile, ChatMessage } from '../../src/shared/client';
+import { requestValid } from '../../src/shared/requests';
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -47,6 +48,124 @@ async function setup(id = 1, mustChangePassword = false) {
 const bytes = () => new Uint8Array([1, 2, 3, 4]);
 const headers = (init?: RequestInit) => new Headers(init?.headers);
 afterEach(() => vi.useRealTimers());
+
+describe('TeamsApi: цитаты, правка, удаление и закрепление', () => {
+  it('поиск кодирует запрос и принимает только сообщения запрошенного чата', async () => {
+    const h = await setup();
+    h.fetch.mockResolvedValueOnce(json([message()]));
+    expect(await h.api.search(4, 'узел /?')).toEqual({ ok: true, data: [message()] });
+    expect(h.fetch.mock.calls[1]?.[0]).toBe(
+      '/api/chats/4/search?q=%D1%83%D0%B7%D0%B5%D0%BB%20%2F%3F',
+    );
+    h.fetch.mockResolvedValueOnce(json([{ ...message(), chatId: 8 }]));
+    expect(await h.api.search(4, 'тест')).toMatchObject({ ok: false, code: 'invalid_data' });
+  });
+  it('слишком короткий поиск не вызывает сеть', async () => {
+    const h = await setup();
+    expect(await h.api.search(4, 'я')).toMatchObject({ ok: false, code: 'validation' });
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('отправляет replyTo с прежним ключом и проверяет цитату ответа', async () => {
+    const h = await setup();
+    const m = message();
+    m.replyTo = { id: 7, authorShortName: 'Петров П.П.', preview: 'Исходное', deleted: false };
+    h.fetch.mockResolvedValueOnce(json(m, 201));
+    expect(await h.api.send(4, 'Проверка', 'reply-key-0001', [], 7)).toEqual({ ok: true, data: m });
+    expect(JSON.parse(String(h.fetch.mock.calls[1]?.[1]?.body))).toEqual({
+      text: 'Проверка',
+      replyTo: 7,
+    });
+    expect(headers(h.fetch.mock.calls[1]?.[1]).get('idempotency-key')).toBe('reply-key-0001');
+    h.fetch.mockResolvedValueOnce(json({ ...m, replyTo: { ...m.replyTo, id: 8 } }, 201));
+    expect(await h.api.send(4, 'Проверка', 'reply-key-0001', [], 7)).toMatchObject({
+      ok: false,
+      code: 'invalid_data',
+    });
+  });
+  it('правит только ожидаемое сообщение и отправляет CSRF', async () => {
+    const h = await setup(),
+      m = { ...message([], 'Новый текст'), editedAt: '2026-10-29T10:00:00Z' };
+    h.fetch.mockResolvedValueOnce(json(m));
+    expect(await h.api.edit(4, 10, ' Новый текст ')).toEqual({ ok: true, data: m });
+    const [path, init] = h.fetch.mock.calls[1] ?? [];
+    expect(path).toBe('/api/chats/4/messages/10');
+    expect(init?.method).toBe('PATCH');
+    expect(JSON.parse(String(init?.body))).toEqual({ text: 'Новый текст' });
+    expect(headers(init).get('x-csrf-token')).toBe('csrf-A');
+  });
+  it.each([
+    { id: 11 },
+    { chatId: 8 },
+    { author: { id: 2, shortName: 'Петров П.П.' } },
+    { text: 'Чужая правка' },
+    { deleted: true },
+  ])('отвергает несовпавший результат правки: %j', async (change) => {
+    const h = await setup();
+    h.fetch.mockResolvedValueOnce(json({ ...message(), ...change }));
+    expect(await h.api.edit(4, 10, 'Проверка')).toMatchObject({
+      ok: false,
+      code: 'invalid_data',
+      uncertain: true,
+    });
+  });
+  it('при удалении требует tombstone своего сообщения без файлов', async () => {
+    const h = await setup(),
+      m = { ...message([], ''), deleted: true, canEdit: false };
+    h.fetch.mockResolvedValueOnce(json(m));
+    expect(await h.api.delete(4, 10)).toEqual({ ok: true, data: m });
+    expect(h.fetch.mock.calls[1]?.[1]?.method).toBe('DELETE');
+    h.fetch.mockResolvedValueOnce(json({ ...m, files: [file()] }));
+    expect(await h.api.delete(4, 10)).toMatchObject({ ok: false, code: 'invalid_data' });
+  });
+  it('закрепляет и открепляет строго по API подтверждению', async () => {
+    const h = await setup();
+    h.fetch.mockResolvedValueOnce(json({ ok: true }));
+    expect(await h.api.pin(4, 10)).toEqual({ ok: true, data: null });
+    expect(JSON.parse(String(h.fetch.mock.calls[1]?.[1]?.body))).toEqual({ messageId: 10 });
+    h.fetch.mockResolvedValueOnce(json({ ok: true }));
+    expect(await h.api.pin(4, null)).toEqual({ ok: true, data: null });
+    expect(JSON.parse(String(h.fetch.mock.calls[2]?.[1]?.body))).toEqual({ messageId: null });
+  });
+  it('не повторяет неизвестный исход правки или удаления автоматически', async () => {
+    const h = await setup();
+    h.fetch.mockRejectedValue(Error('private failure'));
+    expect(await h.api.edit(4, 10, 'Правка')).toMatchObject({
+      ok: false,
+      code: 'network',
+      uncertain: true,
+    });
+    expect(await h.api.delete(4, 10)).toMatchObject({
+      ok: false,
+      code: 'network',
+      uncertain: true,
+    });
+    expect(h.fetch).toHaveBeenCalledTimes(3);
+  });
+  it('отказ в правах сохраняется как ошибка без данных сервера', async () => {
+    const h = await setup();
+    h.fetch.mockResolvedValueOnce(error('forbidden', 403));
+    const result = await h.api.delete(4, 10);
+    expect(result).toMatchObject({ ok: false, code: 'forbidden' });
+    expect(JSON.stringify(result)).not.toContain('private error');
+  });
+  it('валидация IPC отвергает посторонние поля, пустую правку и неверные IDs', () => {
+    for (const value of [
+      { kind: 'chat.edit', epoch: 7, chatId: 4, messageId: 10, text: ' ' },
+      { kind: 'chat.delete', epoch: 7, chatId: 4, messageId: 10, url: 'https://example.com' },
+      { kind: 'chat.pin', epoch: 7, chatId: 4, messageId: 0 },
+      {
+        kind: 'chat.send',
+        epoch: 7,
+        chatId: 4,
+        text: 'Цитата',
+        requestId: 'reply-key-0001',
+        replyTo: -1,
+      },
+    ])
+      expect(requestValid(value)).toBe(false);
+    expect(requestValid({ kind: 'chat.pin', epoch: 7, chatId: 4, messageId: null })).toBe(true);
+  });
+});
 
 describe('TeamsApi: сообщения с предварительно загруженными файлами', () => {
   it('отправляет файл без текста и проверяет исходные fileIds в ответе', async () => {
