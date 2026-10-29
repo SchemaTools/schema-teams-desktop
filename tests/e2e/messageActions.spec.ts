@@ -1,3 +1,4 @@
+import { existingProfile } from './existingProfile';
 import {
   _electron as electron,
   expect,
@@ -28,6 +29,7 @@ async function signIn(current: ElectronApplication, page: Page) {
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'online');
 }
 async function openChat(pick = true) {
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },

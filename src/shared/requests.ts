@@ -24,12 +24,20 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     'server.read',
     'server.check',
     'server.apply',
+    'setup.open',
+    'setup.inventory',
   ].includes(String(r.kind));
   if (scoped && (typeof r.epoch !== 'number' || !Number.isSafeInteger(r.epoch) || r.epoch < 0))
     return false;
   const only = (...keys: string[]) =>
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
+    case 'setup.finish':
+      return only('autostart') && typeof r.autostart === 'boolean';
+    case 'setup.open':
+      return only();
+    case 'setup.inventory':
+      return only('refresh') && (r.refresh === undefined || typeof r.refresh === 'boolean');
     case 'server.read':
       return only();
     case 'server.check':

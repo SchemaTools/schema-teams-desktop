@@ -3,7 +3,9 @@ import type { ServerCheck, ServerConfiguration } from '../shared/serverConfigura
 import { configuredServer } from '../shared/serverConfiguration';
 import { request } from './bridge';
 import './serverConfiguration.css';
-export function ServerConfigurationPanel() {
+export function ServerConfigurationPanel({
+  onChecked,
+}: { onChecked?: (current: boolean) => void } = {}) {
   const [config, setConfig] = useState<ServerConfiguration | null>(null),
     [url, setUrl] = useState(''),
     [proof, setProof] = useState<ServerCheck | null>(null),
@@ -32,6 +34,7 @@ export function ServerConfigurationPanel() {
     flight.current = true;
     setPending(true);
     setProof(null);
+    onChecked?.(false);
     setConfirmed(false);
     setError('');
     const ticket = ++generation.current;
@@ -40,8 +43,10 @@ export function ServerConfigurationPanel() {
     if (!alive.current) return;
     setPending(false);
     if (ticket !== generation.current) return;
-    if (result.ok) setProof(result.data);
-    else setError(result.error);
+    if (result.ok) {
+      setProof(result.data);
+      onChecked?.(result.data.url === config?.url);
+    } else setError(result.error);
   }
   async function apply() {
     if (flight.current || !proof || !confirmed) return;
@@ -81,6 +86,7 @@ export function ServerConfigurationPanel() {
             setUrl(event.target.value);
             generation.current++;
             setProof(null);
+            onChecked?.(false);
             setConfirmed(false);
             setError('');
           }}

@@ -83,6 +83,7 @@ const h = vi.hoisted(() => ({
   traySetImage: vi.fn(),
   applyAutostart: vi.fn(),
   openLogs: vi.fn(),
+  readRevit: vi.fn(),
   setOverlayIcon: vi.fn(),
   published: [] as { channel: string; state: ClientSnapshot }[],
 }));
@@ -255,6 +256,7 @@ function fixture(patch: Partial<Settings> = {}) {
     applyAutostart: h.applyAutostart,
     autostartAvailable: true,
     openLogs: h.openLogs,
+    readRevit: h.readRevit,
     tray: {
       isDestroyed: () => false,
       setToolTip: vi.fn(),
@@ -323,6 +325,86 @@ afterEach(() => {
 });
 
 describe('ClientHost: поколение входа проверяется в доверенном main-frame IPC', () => {
+  it('setup completes atomically with autostart only after a fresh compatible health read', async () => {
+    const f = fixture();
+    h.health.mockResolvedValueOnce({
+      ok: true,
+      data: { status: 'ok', db: 'ok', version: '0.11.2-b' },
+    });
+    expect(await f.invoke({ kind: 'setup.finish', epoch: 7, autostart: false })).toEqual({
+      ok: true,
+      data: null,
+    });
+    expect(f.settingsUpdate).toHaveBeenCalledExactlyOnceWith({
+      onboardingComplete: true,
+      autostart: false,
+    });
+    expect(f.getSettings().onboardingComplete).toBe(true);
+    expect(h.applyAutostart).toHaveBeenCalledExactlyOnceWith(false);
+    expect(f.owned.state.setupRequired).toBe(false);
+  });
+  it('setup cannot complete while signed out or offline', async () => {
+    const f = fixture();
+    f.owned.state.connection = 'offline';
+    expect((await f.invoke({ kind: 'setup.finish', epoch: 7, autostart: true })).ok).toBe(false);
+    f.owned.state.connection = 'signedOut';
+    h.api.owner = null;
+    f.owned.state.user = null;
+    expect((await f.invoke({ kind: 'setup.finish', epoch: 7, autostart: true })).ok).toBe(false);
+    expect(f.settingsUpdate).not.toHaveBeenCalled();
+  });
+  it('failed setup persistence rolls back startup to off for an unfinished new profile', async () => {
+    const f = fixture();
+    h.health.mockResolvedValueOnce({
+      ok: true,
+      data: { status: 'ok', db: 'ok', version: '0.11.2' },
+    });
+    f.settingsUpdate.mockImplementationOnce(() => {
+      throw Error('private');
+    });
+    expect(await f.invoke({ kind: 'setup.finish', epoch: 7, autostart: true })).toMatchObject({
+      ok: false,
+      code: 'settings_error',
+    });
+    expect(f.getSettings().onboardingComplete).toBe(false);
+    expect(h.applyAutostart.mock.calls).toEqual([[true], [false]]);
+  });
+  it('late setup completion after another login does not mark the device configured', async () => {
+    const f = fixture(),
+      pendingHealth = deferred<ApiResult<{ status: 'ok'; db: 'ok'; version: string }>>();
+    h.health.mockReturnValueOnce(pendingHealth.promise);
+    const pending = f.invoke({ kind: 'setup.finish', epoch: 7, autostart: true });
+    h.api.epoch++;
+    h.api.owner = 2;
+    pendingHealth.resolve({ ok: true, data: { status: 'ok', db: 'ok', version: '0.11.2' } });
+    expect(await pending).toMatchObject({ ok: false, code: 'stale_session' });
+    expect(f.settingsUpdate).not.toHaveBeenCalled();
+  });
+  it('setup inventory is read-only and unavailable details never expose local paths', async () => {
+    const f = fixture();
+    h.api.owner = null;
+    f.owned.state.user = null;
+    h.readRevit.mockRejectedValueOnce(Error('private-path'));
+    expect(JSON.stringify(await f.invoke({ kind: 'setup.inventory' }))).not.toContain(
+      'private-path',
+    );
+    h.readRevit.mockResolvedValueOnce({ checkedAt: Date.now(), years: [] });
+    expect(await f.invoke({ kind: 'setup.inventory' })).toMatchObject({
+      ok: true,
+      data: { years: [] },
+    });
+    expect(f.settingsUpdate).not.toHaveBeenCalled();
+  });
+  it('incompatible health blocks setup completion without changing startup', async () => {
+    const f = fixture();
+    h.health.mockResolvedValueOnce({
+      ok: true,
+      data: { status: 'ok', db: 'ok', version: '0.10.0' },
+    });
+    expect((await f.invoke({ kind: 'setup.finish', epoch: 7, autostart: true })).ok).toBe(false);
+    expect(f.settingsUpdate).not.toHaveBeenCalled();
+    expect(h.applyAutostart).not.toHaveBeenCalled();
+  });
   it('public update check is device-scoped, returns only safe metadata and dismisses the shown version', async () => {
     const { invoke, owned } = fixture();
     h.api.owner = null;

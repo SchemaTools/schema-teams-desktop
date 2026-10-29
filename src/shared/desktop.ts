@@ -17,6 +17,7 @@ import type { TimeOptions, WorkTimer, TimerExpected, TimerPrepared, TimerRow } f
 import type { LocalPreferences, PreferencesPatch, PreferencesTab } from './preferences';
 import type { UpdateState } from './updates';
 import type { ServerConfiguration, ServerCheck } from './serverConfiguration';
+import type { RevitInventory } from './setup';
 
 export interface ClientSnapshot {
   connection:
@@ -55,6 +56,8 @@ export interface ClientSnapshot {
   preferences?: LocalPreferences;
   navigateSettings?: { tab: PreferencesTab; nonce: number } | null;
   updates?: UpdateState;
+  setupRequired?: boolean;
+  navigateSetup?: number;
 }
 export type DesktopRequest =
   | { kind: 'init' | 'login' | 'retry' | 'window.hide' | 'app.quit' }
@@ -67,8 +70,11 @@ export type DesktopRequest =
   | { kind: 'server.read' }
   | { kind: 'server.check'; url: string }
   | { kind: 'server.apply'; url: string; token: string }
+  | { kind: 'setup.open' }
+  | { kind: 'setup.inventory'; refresh?: boolean }
   | ({ epoch: number } & (
       | { kind: 'logout' }
+      | { kind: 'setup.finish'; autostart: boolean }
       | { kind: 'timer.read' | 'timer.options' }
       | { kind: 'timer.open'; mode: 'pick' | 'finish'; taskId?: number }
       | { kind: 'timer.absenceDismiss'; id: number }
@@ -149,6 +155,9 @@ export interface DesktopResponseMap {
   'server.read': ServerConfiguration;
   'server.check': ServerCheck;
   'server.apply': null;
+  'setup.open': null;
+  'setup.inventory': RevitInventory;
+  'setup.finish': null;
   'window.show': null;
   'window.hide': null;
   'app.quit': null;

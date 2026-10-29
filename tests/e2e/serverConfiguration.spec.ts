@@ -1,3 +1,4 @@
+import { existingProfile } from './existingProfile';
 import {
   _electron as electron,
   expect,
@@ -39,6 +40,7 @@ async function launch(configured = true, environment = false) {
         timerReminderSeen: { '1': '2026-10-29' },
       }),
     );
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: {
@@ -125,6 +127,7 @@ test('проверка чужого адреса без cookie; применен
   const sourceHealth = old.state.calls.filter((c) => c.path === '/api/health').length;
   await activeApp().close();
   app = undefined;
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: '' },

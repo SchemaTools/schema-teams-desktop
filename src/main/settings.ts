@@ -11,6 +11,7 @@ export interface Settings {
   serverUrl?: string;
   /** New isolated authentication storage after an explicit server change. */
   serverPartition?: string;
+  onboardingComplete: boolean;
   /** Запускать вместе с Windows (ТЗ, 4.4: включено по умолчанию) */
   autostart: boolean;
   window: WindowState;
@@ -27,6 +28,7 @@ export interface Settings {
 }
 
 export const DEFAULTS: Settings = {
+  onboardingComplete: false,
   autostart: true,
   window: {},
   zoomLevel: 0,
@@ -53,6 +55,7 @@ export function normalizeSettings(raw: unknown): Settings {
   };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
+  if (typeof r.onboardingComplete === 'boolean') s.onboardingComplete = r.onboardingComplete;
   if (
     typeof r.timerReminderSeen === 'object' &&
     r.timerReminderSeen !== null &&
@@ -125,7 +128,12 @@ export class SettingsStore {
 
   private static read(file: string): Settings {
     try {
-      return normalizeSettings(JSON.parse(readFileSync(file, 'utf8')));
+      const raw: unknown = JSON.parse(readFileSync(file, 'utf8'));
+      const value = normalizeSettings(raw);
+      // Existing users keep working; the wizard remains available in General settings.
+      if (raw && typeof raw === 'object' && !Array.isArray(raw) && !('onboardingComplete' in raw))
+        value.onboardingComplete = true;
+      return value;
     } catch {
       return normalizeSettings(null);
     }

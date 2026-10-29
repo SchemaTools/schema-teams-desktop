@@ -289,6 +289,9 @@ export function PreferencesPanel({
                       </p>
                     </div>
                     <ServerConfigurationPanel />
+                    <button onClick={() => void request({ kind: 'setup.open' })}>
+                      Пройти настройку заново
+                    </button>
                   </>
                 )}
               </>

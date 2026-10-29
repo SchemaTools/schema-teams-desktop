@@ -49,6 +49,8 @@ import { UpdateChecker } from './desktop/updateChecker';
 import { ServerConfigurationService } from './desktop/serverConfiguration';
 import { supportedServerVersion, MINIMUM_SERVER_VERSION } from '../shared/serverConfiguration';
 import type { Health } from '../shared/client';
+import type { RevitInventory } from '../shared/setup';
+import { RevitInventoryService } from './desktop/revitInventory';
 
 interface Options {
   main: MainWindow;
@@ -64,6 +66,7 @@ interface Options {
   connectionNotice?: string;
   checkServer?: (server: URL) => Promise<ApiResult<Health>>;
   activateServer?: (server: URL) => Promise<void>;
+  readRevit?: () => Promise<RevitInventory>;
 }
 interface Notice {
   reminder?: ReminderTicket;
@@ -122,6 +125,7 @@ export class ClientHost {
   private readonly reminders = new TimerReminders();
   private readonly updates: UpdateChecker;
   private readonly configuration: ServerConfigurationService;
+  private readonly inventory: RevitInventoryService;
   private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
@@ -161,6 +165,12 @@ export class ClientHost {
     if (!this.loggingOut) void this.bootstrap();
   };
   constructor(private readonly o: Options) {
+    this.inventory = new RevitInventoryService(
+      o.readRevit ??
+        (async () => {
+          throw Error('unavailable');
+        }),
+    );
     this.ses = session.fromPartition(o.partition ?? PARTITION);
     this.configuration = new ServerConfigurationService({
       current: o.server,
@@ -902,6 +912,23 @@ export class ClientHost {
   }
   private async request(r: DesktopRequest): Promise<unknown> {
     switch (r.kind) {
+      case 'setup.open':
+        this.state.navigateSetup = (this.state.navigateSetup ?? 0) + 1;
+        this.o.main.show();
+        this.trayWindow?.hide();
+        this.publish();
+        return ok(null);
+      case 'setup.inventory':
+        try {
+          return ok(await this.inventory.inspect(r.refresh));
+        } catch {
+          return {
+            ok: false,
+            code: 'inventory_error',
+            error: 'Не удалось проверить стандартные папки Revit. Повторите позже.',
+            retryable: true,
+          };
+        }
       case 'server.read':
         return ok(this.configuration.read());
       case 'server.check':
@@ -1014,6 +1041,20 @@ export class ClientHost {
     }
     if (!this.api.owner || this.state.user?.mustChangePassword) return failure('unauthenticated');
     switch (r.kind) {
+      case 'setup.finish': {
+        if (this.state.connection !== 'online') return failure('network');
+        const health = await this.api.health();
+        if (this.destroyed || r.epoch !== this.api.epoch) return failure('stale_session');
+        if (
+          !health.ok ||
+          health.data.status !== 'ok' ||
+          health.data.db !== 'ok' ||
+          !supportedServerVersion(health.data.version)
+        )
+          return failure('network');
+        const result = this.savePreferences({ autostart: r.autostart }, true);
+        return result.ok ? ok(null) : result;
+      }
       case 'timer.open':
         this.openTimer(r.mode, r.taskId);
         return ok(null);
@@ -1194,6 +1235,7 @@ export class ClientHost {
     }
   }
   private publish(): void {
+    this.state.setupRequired = !this.o.settings.get().onboardingComplete;
     this.state.preferences = this.preferences();
     this.state.timerReminderTime = this.o.settings.get().timer.reminderTime;
     this.absence.observe(this.state);
@@ -1261,13 +1303,18 @@ export class ClientHost {
       notifications: { ...value.notifications },
     };
   }
-  private savePreferences(patch: PreferencesPatch): ApiResult<LocalPreferences> {
+  private savePreferences(
+    patch: PreferencesPatch,
+    completeSetup = false,
+  ): ApiResult<LocalPreferences> {
     if (!preferencesPatchValid(patch)) return failure('validation');
     const before = this.o.settings.get(),
-      autoChanged = patch.autostart !== undefined && patch.autostart !== before.autostart;
+      autoChanged = patch.autostart !== undefined && patch.autostart !== before.autostart,
+      applyAuto = autoChanged || completeSetup;
     try {
-      if (autoChanged) this.o.applyAutostart(Boolean(patch.autostart));
+      if (applyAuto) this.o.applyAutostart(Boolean(patch.autostart));
       this.o.settings.update({
+        ...(completeSetup && { onboardingComplete: true }),
         ...(patch.autostart !== undefined && { autostart: patch.autostart }),
         ...(patch.theme !== undefined && { theme: patch.theme }),
         ...(patch.notifications && {
@@ -1275,16 +1322,18 @@ export class ClientHost {
         }),
       });
     } catch {
-      if (autoChanged)
+      if (applyAuto)
         try {
-          this.o.applyAutostart(before.autostart);
+          this.o.applyAutostart(
+            completeSetup && !before.onboardingComplete ? false : before.autostart,
+          );
         } catch {
           this.o.log.warn('не удалось восстановить настройку автозапуска');
         }
       return {
         ok: false,
         code: 'settings_error',
-        error: autoChanged
+        error: applyAuto
           ? 'Не удалось применить автозапуск или сохранить настройку. Проверьте автозапуск Windows.'
           : 'Не удалось сохранить настройки. Повторите действие.',
         retryable: false,

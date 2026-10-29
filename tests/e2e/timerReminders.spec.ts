@@ -1,3 +1,4 @@
+import { existingProfile } from './existingProfile';
 import {
   _electron as electron,
   expect,
@@ -49,6 +50,7 @@ test.afterEach(async () => {
   await stub.close();
 });
 async function launch() {
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
@@ -120,11 +122,15 @@ test('«Ещё работаю» закрывает напоминание, де�
   await policy(true);
   const toast = await fire();
   await expect(toast.getByText('Таймер ещё идёт', { exact: true })).toBeVisible();
+  // DOM loads while the native window is still hidden and awaiting its display policy.
+  // The restart scenario starts only after onShow records the actual presentation.
+  await expect.poll(() => Object.keys(shownDay())).toEqual(['1']);
   await toast.getByRole('button', { name: 'Ещё работаю', exact: true }).click();
   expect(writes()).toHaveLength(0);
   if (!app) throw Error('App unavailable');
   await app.close();
   app = undefined;
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },

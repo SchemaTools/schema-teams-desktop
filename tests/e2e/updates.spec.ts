@@ -1,3 +1,4 @@
+import { existingProfile } from './existingProfile';
 import {
   _electron as electron,
   expect,
@@ -25,6 +26,7 @@ test.afterEach(async () => {
   await stub.close();
 });
 async function launch(auth = false) {
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },

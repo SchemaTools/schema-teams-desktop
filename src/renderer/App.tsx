@@ -1,4 +1,12 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ArrowSquareOut,
   At,
@@ -57,6 +65,7 @@ import { TimerPanel } from './timer';
 import { PreferencesPanel } from './preferences';
 import { UpdateBanner } from './updates';
 import { ServerConfigurationPanel } from './serverConfiguration';
+import { SetupPanel } from './setup';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -110,8 +119,16 @@ export function App() {
   const [uiError, setUiError] = useState('');
   const [timerView, setTimerView] = useState<ClientSnapshot['navigateTimer']>(null);
   const [settingsView, setSettingsView] = useState<ClientSnapshot['navigateSettings']>(null);
+  const [setupOpen, setSetupOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [historyLayout, setHistoryLayout] = useState(0);
+  const pendingHistoryScroll = useRef<(() => void) | null>(null);
+  useLayoutEffect(() => {
+    const apply = pendingHistoryScroll.current;
+    pendingHistoryScroll.current = null;
+    apply?.();
+  }, [historyLayout]);
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [messageOwner, setMessageOwner] = useState('');
   const [historyChat, setHistoryChat] = useState<number | null>(null);
@@ -175,6 +192,14 @@ export function App() {
         readUpTo.current.clear();
       }
       snapshotRef.current = next;
+      if (
+        next.setupRequired ||
+        (next.navigateSetup && next.navigateSetup !== previous.navigateSetup)
+      ) {
+        setSetupOpen(true);
+        setSettingsView(null);
+        setMenu(false);
+      }
       if (
         next.navigateSettings &&
         next.navigateSettings.nonce !== previous.navigateSettings?.nonce
@@ -288,7 +313,8 @@ export function App() {
       if (newest > oldNewest)
         setNewMessages((value) => Math.max(value, info.data.chat.unread || 1));
     } else if (!refresh || nearBottom) setNewMessages(0);
-    requestAnimationFrame(() => {
+    // Scroll only after React has committed the new history and its attachment cards.
+    pendingHistoryScroll.current = () => {
       if (
         ticket !== loadId.current ||
         captured.epoch !== snapshotRef.current.epoch ||
@@ -307,7 +333,8 @@ export function App() {
       else viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' });
       if (before === undefined && !refresh) navigationPending.current = false;
       markVisible();
-    });
+    };
+    setHistoryLayout((value) => value + 1);
   }
 
   useEffect(() => {
@@ -833,6 +860,15 @@ export function App() {
 
   return (
     <div className="app-shell" data-connection={snapshot.connection}>
+      {setupOpen && (
+        <SetupPanel
+          snapshot={snapshot}
+          onClose={() => {
+            setSetupOpen(false);
+            requestAnimationFrame(() => menuButton.current?.focus());
+          }}
+        />
+      )}
       {settingsView && (
         <PreferencesPanel
           key={settingsView.nonce}
@@ -853,7 +889,7 @@ export function App() {
         />
       )}
       {timerView && snapshot.user && (
-        <div hidden={Boolean(settingsView)}>
+        <div hidden={Boolean(settingsView) || setupOpen}>
           <TimerPanel
             key={`${owner}:${timerView.nonce}`}
             snapshot={snapshot}

@@ -1,3 +1,4 @@
+import { existingProfile } from './existingProfile';
 import {
   _electron as electron,
   expect,
@@ -25,6 +26,7 @@ test.afterEach(async () => {
 });
 
 async function start() {
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
@@ -310,7 +312,11 @@ test('ошибка фото допускает повтор, увеличени�
   const { page } = await authenticated();
   await selectChat(page);
   const first = page.locator('.attachment-card[data-file-id="1001"]');
-  await first.scrollIntoViewIfNeeded();
+  // Wait for the conversation's initial frame to finish scrolling to its newest message.
+  await expect(page.locator('.attachment-card[data-file-id="1014"]')).toBeInViewport();
+  // CSS smooth scrolling can still be moving when an intersection-triggered image is checked.
+  await first.evaluate((card) => card.scrollIntoView({ block: 'center', behavior: 'instant' }));
+  await expect(first).toBeInViewport();
   await expect(
     first.getByRole('button', { name: 'Повторить загрузку фото', exact: true }),
   ).toBeVisible();
@@ -326,7 +332,8 @@ test('ошибка фото допускает повтор, увеличени�
   const original = await first.locator('img.attachment-preview').getAttribute('src');
   for (let i = 1; i < 14; i++) {
     const photo = page.locator(`.attachment-card[data-file-id="${1001 + i}"]`);
-    await photo.scrollIntoViewIfNeeded();
+    await photo.evaluate((card) => card.scrollIntoView({ block: 'center', behavior: 'instant' }));
+    await expect(photo).toBeInViewport();
     await expect
       .poll(() =>
         photo
@@ -335,7 +342,7 @@ test('ошибка фото допускает повтор, увеличени�
       )
       .toBe(1);
   }
-  await first.scrollIntoViewIfNeeded();
+  await first.evaluate((card) => card.scrollIntoView({ block: 'center', behavior: 'instant' }));
   await first.getByRole('button', { name: 'Увеличить Фото 1.png', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Фото 1.png', exact: true });
   await expect(dialog).toBeVisible();

@@ -1,3 +1,4 @@
+import { existingProfile } from './existingProfile';
 import {
   _electron as electron,
   expect,
@@ -42,6 +43,7 @@ const dialog = (page: Page) => page.getByRole('dialog', { name: 'Учёт вре
 const writes = () =>
   stub.state.calls.filter((c) => c.path.startsWith('/api/time/timer') && c.method !== 'GET');
 async function launch() {
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
@@ -228,6 +230,7 @@ test('три недавние задачи сохраняются для вла�
   if (!app) throw new Error('App unavailable');
   await app.close();
   app = undefined;
+  existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },

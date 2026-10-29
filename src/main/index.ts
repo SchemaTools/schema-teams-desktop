@@ -13,6 +13,7 @@ import { applyAutostart, autostartAvailable } from './desktop/autostart';
 import { TeamsApi } from './api/client';
 import { parseServerUrl } from './navigation';
 import { switchServer } from './desktop/switchServer';
+import { scanRevit } from './desktop/revitInventory';
 
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
@@ -66,7 +67,7 @@ function start(): void {
 
   const setAutostart = (enabled: boolean) =>
     applyAutostart(app, enabled, process.env.SCHEMA_TEAMS_USER_DATA);
-  setAutostart(settings.get().autostart);
+  if (settings.get().onboardingComplete) setAutostart(settings.get().autostart);
 
   tray = createTray({
     version: app.getVersion(),
@@ -96,6 +97,12 @@ function start(): void {
       tray,
       serverLocked: Boolean(environmentServer),
       connectionNotice: notice,
+      readRevit: () =>
+        scanRevit({
+          programFiles: process.env.ProgramW6432 ?? process.env.ProgramFiles ?? '',
+          appData: app.getPath('appData'),
+          programData: process.env.ProgramData ?? '',
+        }),
       checkServer: async (candidate) => {
         const probe = session.fromPartition('server-health-probe', { cache: false });
         const api = new TeamsApi({

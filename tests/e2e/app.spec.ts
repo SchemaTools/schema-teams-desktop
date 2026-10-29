@@ -1,3 +1,4 @@
+import { existingProfile } from './existingProfile';
 // Семь базовых сценариев Д1 сохранены для локального клиента v4.
 import {
   _electron as electron,
@@ -24,6 +25,7 @@ test.afterEach(async () => {
   await stub.close();
 });
 async function launch(profile: string, url = stub.url, args: string[] = []) {
+  existingProfile(profile);
   const app = await electron.launch({
     args: [ROOT, ...args],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: url },
