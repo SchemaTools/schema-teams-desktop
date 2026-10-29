@@ -34,6 +34,13 @@ import { validateUpload } from '../files/uploadPolicy';
 export interface TeamsApiOptions {
   fetch: (path: string, init?: RequestInit) => Promise<Response>;
   onAuthLost?: () => void;
+  onTimerAudit?: (audit: TimerAudit) => void;
+}
+export interface TimerAudit {
+  command: 'start' | 'pause' | 'resume' | 'reset' | 'finish';
+  phase: 'requested' | 'result';
+  outcome?: 'ok' | 'rejected' | 'uncertain';
+  code?: string;
 }
 export type MessageCursor = { before?: number; after?: number; around?: number };
 type Raw = { status: number; body: unknown };
@@ -185,7 +192,34 @@ export class TeamsApi {
   }
   /** Preflight reduces stale-window mistakes. Server CAS is still required for atomic safety. */
   private async timerWrite(
-    action: 'start' | 'pause' | 'resume' | 'reset' | 'finish',
+    action: TimerAudit['command'],
+    expected: TimerExpected | null,
+    body?: object,
+  ): Promise<ApiResult<WorkTimer | null>> {
+    const audit = (value: TimerAudit) => {
+      try {
+        this.o.onTimerAudit?.(value);
+      } catch {
+        /* Diagnostics never changes a command outcome. */
+      }
+    };
+    audit({ command: action, phase: 'requested' });
+    let result: ApiResult<WorkTimer | null>;
+    try {
+      result = await this.timerWriteNow(action, expected, body);
+    } catch {
+      result = failure('server_error', true);
+    }
+    audit({
+      command: action,
+      phase: 'result',
+      outcome: result.ok ? 'ok' : result.uncertain ? 'uncertain' : 'rejected',
+      ...(!result.ok && { code: result.code }),
+    });
+    return result;
+  }
+  private async timerWriteNow(
+    action: TimerAudit['command'],
     expected: TimerExpected | null,
     body?: object,
   ): Promise<ApiResult<WorkTimer | null>> {

@@ -1,7 +1,8 @@
-// Журнал приложения (ТЗ, 11): %APPDATA%\Schema Teams\logs\, 5 файлов по 1 МБ по кругу.
-// Не пишутся тексты сообщений, пароли и cookie — вызывающий код передаёт только служебные сведения.
+// Журнал приложения (ТЗ v4, 13): %APPDATA%\Schema Teams\logs\, 5 файлов по 1 МБ.
+// Общая проекция допускает только известные события и безопасные поля.
 import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { projectLog } from './logPolicy';
 
 export type Level = 'info' | 'warn' | 'error';
 
@@ -43,8 +44,9 @@ export class Logger {
   }
 
   private write(level: Level, msg: string, details?: Record<string, unknown>): void {
-    let line = `${this.now().toISOString()} ${level.toUpperCase().padEnd(5)} ${msg}`;
-    if (details) line += ` ${safeJson(details)}`;
+    const safe = projectLog(msg, details);
+    let line = `${this.now().toISOString()} ${level.toUpperCase().padEnd(5)} ${safe.message}`;
+    if (Object.keys(safe.details).length) line += ` ${JSON.stringify(safe.details)}`;
     line += '\n';
     try {
       this.rotateIfNeeded(Buffer.byteLength(line));
@@ -64,15 +66,5 @@ export class Logger {
     for (let i = this.files - 2; i >= 0; i--) {
       if (existsSync(name(i))) renameSync(name(i), name(i + 1));
     }
-  }
-}
-
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v, (_k, val: unknown) =>
-      val instanceof Error ? { name: val.name, message: val.message, stack: val.stack } : val,
-    );
-  } catch {
-    return '"<не сериализуется>"';
   }
 }

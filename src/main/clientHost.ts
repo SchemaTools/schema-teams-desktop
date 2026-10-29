@@ -117,6 +117,7 @@ export class ClientHost {
   private preferencesFlight?: Promise<boolean>;
   private preferencesEpoch = -1;
   private destroyed = false;
+  private loggedConnection?: ClientSnapshot['connection'];
   private refreshing = false;
   private again = false;
   private refreshTimer?: NodeJS.Timeout;
@@ -236,6 +237,7 @@ export class ClientHost {
         });
       },
       onAuthLost: () => this.signedOut(),
+      onTimerAudit: (audit) => o.log.info('команда таймера', { ...audit }),
     });
     this.paths = new PathService({ log: o.log });
     this.files = new AttachmentService({
@@ -661,6 +663,7 @@ export class ClientHost {
     return result;
   }
   private event(name: RealtimeEvent, data: unknown): void {
+    this.o.log.info('событие клиента', { event: name });
     if (name === 'time:timer') {
       this.timerRevision++;
       try {
@@ -705,7 +708,6 @@ export class ClientHost {
       return;
     }
     if (name === 'chat:presence') return;
-    this.o.log.info('событие клиента', { event: name });
     if (name === 'session') {
       this.invalidate();
       void this.bootstrap();
@@ -1303,6 +1305,10 @@ export class ClientHost {
       ? { id: warning.id, from: warning.from, to: warning.to }
       : null;
     if (this.destroyed) return;
+    if (this.loggedConnection !== this.state.connection) {
+      this.loggedConnection = this.state.connection;
+      this.o.log.info('состояние соединения', { state: this.state.connection });
+    }
     if (this.state.connection !== 'online') this.state.typing = [];
     this.state.revision++;
     this.state.epoch = this.api?.epoch ?? 0;

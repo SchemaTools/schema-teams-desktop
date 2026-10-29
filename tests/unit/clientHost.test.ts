@@ -248,11 +248,12 @@ function fixture(patch: Partial<Settings> = {}) {
     hide: vi.fn(),
     setOverlayIcon: h.setOverlayIcon,
   });
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const host = new ClientHost({
     main: { win, show: vi.fn() } as unknown as MainWindow,
     server: new globalThis.URL('https://example.test/'),
     settings: { get: () => settings, update: settingsUpdate } as unknown as SettingsStore,
-    log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger,
+    log: log as unknown as Logger,
     applyAutostart: h.applyAutostart,
     autostartAvailable: true,
     openLogs: h.openLogs,
@@ -283,6 +284,7 @@ function fixture(patch: Partial<Settings> = {}) {
     owned,
     settingsUpdate,
     getSettings: () => settings,
+    log,
   };
 }
 beforeEach(() => {
@@ -325,6 +327,38 @@ afterEach(() => {
 });
 
 describe('ClientHost: поколение входа проверяется в доверенном main-frame IPC', () => {
+  it('logs connection transitions once, not on every state refresh', () => {
+    const f = fixture(),
+      host = f.host as unknown as { publish: () => void };
+    f.log.info.mockClear();
+    host.publish();
+    host.publish();
+    f.state.connection = 'offline';
+    host.publish();
+    host.publish();
+    f.state.connection = 'online';
+    host.publish();
+    expect(
+      f.log.info.mock.calls.filter((c) => c[0] === 'состояние соединения').map((c) => c[1]),
+    ).toEqual([{ state: 'online' }, { state: 'offline' }, { state: 'online' }]);
+  });
+  it('logs timer, typing and presence kinds before their special branches, without payload fields', () => {
+    const f = fixture(),
+      host = f.host as unknown as { event: (name: string, data: unknown) => void };
+    f.log.info.mockClear();
+    host.event('time:timer', { timer: timerFixture() });
+    host.event('chat:typing', {
+      chatId: 4,
+      userId: 2,
+      shortName: 'private name',
+      text: 'private text',
+    });
+    host.event('chat:presence', { name: 'private name' });
+    expect(
+      f.log.info.mock.calls.filter((c) => c[0] === 'событие клиента').map((c) => c[1]),
+    ).toEqual([{ event: 'time:timer' }, { event: 'chat:typing' }, { event: 'chat:presence' }]);
+    expect(JSON.stringify(f.log.info.mock.calls)).not.toContain('private');
+  });
   it('local report works before login, returns no authentication data and discards proofs on logout', async () => {
     const f = fixture();
     f.owned.state.user = null;

@@ -24,9 +24,9 @@ const deferred = <T>() => {
   });
   return { promise, resolve };
 };
-async function setup() {
+async function setup(onTimerAudit?: TeamsApiOptions['onTimerAudit']) {
   const fetch = vi.fn<TeamsApiOptions['fetch']>().mockResolvedValueOnce(json(me()));
-  const api = new TeamsApi({ fetch });
+  const api = new TeamsApi({ fetch, onTimerAudit });
   await api.authenticate();
   return { api, fetch };
 }
@@ -101,6 +101,77 @@ describe('Native timer: server DTOs and display', () => {
   });
 });
 describe('TeamsApi: timer operations only with a fresh owner-bound preflight', () => {
+  it('audits requested and confirmed results without task IDs, rows, notes or credentials', async () => {
+    const audit = vi.fn(),
+      h = await setup(audit);
+    h.fetch
+      .mockResolvedValueOnce(json({ timer: timerFixture() }))
+      .mockResolvedValueOnce(json({ timer: timerFixture('pause') }));
+    expect((await h.api.timerPause(timerExpected(timerFixture()))).ok).toBe(true);
+    expect(audit.mock.calls.map((c) => c[0])).toEqual([
+      { command: 'pause', phase: 'requested' },
+      { command: 'pause', phase: 'result', outcome: 'ok' },
+    ]);
+  });
+  it('distinguishes preflight rejection from an unconfirmed finish and never retries either', async () => {
+    const audit = vi.fn(),
+      h = await setup(audit);
+    h.fetch.mockResolvedValueOnce(json({ timer: null }));
+    expect(await h.api.timerPause(timerExpected(timerFixture()))).toMatchObject({
+      code: 'timer_changed',
+    });
+    expect(audit.mock.calls[1]?.[0]).toEqual({
+      command: 'pause',
+      phase: 'result',
+      outcome: 'rejected',
+      code: 'timer_changed',
+    });
+    h.fetch
+      .mockResolvedValueOnce(json({ timer: timerFixture('pause') }))
+      .mockResolvedValueOnce(
+        json({ error: { code: 'internal', message: 'private response' } }, 500),
+      );
+    expect(
+      await h.api.timerFinish(
+        timerExpected(timerFixture('pause')),
+        proposalFixture().rows,
+        'private note',
+      ),
+    ).toMatchObject({ uncertain: true });
+    expect(audit.mock.calls[3]?.[0]).toEqual({
+      command: 'finish',
+      phase: 'result',
+      outcome: 'uncertain',
+      code: 'server_error',
+    });
+    expect(JSON.stringify(audit.mock.calls)).not.toMatch(/private|taskId|rows|csrf|cookie/);
+    expect(h.fetch).toHaveBeenCalledTimes(4);
+  });
+  it('a failed audit callback never changes a successful command', async () => {
+    const h = await setup(() => {
+      throw Error('private audit failure');
+    });
+    h.fetch
+      .mockResolvedValueOnce(json({ timer: timerFixture() }))
+      .mockResolvedValueOnce(json({ timer: timerFixture('pause') }));
+    expect((await h.api.timerPause(timerExpected(timerFixture()))).ok).toBe(true);
+    expect(h.fetch).toHaveBeenCalledTimes(3);
+  });
+  it('unexpected command failure is conservatively unconfirmed and does not expose the exception', async () => {
+    const audit = vi.fn(),
+      h = await setup(audit);
+    vi.spyOn(h.api, 'timer').mockRejectedValueOnce(new Error('private details'));
+    const result = await h.api.timerPause(timerExpected(timerFixture()));
+    expect(result).toMatchObject({ ok: false, code: 'server_error', uncertain: true });
+    expect(JSON.stringify(result)).not.toContain('private');
+    expect(audit.mock.calls[1]?.[0]).toEqual({
+      command: 'pause',
+      phase: 'result',
+      outcome: 'uncertain',
+      code: 'server_error',
+    });
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+  });
   it('reads timer/options without mutation', async () => {
     const h = await setup();
     h.fetch

@@ -1,5 +1,6 @@
 import { lstat, open, opendir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { LOG_MESSAGES, projectLog } from '../logPolicy';
 export interface LogSnapshot {
   name: string;
   text: string;
@@ -30,35 +31,6 @@ async function readTail(path: string): Promise<{ text: string; truncated: boolea
     await file.close();
   }
 }
-const messages = new Set([
-  'запуск',
-  'выход',
-  'необработанная ошибка',
-  'необработанный отказ',
-  'запуск не удался',
-  'cookie не сохранены',
-  'не удалось сохранить день напоминания',
-  'событие клиента',
-  'неподдержанное событие чата',
-  'неподдержанное уведомление',
-  'не удалось восстановить настройку автозапуска',
-  'локальное окно не загружено',
-  'открытие пути',
-  'архив диагностики сохранён',
-]);
-const events = new Set([
-  'chat:message',
-  'chat:updated',
-  'chat:read',
-  'chat:typing',
-  'chat:reaction',
-  'chat:pin',
-  'notification:new',
-  'notification:read',
-  'time:timer',
-  'session',
-  'reconnect',
-]);
 /** A projection of known application events. Arbitrary errors, paths and unknown text are excluded. */
 export function applicationLog(text: string): string {
   return (
@@ -69,26 +41,15 @@ export function applicationLog(text: string): string {
         const prefix = /^(\d{4}-\d\d-\d\dT[\d:.]+Z) (INFO|WARN|ERROR)\s+(.+)$/.exec(line);
         if (!prefix) return '[строка исключена]';
         const body = prefix[3] ?? '',
-          message = [...messages].find((m) => body === m || body.startsWith(`${m} {`));
+          message = LOG_MESSAGES.find((m) => body === m || body.startsWith(`${m} {`));
         if (!message) return `${prefix[1]} ${prefix[2]} [строка исключена]`;
-        const details: Record<string, unknown> = {};
+        let raw: Record<string, unknown> | undefined;
         try {
-          const raw = JSON.parse(body.slice(message.length).trim() || '{}') as Record<
-            string,
-            unknown
-          >;
-          for (const key of ['app', 'electron', 'chrome', 'windows'])
-            if (typeof raw[key] === 'string' && /^\d+(?:[.\-+][A-Za-z0-9]+)*$/.test(raw[key]))
-              details[key] = raw[key];
-          for (const key of ['packaged', 'hidden'])
-            if (typeof raw[key] === 'boolean') details[key] = raw[key];
-          if (['ok', 'unavailable', 'blocked'].includes(String(raw.result)))
-            details.result = raw.result;
-          if (raw.reason === 'invalid-or-closed') details.reason = raw.reason;
-          if (typeof raw.event === 'string' && events.has(raw.event)) details.event = raw.event;
+          raw = JSON.parse(body.slice(message.length).trim() || '{}') as Record<string, unknown>;
         } catch {
           /* Malformed details never pass through. */
         }
+        const { details } = projectLog(message, raw);
         return `${prefix[1]} ${prefix[2]} ${message}${Object.keys(details).length ? ` ${JSON.stringify(details)}` : ''}`;
       })
       .join('\n') + '\n'

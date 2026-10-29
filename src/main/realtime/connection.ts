@@ -1,23 +1,7 @@
 // Socket.IO работает только в main. Cookie не передаётся renderer и не журналируется.
 import { io } from 'socket.io-client';
-
-export const REALTIME_EVENTS = [
-  'notification',
-  'chat:message',
-  'chat:update',
-  'chat:read',
-  'chat:list',
-  'chat:reaction',
-  'chat:typing',
-  'chat:pin',
-  'chat:poll',
-  'chat:stickers',
-  'chat:presence',
-  'time:timer',
-  'session',
-  'focus',
-] as const;
-export type RealtimeEvent = (typeof REALTIME_EVENTS)[number];
+import { REALTIME_EVENTS, type RealtimeEvent } from './events';
+export { REALTIME_EVENTS, type RealtimeEvent } from './events';
 type Listener = (...args: unknown[]) => void;
 
 /** Минимальная поверхность Socket.IO для проверяемого управления жизненным циклом. */
