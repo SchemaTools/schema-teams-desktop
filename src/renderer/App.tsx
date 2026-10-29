@@ -66,6 +66,7 @@ import { PreferencesPanel } from './preferences';
 import { UpdateBanner } from './updates';
 import { ServerConfigurationPanel } from './serverConfiguration';
 import { SetupPanel } from './setup';
+import { ReportPanel } from './report';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -120,6 +121,7 @@ export function App() {
   const [timerView, setTimerView] = useState<ClientSnapshot['navigateTimer']>(null);
   const [settingsView, setSettingsView] = useState<ClientSnapshot['navigateSettings']>(null);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [historyLayout, setHistoryLayout] = useState(0);
@@ -192,6 +194,11 @@ export function App() {
         readUpTo.current.clear();
       }
       snapshotRef.current = next;
+      if (next.navigateReport && next.navigateReport !== previous.navigateReport) {
+        setReportOpen(true);
+        setSettingsView(null);
+        setMenu(false);
+      }
       if (
         next.setupRequired ||
         (next.navigateSetup && next.navigateSetup !== previous.navigateSetup)
@@ -860,6 +867,15 @@ export function App() {
 
   return (
     <div className="app-shell" data-connection={snapshot.connection}>
+      {reportOpen && (
+        <ReportPanel
+          snapshot={snapshot}
+          onClose={() => {
+            setReportOpen(false);
+            requestAnimationFrame(() => menuButton.current?.focus());
+          }}
+        />
+      )}
       {setupOpen && (
         <SetupPanel
           snapshot={snapshot}
@@ -889,7 +905,7 @@ export function App() {
         />
       )}
       {timerView && snapshot.user && (
-        <div hidden={Boolean(settingsView) || setupOpen}>
+        <div hidden={Boolean(settingsView) || setupOpen || reportOpen}>
           <TimerPanel
             key={`${owner}:${timerView.nonce}`}
             snapshot={snapshot}
@@ -974,6 +990,10 @@ export function App() {
           </button>
           <button onClick={() => void action({ kind: 'settings.open', tab: 'about' })}>
             <Info size={18} weight="duotone" />О программе
+          </button>
+          <button onClick={() => void action({ kind: 'report.open' })}>
+            <ChatCircleDots size={18} weight="duotone" />
+            Сообщить о проблеме
           </button>
           <label>
             <GearSix size={18} weight="duotone" />

@@ -325,6 +325,41 @@ afterEach(() => {
 });
 
 describe('ClientHost: поколение входа проверяется в доверенном main-frame IPC', () => {
+  it('local report works before login, returns no authentication data and discards proofs on logout', async () => {
+    const f = fixture();
+    f.owned.state.user = null;
+    f.owned.state.connection = 'signedOut';
+    expect(await f.invoke({ kind: 'report.open' })).toEqual({ ok: true, data: null });
+    expect(f.owned.state.navigateReport).toBe(1);
+    const preview = await f.invoke({
+      kind: 'report.prepare',
+      options: {
+        description: 'Проблема входа',
+        applicationLogs: false,
+        revitYear: null,
+        includeScreenshot: false,
+      },
+    });
+    expect(preview.ok).toBe(true);
+    expect(JSON.stringify(preview)).not.toMatch(/cookie-A|https:|persist:/);
+    const id = (preview as { ok: true; data: { id: string } }).data.id;
+    f.owned.state.user = { id: 1, shortName: 'Тест', mustChangePassword: false };
+    f.owned.state.connection = 'online';
+    await f.invoke({ kind: 'logout', epoch: 7 });
+    expect(await f.invoke({ kind: 'report.export', id })).toMatchObject({
+      ok: false,
+      code: 'report_error',
+    });
+  });
+  it('report capture failure exposes only a fixed message, never native details', async () => {
+    const f = fixture();
+    const result = await f.invoke({ kind: 'report.capture', target: { type: 'window' } });
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'report_error',
+      error: 'Не удалось сделать снимок. Выберите источник и повторите.',
+    });
+  });
   it('setup completes atomically with autostart only after a fresh compatible health read', async () => {
     const f = fixture();
     h.health.mockResolvedValueOnce({

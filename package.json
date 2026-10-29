@@ -1,7 +1,7 @@
 {
   "name": "schema-teams-desktop",
   "productName": "Schema Teams",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Настольное приложение Schema Teams для Windows",
   "private": true,
   "license": "UNLICENSED",
@@ -42,6 +42,7 @@
     "vitest": "^5.0.5"
   },
   "dependencies": {
+    "fflate": "0.8.3",
     "socket.io-client": "4.8.1"
   },
   "allowScripts": {

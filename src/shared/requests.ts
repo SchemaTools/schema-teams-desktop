@@ -2,6 +2,7 @@ import type { DesktopRequest } from './desktop';
 import { expectedValid, timerRowsValid } from './time';
 import { preferenceTabs, preferencesPatchValid } from './preferences';
 import { releaseVersionValid } from './updates';
+import { reportOptionsValid } from './report';
 const id = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const text = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
 export function requestValid(raw: unknown): raw is DesktopRequest {
@@ -26,12 +27,41 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     'server.apply',
     'setup.open',
     'setup.inventory',
+    'report.open',
+    'report.clear',
+    'report.edit',
+    'report.screens',
+    'report.capture',
+    'report.prepare',
+    'report.export',
+    'report.reveal',
   ].includes(String(r.kind));
   if (scoped && (typeof r.epoch !== 'number' || !Number.isSafeInteger(r.epoch) || r.epoch < 0))
     return false;
   const only = (...keys: string[]) =>
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
+    case 'report.open':
+    case 'report.clear':
+    case 'report.edit':
+    case 'report.screens':
+      return only();
+    case 'report.prepare':
+      return only('options') && reportOptionsValid(r.options);
+    case 'report.export':
+    case 'report.reveal':
+      return only('id') && typeof r.id === 'string' && /^[0-9a-f-]{36}$/.test(r.id);
+    case 'report.capture': {
+      if (!only('target') || !r.target || typeof r.target !== 'object' || Array.isArray(r.target))
+        return false;
+      const target = r.target as Record<string, unknown>;
+      return target.type === 'window'
+        ? Object.keys(target).length === 1
+        : target.type === 'screen' &&
+            Object.keys(target).length === 2 &&
+            typeof target.id === 'string' &&
+            /^-?\d{1,18}$/.test(target.id);
+    }
     case 'setup.finish':
       return only('autostart') && typeof r.autostart === 'boolean';
     case 'setup.open':

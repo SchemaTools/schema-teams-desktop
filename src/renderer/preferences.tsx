@@ -403,6 +403,9 @@ export function PreferencesPanel({
                   автоматически.
                 </p>
                 <UpdatePreferences snapshot={snapshot} />
+                <button onClick={() => void request({ kind: 'report.open' })}>
+                  Сообщить о проблеме
+                </button>
               </>
             )}
           </div>

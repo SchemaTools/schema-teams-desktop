@@ -124,6 +124,22 @@ test('проверка чужого адреса без cookie; применен
   await login(fresh);
   await fresh.locator('.chat-row[data-chat-id="4"]').click();
   await expect(fresh.getByRole('textbox', { name: 'Сообщение', exact: true })).toHaveValue('');
+  // Viewing this chat intentionally acknowledges its visible history. Capture that
+  // expected write before restart, then reject any additional mutation/replay.
+  await expect
+    .poll(() => next.state.calls.filter((c) => c.path === '/api/chats/4/read'))
+    .toHaveLength(1);
+  const freshWrites = next.state.calls.filter(
+    (c) => c.method !== 'GET' && c.path !== '/api/auth/login',
+  );
+  expect(freshWrites).toEqual([
+    expect.objectContaining({
+      path: '/api/chats/4/read',
+      method: 'POST',
+      userId: 1,
+      body: { upTo: 102 },
+    }),
+  ]);
   const sourceHealth = old.state.calls.filter((c) => c.path === '/api/health').length;
   await activeApp().close();
   app = undefined;
@@ -138,7 +154,7 @@ test('проверка чужого адреса без cookie; применен
   expect(next.state.timerWrites).toHaveLength(0);
   expect(
     next.state.calls.filter((c) => c.method !== 'GET' && c.path !== '/api/auth/login'),
-  ).toHaveLength(0);
+  ).toEqual(freshWrites);
   await settings(again);
   await check(again, old.url);
   await expect(panel(again)).toContainText('Сервер отвечает');

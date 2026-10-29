@@ -51,6 +51,7 @@ import { supportedServerVersion, MINIMUM_SERVER_VERSION } from '../shared/server
 import type { Health } from '../shared/client';
 import type { RevitInventory } from '../shared/setup';
 import { RevitInventoryService } from './desktop/revitInventory';
+import { ReportService, type ReportBackend } from './diagnostics/service';
 
 interface Options {
   main: MainWindow;
@@ -67,6 +68,7 @@ interface Options {
   checkServer?: (server: URL) => Promise<ApiResult<Health>>;
   activateServer?: (server: URL) => Promise<void>;
   readRevit?: () => Promise<RevitInventory>;
+  report?: Omit<ReportBackend, 'metadata'>;
 }
 interface Notice {
   reminder?: ReminderTicket;
@@ -126,6 +128,7 @@ export class ClientHost {
   private readonly updates: UpdateChecker;
   private readonly configuration: ServerConfigurationService;
   private readonly inventory: RevitInventoryService;
+  private readonly report: ReportService;
   private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
@@ -165,6 +168,24 @@ export class ClientHost {
     if (!this.loggingOut) void this.bootstrap();
   };
   constructor(private readonly o: Options) {
+    this.report = new ReportService({
+      metadata: () => ({
+        appVersion: app.getVersion(),
+        serverVersion: this.state.serverVersion,
+        connection: this.state.connection,
+      }),
+      readApplication: o.report?.readApplication ?? (async () => []),
+      readRevit: o.report?.readRevit ?? (async () => null),
+      screens: o.report?.screens ?? (() => []),
+      capture:
+        o.report?.capture ??
+        (async () => {
+          throw Error('unavailable');
+        }),
+      choose: o.report?.choose ?? (async () => null),
+      reveal: o.report?.reveal ?? (() => {}),
+      saved: () => o.log.info('архив диагностики сохранён'),
+    });
     this.inventory = new RevitInventoryService(
       o.readRevit ??
         (async () => {
@@ -367,6 +388,7 @@ export class ClientHost {
     void this.bootstrap();
   }
   private invalidate(): void {
+    this.report.clear();
     this.reminders.reset();
     this.reminderId = null;
     this.absence.reset();
@@ -404,6 +426,7 @@ export class ClientHost {
     this.publish();
   }
   private signedOut(): void {
+    this.report.clear();
     this.reminders.reset();
     this.reminderId = null;
     this.absence.reset();
@@ -912,6 +935,42 @@ export class ClientHost {
   }
   private async request(r: DesktopRequest): Promise<unknown> {
     switch (r.kind) {
+      case 'report.open':
+        this.state.navigateReport = (this.state.navigateReport ?? 0) + 1;
+        this.o.main.show();
+        this.trayWindow?.hide();
+        this.publish();
+        return ok(null);
+      case 'report.clear':
+        this.report.clear();
+        return ok(null);
+      case 'report.edit':
+        this.report.edit();
+        return ok(null);
+      case 'report.screens':
+        return ok(this.report.screens());
+      case 'report.capture':
+      case 'report.prepare':
+      case 'report.export':
+      case 'report.reveal':
+        try {
+          if (r.kind === 'report.capture') return ok(await this.report.capture(r.target));
+          if (r.kind === 'report.prepare') return ok(await this.report.prepare(r.options));
+          if (r.kind === 'report.export') return ok(await this.report.export(r.id));
+          return this.report.reveal(r.id) ? ok(null) : failure('validation');
+        } catch {
+          return {
+            ok: false,
+            code: 'report_error',
+            error:
+              r.kind === 'report.capture'
+                ? 'Не удалось сделать снимок. Выберите источник и повторите.'
+                : r.kind === 'report.export'
+                  ? 'Не удалось сохранить архив. Проверьте папку и подготовьте файлы заново.'
+                  : 'Не удалось подготовить диагностику. Проверьте выбранные файлы и повторите.',
+            retryable: true,
+          };
+        }
       case 'setup.open':
         this.state.navigateSetup = (this.state.navigateSetup ?? 0) + 1;
         this.o.main.show();
@@ -1390,6 +1449,7 @@ export class ClientHost {
     }
   }
   destroy(): void {
+    this.report.clear();
     this.configuration.destroy();
     this.updates.destroy();
     clearInterval(this.tick);

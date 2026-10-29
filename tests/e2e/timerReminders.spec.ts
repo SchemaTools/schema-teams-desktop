@@ -126,6 +126,8 @@ test('«Ещё работаю» закрывает напоминание, де�
   // The restart scenario starts only after onShow records the actual presentation.
   await expect.poll(() => Object.keys(shownDay())).toEqual(['1']);
   await toast.getByRole('button', { name: 'Ещё работаю', exact: true }).click();
+  // Restart after the native close has completed, not while its IPC handler is closing it.
+  await expect.poll(() => toast.isClosed()).toBe(true);
   expect(writes()).toHaveLength(0);
   if (!app) throw Error('App unavailable');
   await app.close();

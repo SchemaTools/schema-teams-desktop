@@ -14,6 +14,7 @@ import { TeamsApi } from './api/client';
 import { parseServerUrl } from './navigation';
 import { switchServer } from './desktop/switchServer';
 import { scanRevit } from './desktop/revitInventory';
+import { reportBackend } from './diagnostics/backend';
 
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
@@ -97,6 +98,7 @@ function start(): void {
       tray,
       serverLocked: Boolean(environmentServer),
       connectionNotice: notice,
+      report: reportBackend(main.win, join(app.getPath('userData'), 'logs')),
       readRevit: () =>
         scanRevit({
           programFiles: process.env.ProgramW6432 ?? process.env.ProgramFiles ?? '',

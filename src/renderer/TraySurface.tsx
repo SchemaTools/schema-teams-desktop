@@ -294,6 +294,10 @@ export function TraySurface() {
         <Info size={20} weight="duotone" />
         <span>О программе</span>
       </button>
+      <button className="tray-item" onClick={() => void act({ kind: 'report.open' }, false)}>
+        <ChatCircleDots size={20} weight="duotone" />
+        <span>Сообщить о проблеме</span>
+      </button>
       {snapshot?.updates?.available &&
         snapshot.updates.dismissedVersion !== snapshot.updates.available.version && (
           <button

@@ -18,6 +18,13 @@ import type { LocalPreferences, PreferencesPatch, PreferencesTab } from './prefe
 import type { UpdateState } from './updates';
 import type { ServerConfiguration, ServerCheck } from './serverConfiguration';
 import type { RevitInventory } from './setup';
+import type {
+  ReportOptions,
+  ReportPreview,
+  ReportExport,
+  ReportCapture,
+  ReportScreen,
+} from './report';
 
 export interface ClientSnapshot {
   connection:
@@ -58,6 +65,7 @@ export interface ClientSnapshot {
   updates?: UpdateState;
   setupRequired?: boolean;
   navigateSetup?: number;
+  navigateReport?: number;
 }
 export type DesktopRequest =
   | { kind: 'init' | 'login' | 'retry' | 'window.hide' | 'app.quit' }
@@ -72,6 +80,10 @@ export type DesktopRequest =
   | { kind: 'server.apply'; url: string; token: string }
   | { kind: 'setup.open' }
   | { kind: 'setup.inventory'; refresh?: boolean }
+  | { kind: 'report.open' | 'report.clear' | 'report.edit' | 'report.screens' }
+  | { kind: 'report.capture'; target: { type: 'window' } | { type: 'screen'; id: string } }
+  | { kind: 'report.prepare'; options: ReportOptions }
+  | { kind: 'report.export' | 'report.reveal'; id: string }
   | ({ epoch: number } & (
       | { kind: 'logout' }
       | { kind: 'setup.finish'; autostart: boolean }
@@ -158,6 +170,14 @@ export interface DesktopResponseMap {
   'setup.open': null;
   'setup.inventory': RevitInventory;
   'setup.finish': null;
+  'report.open': null;
+  'report.clear': null;
+  'report.edit': null;
+  'report.screens': ReportScreen[];
+  'report.capture': ReportCapture;
+  'report.prepare': ReportPreview;
+  'report.export': ReportExport | null;
+  'report.reveal': null;
   'window.show': null;
   'window.hide': null;
   'app.quit': null;
