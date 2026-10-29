@@ -7,6 +7,7 @@ export class LoginWindow {
   constructor(
     private readonly server: URL,
     private readonly onReady: () => void,
+    private readonly partition = PARTITION,
   ) {}
   show(): void {
     if (this.win && !this.win.isDestroyed()) {
@@ -21,7 +22,7 @@ export class LoginWindow {
       show: false,
       autoHideMenuBar: true,
       webPreferences: {
-        partition: PARTITION,
+        partition: this.partition,
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false,

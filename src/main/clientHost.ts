@@ -46,6 +46,9 @@ import {
   type LocalPreferences,
 } from '../shared/preferences';
 import { UpdateChecker } from './desktop/updateChecker';
+import { ServerConfigurationService } from './desktop/serverConfiguration';
+import { supportedServerVersion, MINIMUM_SERVER_VERSION } from '../shared/serverConfiguration';
+import type { Health } from '../shared/client';
 
 interface Options {
   main: MainWindow;
@@ -56,6 +59,11 @@ interface Options {
   applyAutostart: (enabled: boolean) => void;
   autostartAvailable: boolean;
   openLogs: () => Promise<string>;
+  partition?: string;
+  serverLocked?: boolean;
+  connectionNotice?: string;
+  checkServer?: (server: URL) => Promise<ApiResult<Health>>;
+  activateServer?: (server: URL) => Promise<void>;
 }
 interface Notice {
   reminder?: ReminderTicket;
@@ -73,9 +81,12 @@ interface Notice {
 }
 const ok = <T>(data: T): ApiResult<T> => ({ ok: true, data });
 export class ClientHost {
+  get partition(): string {
+    return this.o.partition ?? PARTITION;
+  }
   readonly api: TeamsApi;
   private state: ClientSnapshot;
-  private readonly ses = session.fromPartition(PARTITION);
+  private readonly ses: Electron.Session;
   private readonly realtime?: RealtimeClient;
   private readonly login?: LoginWindow;
   private readonly paths: PathService;
@@ -110,6 +121,7 @@ export class ClientHost {
   private readonly absence = new TimerAbsence();
   private readonly reminders = new TimerReminders();
   private readonly updates: UpdateChecker;
+  private readonly configuration: ServerConfigurationService;
   private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
@@ -149,6 +161,18 @@ export class ClientHost {
     if (!this.loggingOut) void this.bootstrap();
   };
   constructor(private readonly o: Options) {
+    this.ses = session.fromPartition(o.partition ?? PARTITION);
+    this.configuration = new ServerConfigurationService({
+      current: o.server,
+      locked: o.serverLocked ?? true,
+      notice: o.connectionNotice,
+      readHealth: o.checkServer ?? (async () => failure('unavailable')),
+      activate:
+        o.activateServer ??
+        (async () => {
+          throw new Error('unavailable');
+        }),
+    });
     for (const [owner, date] of Object.entries(o.settings.get().timerReminderSeen))
       this.reminders.remember(Number(owner), date);
     this.state = {
@@ -168,6 +192,7 @@ export class ClientHost {
       notificationUnread: 0,
       focus: { until: null, startedAt: null },
       error: null,
+      navigateSettings: o.connectionNotice ? { tab: 'general', nonce: 1 } : null,
     };
     this.api = new TeamsApi({
       fetch: (path, init) => {
@@ -271,9 +296,13 @@ export class ClientHost {
     });
     if (o.server) {
       const origin = o.server.origin;
-      this.login = new LoginWindow(o.server, () => {
-        if (!this.loggingOut) void this.bootstrap();
-      });
+      this.login = new LoginWindow(
+        o.server,
+        () => {
+          if (!this.loggingOut) void this.bootstrap();
+        },
+        o.partition ?? PARTITION,
+      );
       this.realtime = new RealtimeClient({
         server: o.server,
         getEpoch: () => this.api.epoch,
@@ -419,10 +448,9 @@ export class ClientHost {
       return;
     }
     this.state.serverVersion = health.data.version;
-    const version = /^(\d+)\.(\d+)\.(\d+)/.exec(health.data.version);
-    if (!version || (Number(version[1]) === 0 && Number(version[2]) < 11)) {
+    if (!supportedServerVersion(health.data.version)) {
       this.state.connection = 'incompatible';
-      this.state.error = 'Нужен Schema Teams 0.11.0 или новее.';
+      this.state.error = `Нужен Schema Teams ${MINIMUM_SERVER_VERSION} или новее.`;
       this.publish();
       return;
     }
@@ -848,6 +876,7 @@ export class ClientHost {
     return ok(null);
   }
   private async receive(event: IpcMainInvokeEvent, raw: unknown): Promise<unknown> {
+    if (this.destroyed) return failure('stale_session');
     if (
       !requestValid(raw) ||
       this.peers.get(event.sender.id) !== event.senderFrame?.url ||
@@ -873,6 +902,13 @@ export class ClientHost {
   }
   private async request(r: DesktopRequest): Promise<unknown> {
     switch (r.kind) {
+      case 'server.read':
+        return ok(this.configuration.read());
+      case 'server.check':
+        return this.configuration.check(r.url);
+      case 'server.apply':
+        if (this.loggingOut) return failure('busy');
+        return this.configuration.apply(r.url, r.token);
       case 'updates.check':
         return ok(await this.updates.check());
       case 'updates.later':
@@ -1305,6 +1341,7 @@ export class ClientHost {
     }
   }
   destroy(): void {
+    this.configuration.destroy();
     this.updates.destroy();
     clearInterval(this.tick);
     this.destroyed = true;
@@ -1327,5 +1364,10 @@ export class ClientHost {
     powerMonitor.removeListener('unlock-screen', this.unlock);
     powerMonitor.removeListener('suspend', this.sleep);
     powerMonitor.removeListener('resume', this.wake);
+  }
+  prepareServerSwitch(): void {
+    this.loggingOut = true;
+    this.login?.close();
+    this.invalidate();
   }
 }

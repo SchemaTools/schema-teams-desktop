@@ -16,6 +16,7 @@ import type {
 import type { TimeOptions, WorkTimer, TimerExpected, TimerPrepared, TimerRow } from './time';
 import type { LocalPreferences, PreferencesPatch, PreferencesTab } from './preferences';
 import type { UpdateState } from './updates';
+import type { ServerConfiguration, ServerCheck } from './serverConfiguration';
 
 export interface ClientSnapshot {
   connection:
@@ -63,6 +64,9 @@ export type DesktopRequest =
   | { kind: 'settings.patch'; patch: PreferencesPatch }
   | { kind: 'updates.check' }
   | { kind: 'updates.later'; version: string }
+  | { kind: 'server.read' }
+  | { kind: 'server.check'; url: string }
+  | { kind: 'server.apply'; url: string; token: string }
   | ({ epoch: number } & (
       | { kind: 'logout' }
       | { kind: 'timer.read' | 'timer.options' }
@@ -142,6 +146,9 @@ export interface DesktopResponseMap {
   'logs.open': null;
   'updates.check': UpdateState;
   'updates.later': null;
+  'server.read': ServerConfiguration;
+  'server.check': ServerCheck;
+  'server.apply': null;
   'window.show': null;
   'window.hide': null;
   'app.quit': null;

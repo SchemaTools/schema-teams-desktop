@@ -20,6 +20,7 @@ import { request } from './bridge';
 import { TimerSettings } from './timerSettings';
 import './preferences.css';
 import { UpdatePreferences } from './updates';
+import { ServerConfigurationPanel } from './serverConfiguration';
 const tabs = {
   general: ['Общие', GearSix],
   notifications: ['Уведомления', Bell],
@@ -287,15 +288,7 @@ export function PreferencesPanel({
                         выберите «Выйти из приложения» в меню трея.
                       </p>
                     </div>
-                    <div className="preferences-note">
-                      <b>Подключение к серверу</b>
-                      <p>
-                        {snapshot.connection === 'noServer'
-                          ? 'Адрес сервера не задан.'
-                          : 'Используется адрес из конфигурации приложения.'}{' '}
-                        Для изменения адреса обратитесь к администратору.
-                      </p>
-                    </div>
+                    <ServerConfigurationPanel />
                   </>
                 )}
               </>

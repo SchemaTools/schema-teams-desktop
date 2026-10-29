@@ -10,6 +10,9 @@ import { SettingsStore } from './settings';
 import { createTray } from './tray';
 import { ClientHost } from './clientHost';
 import { applyAutostart, autostartAvailable } from './desktop/autostart';
+import { TeamsApi } from './api/client';
+import { parseServerUrl } from './navigation';
+import { switchServer } from './desktop/switchServer';
 
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
@@ -61,12 +64,10 @@ function start(): void {
     server: server?.origin ?? null,
   });
 
-  restrictPermissions(server);
   const setAutostart = (enabled: boolean) =>
     applyAutostart(app, enabled, process.env.SCHEMA_TEAMS_USER_DATA);
   setAutostart(settings.get().autostart);
 
-  main = new MainWindow({ server, settings, log, isQuitting: () => quitting });
   tray = createTray({
     version: app.getVersion(),
     onClick: () => main?.toggle(),
@@ -74,17 +75,65 @@ function start(): void {
     onQuit: () => app.quit(),
     onMenu: (bounds) => client?.showMenu(bounds),
   });
-  client = new ClientHost({
-    main,
-    server,
-    settings,
-    log,
-    tray,
-    applyAutostart: setAutostart,
-    autostartAvailable: autostartAvailable(app, process.env.SCHEMA_TEAMS_USER_DATA),
-    openLogs: () => shell.openPath(join(app.getPath('userData'), 'logs')),
-  });
-  if (!hidden) main.win.once('ready-to-show', () => main?.show());
+  const environmentServer = parseServerUrl(process.env.SCHEMA_TEAMS_SERVER_URL);
+  function mount(notice?: string): void {
+    if (quitting || !tray) return;
+    const previous = main;
+    const selected = resolveServerUrl({
+      env: process.env.SCHEMA_TEAMS_SERVER_URL,
+      settings: settings.get().serverUrl,
+      build: build.serverUrl,
+    });
+    const partition = settings.get().serverPartition ?? PARTITION;
+    restrictPermissions(selected, partition);
+    main = new MainWindow({ server: selected, settings, log, isQuitting: () => quitting });
+    client = new ClientHost({
+      main,
+      server: selected,
+      partition,
+      settings,
+      log,
+      tray,
+      serverLocked: Boolean(environmentServer),
+      connectionNotice: notice,
+      checkServer: async (candidate) => {
+        const probe = session.fromPartition('server-health-probe', { cache: false });
+        const api = new TeamsApi({
+          fetch: (path, init) =>
+            probe.fetch(new URL(path, candidate.origin).href, {
+              ...init,
+              redirect: 'manual',
+              credentials: 'omit',
+              cache: 'no-store',
+            }),
+        });
+        return api.health();
+      },
+      activateServer: async (candidate) =>
+        switchServer(candidate, {
+          settings,
+          stop: () => {
+            client?.prepareServerSwitch();
+            client?.destroy();
+            client = undefined;
+          },
+          clear: async () => {
+            const old = session.fromPartition(partition);
+            await old.closeAllConnections();
+            await old.clearStorageData();
+            await old.clearCache();
+            await old.cookies.flushStore();
+          },
+          mount,
+        }),
+      applyAutostart: setAutostart,
+      autostartAvailable: autostartAvailable(app, process.env.SCHEMA_TEAMS_USER_DATA),
+      openLogs: () => shell.openPath(join(app.getPath('userData'), 'logs')),
+    });
+    previous?.destroy();
+    if (!hidden || previous) main.win.once('ready-to-show', () => main?.show());
+  }
+  mount();
 }
 
 app.on('before-quit', (e) => {
@@ -95,7 +144,7 @@ app.on('before-quit', (e) => {
   log.info('выход');
   client?.destroy();
   session
-    .fromPartition(PARTITION)
+    .fromPartition(client?.partition ?? PARTITION)
     .cookies.flushStore()
     .catch((err: unknown) => log.warn('cookie не сохранены', { err }))
     .finally(() => {
@@ -108,8 +157,8 @@ app.on('before-quit', (e) => {
  * Разрешения страницам: только копирование в буфер и полный экран, и только серверу.
  * Камера, микрофон, геопозиция и прочее — запрещены. Уведомления — через мост (шаг Д3).
  */
-function restrictPermissions(server: URL | null): void {
-  const ses = session.fromPartition(PARTITION);
+function restrictPermissions(server: URL | null, partition = PARTITION): void {
+  const ses = session.fromPartition(partition);
   const allowed = new Set(['clipboard-sanitized-write', 'fullscreen']);
   const ok = (perm: string, origin: string) =>
     allowed.has(perm) && server !== null && isServerUrl(origin, server);

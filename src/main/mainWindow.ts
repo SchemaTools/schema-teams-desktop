@@ -93,6 +93,10 @@ export class MainWindow {
     this.win.show();
     this.win.focus();
   }
+  destroy(): void {
+    clearTimeout(this.saveTimer);
+    this.win.destroy();
+  }
   hide(): void {
     this.saveState();
     this.win.hide();

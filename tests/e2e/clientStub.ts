@@ -27,6 +27,9 @@ export interface FixtureCall {
 export interface FixtureState {
   loginUserId: 1 | 2;
   healthOnline: boolean;
+  healthVersion: string;
+  healthDelayMs: number;
+  healthRedirect: string | null;
   mustChangePassword: boolean;
   lostAckOnce: boolean;
   sendDelayMs: number;
@@ -120,6 +123,9 @@ export async function startClientStub() {
   const state: FixtureState = {
     loginUserId: 1,
     healthOnline: true,
+    healthVersion: '0.11.2',
+    healthDelayMs: 0,
+    healthRedirect: null,
     mustChangePassword: false,
     lostAckOnce: false,
     sendDelayMs: 0,
@@ -293,10 +299,17 @@ export async function startClientStub() {
       return;
     }
     if (path === '/api/health') {
+      if (state.healthDelayMs)
+        await new Promise((resolve) => setTimeout(resolve, state.healthDelayMs));
+      if (state.healthRedirect) {
+        res.writeHead(302, { location: state.healthRedirect });
+        res.end();
+        return;
+      }
       json(res, state.healthOnline ? 200 : 503, {
         status: state.healthOnline ? 'ok' : 'error',
         db: state.healthOnline ? 'ok' : 'down',
-        version: '0.11.2',
+        version: state.healthVersion,
       });
       return;
     }

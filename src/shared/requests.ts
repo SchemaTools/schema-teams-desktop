@@ -21,12 +21,26 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     'logs.open',
     'updates.check',
     'updates.later',
+    'server.read',
+    'server.check',
+    'server.apply',
   ].includes(String(r.kind));
   if (scoped && (typeof r.epoch !== 'number' || !Number.isSafeInteger(r.epoch) || r.epoch < 0))
     return false;
   const only = (...keys: string[]) =>
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
+    case 'server.read':
+      return only();
+    case 'server.check':
+      return only('url') && text(r.url, 2048);
+    case 'server.apply':
+      return (
+        only('url', 'token') &&
+        text(r.url, 2048) &&
+        typeof r.token === 'string' &&
+        /^[0-9a-f-]{36}$/.test(r.token)
+      );
     case 'updates.check':
       return only();
     case 'updates.later':

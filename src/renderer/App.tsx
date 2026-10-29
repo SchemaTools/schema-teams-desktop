@@ -56,6 +56,7 @@ import './events.css';
 import { TimerPanel } from './timer';
 import { PreferencesPanel } from './preferences';
 import { UpdateBanner } from './updates';
+import { ServerConfigurationPanel } from './serverConfiguration';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -797,7 +798,11 @@ export function App() {
 
   function gate() {
     if (snapshot.connection === 'noServer')
-      return <Empty title={R.noServerTitle} text={R.noServerHint} />;
+      return (
+        <Empty title={R.noServerTitle} text="Укажите адрес Teams и проверьте связь.">
+          <ServerConfigurationPanel />
+        </Empty>
+      );
     if (snapshot.connection === 'incompatible')
       return <Empty title={R.incompatibleTitle} text={R.incompatibleHint} />;
     if (snapshot.connection === 'passwordChange')

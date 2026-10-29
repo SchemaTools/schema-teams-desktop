@@ -4,10 +4,13 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { isRect, type WindowState } from './windowState';
 import { isoDay } from '../shared/time';
+import { serverPartitionValid } from '../shared/serverConfiguration';
 
 export interface Settings {
   /** Адрес сервера; пусто — адрес из сборки */
   serverUrl?: string;
+  /** New isolated authentication storage after an explicit server change. */
+  serverPartition?: string;
   /** Запускать вместе с Windows (ТЗ, 4.4: включено по умолчанию) */
   autostart: boolean;
   window: WindowState;
@@ -82,6 +85,7 @@ export function normalizeSettings(raw: unknown): Settings {
   }
   if (typeof r.serverUrl === 'string' && r.serverUrl.trim() !== '')
     s.serverUrl = r.serverUrl.trim();
+  if (serverPartitionValid(r.serverPartition)) s.serverPartition = r.serverPartition;
   if (typeof r.autostart === 'boolean') s.autostart = r.autostart;
   if (typeof r.trayHintShown === 'boolean') s.trayHintShown = r.trayHintShown;
   if (r.theme === 'system' || r.theme === 'light' || r.theme === 'dark') s.theme = r.theme;
