@@ -7,6 +7,7 @@ import type { MainWindow } from '../../src/main/mainWindow';
 import type { SettingsStore } from '../../src/main/settings';
 import type { Logger } from '../../src/main/logger';
 import { requestValid } from '../../src/shared/requests';
+import { timerFixture, proposalFixture } from '../fixtures/time';
 
 const URL = 'file:///unit/client.html';
 type Handler = (event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>;
@@ -50,6 +51,14 @@ const h = vi.hoisted(() => ({
   pin: vi.fn(),
   search: vi.fn(),
   objectInfo: vi.fn(),
+  timer: vi.fn(),
+  timeOptions: vi.fn(),
+  timerStart: vi.fn(),
+  timerPause: vi.fn(),
+  timerResume: vi.fn(),
+  timerReset: vi.fn(),
+  timerProposal: vi.fn(),
+  timerFinish: vi.fn(),
   toastShow: vi.fn(),
   toastClear: vi.fn(),
   toastDestroy: vi.fn(),
@@ -126,6 +135,14 @@ vi.mock('../../src/main/api/client', async (original) => {
       pin = h.pin;
       search = h.search;
       objectInfo = h.objectInfo;
+      timer = h.timer;
+      timeOptions = h.timeOptions;
+      timerStart = h.timerStart;
+      timerPause = h.timerPause;
+      timerResume = h.timerResume;
+      timerReset = h.timerReset;
+      timerProposal = h.timerProposal;
+      timerFinish = h.timerFinish;
     },
   };
 });
@@ -254,6 +271,7 @@ beforeEach(() => {
   h.send.mockResolvedValue({ ok: true, data: null });
   h.setFocus.mockResolvedValue({ ok: true, data: { until: null, startedAt: null } });
   h.pathOpen.mockResolvedValue('ok');
+  h.timer.mockResolvedValue({ ok: true, data: null });
 });
 afterEach(() => {
   for (const host of hosts.splice(0)) host.destroy();
@@ -262,6 +280,54 @@ afterEach(() => {
 });
 
 describe('ClientHost: поколение входа проверяется в доверенном main-frame IPC', () => {
+  it('timer socket state wins over an older read response', async () => {
+    const { host, invoke, owned } = fixture(),
+      wait = deferred<ApiResult<null>>();
+    h.timer.mockReturnValueOnce(wait.promise);
+    const read = invoke({ kind: 'timer.read', epoch: 7 });
+    (host as unknown as { event: (name: string, data: unknown) => void }).event('time:timer', {
+      timer: timerFixture(),
+    });
+    wait.resolve({ ok: true, data: null });
+    await read;
+    expect(owned.state.timer).toEqual(timerFixture());
+    expect(owned.state.timerReady).toBe(true);
+  });
+  it('late timer response after logout cannot restore the previous owner state', async () => {
+    const { invoke, owned } = fixture(),
+      wait = deferred<ApiResult<ReturnType<typeof timerFixture>>>();
+    h.timer.mockReturnValueOnce(wait.promise);
+    const read = invoke({ kind: 'timer.read', epoch: 7 });
+    await invoke({ kind: 'logout', epoch: 7 });
+    wait.resolve({ ok: true, data: timerFixture() });
+    expect(await read).toMatchObject({ code: 'stale_session' });
+    expect(owned.state.timer).toBeNull();
+    expect(owned.state.timerReady).toBe(false);
+    expect(owned.state.recentTimeTaskIds).toEqual([]);
+  });
+  it('timer IPC routes only validated rows and publishes confirmed timer state', async () => {
+    const { invoke, owned } = fixture(),
+      timer = timerFixture('pause');
+    h.timerPause.mockResolvedValue({ ok: true, data: timer });
+    const expected = { version: 1, taskId: 21, startedAt: timer.startedAt };
+    expect(await invoke({ kind: 'timer.pause', epoch: 7, expected })).toMatchObject({ ok: true });
+    expect(owned.state.timer).toEqual(timer);
+    expect(h.timerPause).toHaveBeenCalledWith(expected);
+    h.timerFinish.mockResolvedValue({ ok: true, data: null });
+    await invoke({
+      kind: 'timer.finish',
+      epoch: 7,
+      expected: { ...expected, version: 2 },
+      rows: proposalFixture().rows,
+      note: 'Тест',
+    });
+    expect(owned.state.timer).toBeNull();
+    expect(h.timerFinish).toHaveBeenCalledWith(
+      { ...expected, version: 2 },
+      proposalFixture().rows,
+      'Тест',
+    );
+  });
   it('старые send/read/open.path отвергаются до сетевых и OS-вызовов', async () => {
     const { invoke } = fixture();
     for (const request of [
@@ -279,6 +345,9 @@ describe('ClientHost: поколение входа проверяется в д
       { kind: 'file.pick', epoch: 6, chatId: 4, limit: 10 },
       { kind: 'file.paste', epoch: 6, chatId: 4 },
       { kind: 'chat.objectInfo', epoch: 6, chatId: 4 },
+      { kind: 'timer.read', epoch: 6 },
+      { kind: 'timer.open', epoch: 6, mode: 'pick' },
+      { kind: 'timer.start', epoch: 6, taskId: 21, expected: null },
       { kind: 'chat.edit', epoch: 6, chatId: 4, messageId: 10, text: 'Правка' },
       { kind: 'chat.delete', epoch: 6, chatId: 4, messageId: 10 },
       { kind: 'chat.pin', epoch: 6, chatId: 4, messageId: null },

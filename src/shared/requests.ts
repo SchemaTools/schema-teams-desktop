@@ -1,4 +1,5 @@
 import type { DesktopRequest } from './desktop';
+import { expectedValid, timerRowsValid } from './time';
 const id = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const text = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
 export function requestValid(raw: unknown): raw is DesktopRequest {
@@ -13,6 +14,38 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
   const only = (...keys: string[]) =>
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
+    case 'timer.read':
+    case 'timer.options':
+      return only();
+    case 'timer.open':
+      return (
+        only('mode', 'taskId') &&
+        ['pick', 'finish'].includes(String(r.mode)) &&
+        (r.taskId === undefined || id(r.taskId))
+      );
+    case 'timer.absenceDismiss':
+      return only('id') && id(r.id);
+    case 'timer.start':
+      return (
+        only('taskId', 'expected') &&
+        id(r.taskId) &&
+        (r.expected === null || expectedValid(r.expected))
+      );
+    case 'timer.pause':
+    case 'timer.resume':
+    case 'timer.reset':
+    case 'timer.proposal':
+      return only('expected') && expectedValid(r.expected);
+    case 'timer.finish':
+      return (
+        only('expected', 'rows', 'note') &&
+        expectedValid(r.expected) &&
+        timerRowsValid(r.rows) &&
+        text(r.note, 500) &&
+        (r.rows as { taskId: number }[]).every(
+          (row) => row.taskId === (r.expected as { taskId: number }).taskId,
+        )
+      );
     case 'init':
     case 'login':
     case 'retry':

@@ -53,6 +53,7 @@ import { ChatSearch } from './chatSearch';
 import { EmojiPicker } from './emojiPicker';
 import { ObjectInfoPanel } from './objectInfo';
 import './events.css';
+import { TimerPanel } from './timer';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -104,6 +105,7 @@ export function App() {
   const [objectInfoOpen, setObjectInfoOpen] = useState(false);
   const objectInfoButton = useRef<HTMLButtonElement>(null);
   const [uiError, setUiError] = useState('');
+  const [timerView, setTimerView] = useState<ClientSnapshot['navigateTimer']>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [detail, setDetail] = useState<ChatDetail | null>(null);
   const [messageOwner, setMessageOwner] = useState('');
@@ -155,6 +157,7 @@ export function App() {
         setMessages([]);
         setDetail(null);
         setObjectInfoOpen(false);
+        setTimerView(null);
         setMessageOwner('');
         setHistoryChat(null);
         aroundRef.current = null;
@@ -167,6 +170,8 @@ export function App() {
         readUpTo.current.clear();
       }
       snapshotRef.current = next;
+      if (next.navigateTimer && next.navigateTimer.nonce !== previous.navigateTimer?.nonce)
+        setTimerView(next.navigateTimer);
       setSnapshot(next);
       document.documentElement.dataset.theme = next.theme;
     };
@@ -748,6 +753,26 @@ export function App() {
             </button>
           </div>
         )}
+        {category === 'assigned' && item.task && (
+          <div className="event-actions">
+            <button
+              type="button"
+              disabled={!online}
+              onClick={() => {
+                if (item.task)
+                  void action({
+                    kind: 'timer.open',
+                    epoch: snapshot.epoch,
+                    mode: 'pick',
+                    taskId: item.task.id,
+                  });
+              }}
+            >
+              <ClockCountdown size={16} weight="duotone" />
+              Начать работу
+            </button>
+          </div>
+        )}
       </article>
     );
   }
@@ -785,6 +810,15 @@ export function App() {
 
   return (
     <div className="app-shell" data-connection={snapshot.connection}>
+      {timerView && snapshot.user && (
+        <TimerPanel
+          key={`${owner}:${timerView.nonce}`}
+          snapshot={snapshot}
+          mode={timerView.mode}
+          taskId={timerView.taskId}
+          onClose={() => setTimerView(null)}
+        />
+      )}
       <nav className="folder-rail" aria-label={R.folders}>
         <button
           className="folder-button menu-button"
@@ -826,6 +860,21 @@ export function App() {
           {R.plugins}
         </button>
         <span className="rail-spacer" />
+        <button
+          type="button"
+          className="folder-button"
+          disabled={!snapshot.user}
+          onClick={() =>
+            void action({
+              kind: 'timer.open',
+              epoch: snapshot.epoch,
+              mode: snapshot.timer ? 'finish' : 'pick',
+            })
+          }
+        >
+          <ClockCountdown size={24} weight="duotone" />
+          Таймер
+        </button>
         <button
           type="button"
           className="folder-button"
@@ -978,6 +1027,18 @@ export function App() {
                 <WarningCircle size={17} weight="duotone" />
                 {R.offline}
                 <button onClick={() => void action({ kind: 'retry' })}>{R.retry}</button>
+              </div>
+            )}
+            {snapshot.timerAbsence && (
+              <div className="banner" role="status">
+                После блокировки или сна проверьте время таймера.{' '}
+                <button
+                  onClick={() =>
+                    void action({ kind: 'timer.open', epoch: snapshot.epoch, mode: 'finish' })
+                  }
+                >
+                  Проверить время
+                </button>
               </div>
             )}
             {(uiError || snapshot.error) && (

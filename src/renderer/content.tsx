@@ -284,7 +284,6 @@ function Attachment({
             className="attachment-preview"
             src={visiblePreview}
             alt={file.fileName}
-            loading="lazy"
             onError={() => setPreviewError(identity)}
           />
         </button>

@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import type { AddressInfo } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
+import type { WorkTimer, TimerProposal, TimerRow } from '../../src/shared/time';
+import { optionsFixture, timerFixture, proposalFixture, timeTasks } from '../fixtures/time';
 import type {
   ChatFile,
   ChatMessage,
@@ -45,6 +47,12 @@ export interface FixtureState {
   objectInfoStatus: number | null;
   objectInfoDelayMs: number;
   objectInfo: ObjectInfo;
+  timers: Record<number, WorkTimer | null>;
+  timerProposal: TimerProposal;
+  timerFinishError: boolean;
+  timerFinishLostAck: boolean;
+  timerDelayMs: number;
+  timerWrites: { userId: number; rows: TimerRow[]; note: string | null }[];
 }
 const names: Record<number, string> = { 1: 'Иванова И.И.', 2: 'Петров П.П.' };
 const csrfFor = (id: number) => `csrf-test-only-user-${id}`;
@@ -129,6 +137,12 @@ export async function startClientStub() {
     objectInfoStatus: null,
     objectInfoDelayMs: 0,
     objectInfo: fixtureObject(),
+    timers: {},
+    timerProposal: proposalFixture(),
+    timerFinishError: false,
+    timerFinishLostAck: false,
+    timerDelayMs: 0,
+    timerWrites: [],
   };
   const sessions = new Map<string, number>();
   const uploads = new Map<number, { file: ChatFile; chatId: number; userId: number }>();
@@ -355,6 +369,136 @@ export async function startClientStub() {
       if (token) sessions.delete(token);
       res.setHeader('set-cookie', 'st_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
       json(res, 200, { ok: true });
+      return;
+    }
+    if (path === '/api/time/options' && method === 'GET') {
+      json(res, 200, user === 1 ? optionsFixture() : { ...optionsFixture(), tasks: [] });
+      return;
+    }
+    if (path.startsWith('/api/time/timer')) {
+      if (state.timerDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.timerDelayMs));
+      const timer = state.timers[user] ?? null;
+      if (method === 'GET') {
+        if (path.endsWith('/proposal')) {
+          if (!timer) {
+            denied(res, 'no_timer', 404);
+            return;
+          }
+          json(res, 200, {
+            ...state.timerProposal,
+            task: timer.task,
+            segments: timer.segments.map((segment) => ({
+              ...segment,
+              to: segment.to ?? new Date().toISOString(),
+            })),
+            elapsedSec: timer.segments.reduce(
+              (sum, s) =>
+                sum +
+                Math.floor(
+                  (Date.parse(s.to ?? new Date().toISOString()) - Date.parse(s.from)) / 1000,
+                ),
+              0,
+            ),
+            rows: state.timerProposal.rows.map((row) => ({ ...row, taskId: timer.task.id })),
+          });
+        } else
+          json(res, 200, {
+            timer: timer ? { ...timer, serverNow: new Date().toISOString() } : null,
+          });
+        return;
+      }
+      let next: WorkTimer | null;
+      if (path.endsWith('/start')) {
+        const task = timeTasks.find((t) => t.id === body?.taskId);
+        if (!task || user !== 1) {
+          denied(res, 'validation', 400);
+          return;
+        }
+        if (timer && timer.task.id !== task.id) {
+          denied(res, 'timer_running', 409);
+          return;
+        }
+        const now = new Date().toISOString();
+        next = timer
+          ? {
+              ...timer,
+              version: timer.version + 1,
+              state: 'run',
+              pauseReason: null,
+              segments: [...timer.segments, { from: now, to: null }],
+              updatedAt: now,
+              serverNow: now,
+            }
+          : {
+              ...timerFixture(),
+              task,
+              startedAt: now,
+              segments: [{ from: now, to: null }],
+              updatedAt: now,
+              serverNow: now,
+            };
+        if (timer?.state === 'run') next = timer;
+      } else if (path.endsWith('/pause') || path.endsWith('/resume')) {
+        if (!timer) {
+          denied(res, 'no_timer', 404);
+          return;
+        }
+        const now = new Date().toISOString(),
+          pause = path.endsWith('/pause');
+        next = pause
+          ? timer.state === 'pause'
+            ? timer
+            : {
+                ...timer,
+                version: timer.version + 1,
+                state: 'pause',
+                pauseReason: 'manual',
+                segments: timer.segments.map((s) => (s.to === null ? { ...s, to: now } : s)),
+                updatedAt: now,
+                serverNow: now,
+              }
+          : timer.state === 'run'
+            ? timer
+            : {
+                ...timer,
+                version: timer.version + 1,
+                state: 'run',
+                pauseReason: null,
+                segments: [...timer.segments, { from: now, to: null }],
+                updatedAt: now,
+                serverNow: now,
+              };
+      } else if (path.endsWith('/finish')) {
+        if (!timer) {
+          denied(res, 'no_timer', 404);
+          return;
+        }
+        if (state.timerFinishError) {
+          json(res, 400, {
+            error: { code: 'validation', message: 'private detail', field: 'from', row: 0 },
+          });
+          return;
+        }
+        state.timerWrites.push({
+          userId: user,
+          rows: body?.rows as TimerRow[],
+          note: body?.note as string | null,
+        });
+        next = null;
+      } else if (method === 'DELETE') next = null;
+      else {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      state.timers[user] = next;
+      io.to(`user:${user}`).emit('time:timer', { timer: next });
+      if (path.endsWith('/finish') && state.timerFinishLostAck) {
+        state.timerFinishLostAck = false;
+        denied(res, 'internal', 500);
+        return;
+      }
+      json(res, 200, { timer: next });
       return;
     }
     if (path === '/api/chats') {
@@ -707,6 +851,10 @@ export async function startClientStub() {
       return message;
     },
     disconnect: () => io.disconnectSockets(true),
+    pushTimer: (timer: WorkTimer | null, userId = 1) => {
+      state.timers[userId] = timer;
+      io.to(`user:${userId}`).emit('time:timer', { timer });
+    },
     typing: (shortName = 'Петров П.П.', chatId = 4, userId = 2) =>
       io.to(`user:${chatId === 4 ? 1 : 2}`).emit('chat:typing', { chatId, userId, shortName }),
     close: () => new Promise<void>((done) => io.close(() => done())),

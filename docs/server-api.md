@@ -90,6 +90,31 @@
 
 ## 6. Дополнительная сверка Desktop 29.10.2026
 
+### Таймер собственного клиента 0.5.0
+
+Проверены tag `0.11.2-b`: `packages/shared/src/time.ts` (`7409e5f7`),
+`time-timer.ts` (`810f03e4`), `apps/server/src/modules/time/timer-routes.ts`
+(`07a974fd`) и helper ошибок `objects/shared.ts` (`d273361d`).
+
+- `GET /api/time/options` → today, editableFrom, workday и доступные TimeTaskRef.
+- `GET /api/time/timer` и все изменения → `{timer: WorkTimer | null}`.
+  WorkTimer содержит version, state, pauseReason, task, segments, startedAt,
+  updatedAt, serverNow. Событие `time:timer` имеет ту же оболочку и комнату пользователя.
+- `POST …/start {taskId}`, `POST …/pause {reason:'manual'}`, `POST …/resume`
+  без тела, `DELETE /api/time/timer` без тела. Ручной сброс идемпотентен.
+- `GET …/proposal` → TimerProposal без оболочки: actual segments, elapsedSec,
+  rows, today. Пустые rows допустимы. Клиент не пересчитывает округление сервера.
+- `POST …/finish {rows, note}` → `{timer:null}`, транзакционная запись 1–20
+  строк; шаг 30 минут, note до 500. `400 validation` может содержать `row`
+  (с нуля) и `field`. Клиент выдаёт только безопасные код/номер/поле ошибки.
+- DTO не содержит timerId, подготовленного finish token и условного CAS.
+  Desktop выполняет предварительный GET с проверкой version/taskId/startedAt,
+  но остаётся промежуток между GET и изменением. Автопауза/повтор/очередь отключены;
+  серверное задание на защищённые команды остаётся открытым. Переход к новой
+  задаче после неподтверждённого finish запрещён.
+
+### Сведения объекта и прочие зависимости
+
 Health тестового стенда ответил `0.11.2-b`. Чтение соответствующего tag подтвердило
 маршрут `GET /api/objects/:id` и DTO `ObjectDetail`. В Desktop 0.4.4 сведения
 открываются через `chatId`: main читает `GET /api/chats/:id`, проверяет вид `object`,

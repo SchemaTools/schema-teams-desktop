@@ -2,7 +2,15 @@
 // cookie и csrfToken остаются исключительно в главном процессе.
 export type ApiResult<T> =
   | { ok: true; data: T }
-  | { ok: false; code: string; error: string; retryable: boolean; uncertain?: boolean };
+  | {
+      ok: false;
+      code: string;
+      error: string;
+      retryable: boolean;
+      uncertain?: boolean;
+      row?: number;
+      field?: 'date' | 'from' | 'to' | 'taskId';
+    };
 
 export interface SafeUser {
   id: number;

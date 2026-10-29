@@ -18,6 +18,7 @@ export interface Settings {
   notifications: { enabled: boolean; sound: boolean; preview: boolean };
   /** Сохранение настроек пробного таймера; его подключение относится к Д6 v4. */
   timer: { pauseOnLock: boolean; askOnUnlock: boolean; reminderTime: string };
+  recentTimeTaskIds: Record<string, number[]>;
 }
 
 export const DEFAULTS: Settings = {
@@ -28,6 +29,7 @@ export const DEFAULTS: Settings = {
   theme: 'system',
   notifications: { enabled: true, sound: true, preview: true },
   timer: { pauseOnLock: true, askOnUnlock: true, reminderTime: '18:30' },
+  recentTimeTaskIds: {},
 };
 
 export const ZOOM_MIN = -3;
@@ -40,9 +42,31 @@ export function normalizeSettings(raw: unknown): Settings {
     window: {},
     notifications: { ...DEFAULTS.notifications },
     timer: { ...DEFAULTS.timer },
+    recentTimeTaskIds: {},
   };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
+  if (
+    typeof r.recentTimeTaskIds === 'object' &&
+    r.recentTimeTaskIds !== null &&
+    !Array.isArray(r.recentTimeTaskIds)
+  ) {
+    for (const [owner, ids] of Object.entries(r.recentTimeTaskIds).slice(-30)) {
+      if (
+        !/^[1-9]\d{0,15}$/.test(owner) ||
+        !Number.isSafeInteger(Number(owner)) ||
+        !Array.isArray(ids)
+      )
+        continue;
+      s.recentTimeTaskIds[owner] = [
+        ...new Set(
+          ids.filter(
+            (id): id is number => typeof id === 'number' && Number.isSafeInteger(id) && id > 0,
+          ),
+        ),
+      ].slice(0, 3);
+    }
+  }
   if (typeof r.serverUrl === 'string' && r.serverUrl.trim() !== '')
     s.serverUrl = r.serverUrl.trim();
   if (typeof r.autostart === 'boolean') s.autostart = r.autostart;

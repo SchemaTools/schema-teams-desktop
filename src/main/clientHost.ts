@@ -21,6 +21,9 @@ import type { ClientSnapshot, DesktopRequest } from '../shared/desktop';
 import { requestValid } from '../shared/requests';
 import { TeamsApi, failure } from './api/client';
 import * as parse from './api/parse';
+import { workTimer } from './api/time';
+import type { WorkTimer } from '../shared/time';
+import { TimerAbsence } from './timer/absence';
 import { notificationAllowed } from './api/notificationPrefs';
 import { RealtimeClient, type RealtimeEvent } from './realtime/connection';
 import { CLIENT_FILE, CLIENT_URL, PARTITION, guardLocal, type MainWindow } from './mainWindow';
@@ -90,22 +93,32 @@ export class ClientHost {
   private refreshTimer?: NodeJS.Timeout;
   private retryTimer?: NodeJS.Timeout;
   private retry = 0;
+  private timerRevision = 0;
+  private readonly absence = new TimerAbsence();
   private locked = false;
   private suspended = false;
   private readonly themeChanged = () => this.publish();
   private readonly lock = () => {
+    this.absence.depart('lock', this.state);
     this.locked = true;
     this.toasts.clear();
   };
   private readonly unlock = () => {
     this.locked = false;
+    this.absence.return('unlock', this.state);
+    this.publish();
+    this.scheduleRefresh();
   };
   private readonly sleep = () => {
+    this.absence.depart('suspend', this.state);
     this.suspended = true;
     this.toasts.clear();
   };
   private readonly wake = () => {
     this.suspended = false;
+    this.absence.return('resume', this.state);
+    this.publish();
+    this.scheduleRefresh();
   };
   private readonly cookieChanged = (_e: Electron.Event, cookie: Electron.Cookie) => {
     if (!this.o.server || cookie.name !== 'st_session') return;
@@ -267,6 +280,8 @@ export class ClientHost {
     void this.bootstrap();
   }
   private invalidate(): void {
+    this.absence.reset();
+    this.timerRevision++;
     this.authCookie = null;
     this.summarizedUntil = null;
     this.boot++;
@@ -289,11 +304,19 @@ export class ClientHost {
       focus: { until: null, startedAt: null },
       connection: 'connecting',
       navigateChat: null,
+      timer: null,
+      timerReady: false,
+      timerError: null,
+      timerObservedAt: undefined,
+      navigateTimer: null,
+      recentTimeTaskIds: [],
       error: null,
     };
     this.publish();
   }
   private signedOut(): void {
+    this.absence.reset();
+    this.timerRevision++;
     this.authCookie = null;
     this.summarizedUntil = null;
     this.realtime?.stop();
@@ -313,6 +336,12 @@ export class ClientHost {
       focus: { until: null, startedAt: null },
       connection: 'signedOut',
       navigateChat: null,
+      timer: null,
+      timerReady: false,
+      timerError: null,
+      timerObservedAt: undefined,
+      navigateTimer: null,
+      recentTimeTaskIds: [],
       error: null,
     };
     this.publish();
@@ -368,11 +397,17 @@ export class ClientHost {
     this.authCookie = cookieAfter;
     if (this.state.epoch !== this.api.epoch || this.state.user?.id !== user.data.id) {
       this.state.chats = [];
+      this.absence.reset();
       this.state.unread = 0;
       this.state.notifications = [];
       this.state.notificationUnread = 0;
       this.state.focus = { until: null, startedAt: null };
       this.state.navigateChat = null;
+      this.timerRevision++;
+      this.state.timer = null;
+      this.state.timerReady = false;
+      this.state.timerError = null;
+      this.state.navigateTimer = null;
       this.activeChat = null;
       this.toasts.clear();
       this.paths.reset();
@@ -381,6 +416,8 @@ export class ClientHost {
       this.counts.clear();
     }
     this.state.user = user.data;
+    this.state.recentTimeTaskIds =
+      this.o.settings.get().recentTimeTaskIds[String(user.data.id)] ?? [];
     this.state.epoch = this.api.epoch;
     this.state.error = null;
     if (user.data.mustChangePassword) {
@@ -425,6 +462,7 @@ export class ClientHost {
         this.api.listChats(),
         this.api.notifications(),
         this.api.focus(),
+        this.readTimer(),
       ]);
       if (this.destroyed || epoch !== this.api.epoch) return;
       if (chats.ok) {
@@ -448,7 +486,39 @@ export class ClientHost {
       }
     }
   }
+  private acceptTimer(timer: WorkTimer | null): void {
+    this.state.timer = timer;
+    this.state.timerReady = true;
+    this.state.timerError = null;
+    this.state.timerObservedAt = Date.now();
+  }
+  private async readTimer(): Promise<ApiResult<WorkTimer | null>> {
+    const epoch = this.api.epoch,
+      revision = ++this.timerRevision;
+    const result = await this.api.timer();
+    if (epoch !== this.api.epoch) return failure('stale_session');
+    if (revision === this.timerRevision) {
+      if (result.ok) this.acceptTimer(result.data);
+      else {
+        this.state.timerReady = false;
+        this.state.timerError = result.error;
+      }
+      this.publish();
+    }
+    return result;
+  }
   private event(name: RealtimeEvent, data: unknown): void {
+    if (name === 'time:timer') {
+      this.timerRevision++;
+      try {
+        this.acceptTimer(workTimer(data));
+      } catch {
+        this.state.timerReady = false;
+        this.state.timerError = 'Не удалось прочитать состояние таймера.';
+      }
+      this.publish();
+      return;
+    }
     if (name === 'chat:typing') {
       try {
         const p = parse.object(data);
@@ -763,6 +833,68 @@ export class ClientHost {
     }
     if (!this.api.owner || this.state.user?.mustChangePassword) return failure('unauthenticated');
     switch (r.kind) {
+      case 'timer.open':
+        this.state.navigateTimer = {
+          mode: r.mode,
+          ...(r.taskId && { taskId: r.taskId }),
+          nonce: (this.state.navigateTimer?.nonce ?? 0) + 1,
+        };
+        this.o.main.show();
+        this.trayWindow?.hide();
+        this.publish();
+        return ok(null);
+      case 'timer.absenceDismiss':
+        if (this.absence.warning?.id === r.id) this.absence.dismiss();
+        this.publish();
+        return ok(null);
+      case 'timer.read':
+        return this.readTimer();
+      case 'timer.options':
+        return this.api.timeOptions();
+      case 'timer.proposal':
+        return this.api.timerProposal(r.expected);
+      case 'timer.start':
+      case 'timer.pause':
+      case 'timer.resume':
+      case 'timer.reset':
+      case 'timer.finish': {
+        const epoch = this.api.epoch,
+          revision = ++this.timerRevision;
+        const result =
+          r.kind === 'timer.start'
+            ? await this.api.timerStart(r.taskId, r.expected)
+            : r.kind === 'timer.pause'
+              ? await this.api.timerPause(r.expected)
+              : r.kind === 'timer.resume'
+                ? await this.api.timerResume(r.expected)
+                : r.kind === 'timer.reset'
+                  ? await this.api.timerReset(r.expected)
+                  : await this.api.timerFinish(r.expected, r.rows, r.note);
+        if (epoch !== this.api.epoch) return failure('stale_session');
+        if (result.ok && r.kind === 'timer.start' && result.data) {
+          const ids = [
+            result.data.task.id,
+            ...(this.state.recentTimeTaskIds ?? []).filter((id) => id !== result.data?.task.id),
+          ].slice(0, 3);
+          this.state.recentTimeTaskIds = ids;
+          this.o.settings.update({
+            recentTimeTaskIds: {
+              ...this.o.settings.get().recentTimeTaskIds,
+              [String(this.api.owner)]: ids,
+            },
+          });
+        }
+        if (revision === this.timerRevision) {
+          if (result.ok) this.acceptTimer(result.data);
+          else if (result.code !== 'timer_busy') {
+            this.state.timerReady = false;
+            this.state.timerError = result.error;
+          }
+          this.publish();
+        }
+        this.scheduleRefresh();
+        return result;
+      }
       case 'chat.list':
         return this.api.listChats();
       case 'chat.detail':
@@ -869,6 +1001,11 @@ export class ClientHost {
     }
   }
   private publish(): void {
+    this.absence.observe(this.state);
+    const warning = this.absence.warning;
+    this.state.timerAbsence = warning
+      ? { id: warning.id, from: warning.from, to: warning.to }
+      : null;
     if (this.destroyed) return;
     if (this.state.connection !== 'online') this.state.typing = [];
     this.state.revision++;
@@ -903,7 +1040,7 @@ export class ClientHost {
               focus: Boolean(
                 this.state.focus.until && Date.parse(this.state.focus.until) > Date.now(),
               ),
-              timer: 'idle',
+              timer: this.state.timerReady && this.state.timer ? this.state.timer.state : 'idle',
             }),
           ),
         });

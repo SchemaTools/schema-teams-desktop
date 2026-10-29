@@ -13,6 +13,7 @@ import type {
   SafeUser,
   ObjectInfo,
 } from './client';
+import type { TimeOptions, WorkTimer, TimerExpected, TimerPrepared, TimerRow } from './time';
 
 export interface ClientSnapshot {
   connection:
@@ -40,12 +41,28 @@ export interface ClientSnapshot {
   error: string | null;
   navigateChat?: { chatId: number; messageId?: number; nonce: number } | null;
   navigateEvents?: number;
+  timer?: WorkTimer | null;
+  timerReady?: boolean;
+  timerError?: string | null;
+  timerObservedAt?: number;
+  recentTimeTaskIds?: number[];
+  timerAbsence?: { id: number; from: number; to: number } | null;
+  navigateTimer?: { mode: 'pick' | 'finish'; taskId?: number; nonce: number } | null;
 }
 export type DesktopRequest =
   | { kind: 'init' | 'login' | 'retry' | 'window.hide' | 'app.quit' }
   | { kind: 'theme'; mode: 'system' | 'light' | 'dark' }
   | ({ epoch: number } & (
       | { kind: 'logout' }
+      | { kind: 'timer.read' | 'timer.options' }
+      | { kind: 'timer.open'; mode: 'pick' | 'finish'; taskId?: number }
+      | { kind: 'timer.absenceDismiss'; id: number }
+      | { kind: 'timer.start'; taskId: number; expected: TimerExpected | null }
+      | { kind: 'timer.pause'; expected: TimerExpected }
+      | { kind: 'timer.resume'; expected: TimerExpected }
+      | { kind: 'timer.reset'; expected: TimerExpected }
+      | { kind: 'timer.proposal'; expected: TimerExpected }
+      | { kind: 'timer.finish'; expected: TimerExpected; rows: TimerRow[]; note: string }
       | { kind: 'window.show'; target?: 'events'; chatId?: number; messageId?: number }
       | { kind: 'chat.list' }
       | { kind: 'chat.detail'; chatId: number }
@@ -95,6 +112,16 @@ export interface DesktopResponseMap {
   login: null;
   retry: null;
   logout: null;
+  'timer.read': WorkTimer | null;
+  'timer.options': TimeOptions;
+  'timer.open': null;
+  'timer.absenceDismiss': null;
+  'timer.start': WorkTimer | null;
+  'timer.pause': WorkTimer | null;
+  'timer.resume': WorkTimer | null;
+  'timer.reset': WorkTimer | null;
+  'timer.proposal': TimerPrepared;
+  'timer.finish': WorkTimer | null;
   theme: null;
   'window.show': null;
   'window.hide': null;

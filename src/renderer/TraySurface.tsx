@@ -16,6 +16,7 @@ import { Avatar } from './content';
 import { request } from './bridge';
 import { chatTitle, timeLabel } from './model';
 import { R } from './strings';
+import { TimerCard } from './timer';
 
 interface ReplyDraft {
   value: string;
@@ -201,6 +202,10 @@ export function TraySurface() {
       )}
       {snapshot?.user ? (
         <>
+          <TimerCard
+            snapshot={snapshot}
+            onOpen={(mode) => void act({ kind: 'timer.open', epoch: snapshot.epoch, mode })}
+          />
           <section className="tray-focus">
             <div>
               <Moon size={17} weight="duotone" />

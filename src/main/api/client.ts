@@ -15,6 +15,18 @@ import type {
   ObjectInfo,
 } from '../../shared/client';
 import * as parse from './parse';
+import * as time from './time';
+import {
+  expectedValid,
+  matchesTimer,
+  positiveId,
+  timerRowsValid,
+  type WorkTimer,
+  type TimeOptions,
+  type TimerExpected,
+  type TimerPrepared,
+  type TimerRow,
+} from '../../shared/time';
 import { validateUpload } from '../files/uploadPolicy';
 
 export interface TeamsApiOptions {
@@ -54,6 +66,10 @@ const ERROR_TEXT: Record<string, string> = {
   busy: 'Дождитесь окончания загрузки файла.',
   forbidden_type: 'Такие файлы нельзя прикладывать. Положите файл в папку объекта.',
   too_large: 'Файл больше 50 МБ. Положите его в папку объекта.',
+  no_timer: 'Таймер уже завершён. Обновите состояние.',
+  timer_running: 'Сначала завершите текущую задачу.',
+  timer_changed: 'Таймер изменился в другом окне. Обновите состояние и проверьте задачу.',
+  timer_busy: 'Дождитесь завершения действия с таймером.',
 };
 export function failure<T = never>(code: string, uncertain = false): ApiResult<T> {
   return {
@@ -77,6 +93,7 @@ export class TeamsApi {
   private csrf: string | null = null;
   private readonly pending = new Set<AbortController>();
   private authFlight?: Promise<ApiResult<SafeUser>>;
+  private timerFlight?: { epoch: number };
   constructor(private readonly o: TeamsApiOptions) {}
   get epoch(): number {
     return this.generation;
@@ -130,6 +147,108 @@ export class TeamsApi {
   }
   listChats(): Promise<ApiResult<ChatList>> {
     return this.request('/api/chats', 'GET', parse.list);
+  }
+  timer(): Promise<ApiResult<WorkTimer | null>> {
+    return this.request('/api/time/timer', 'GET', time.workTimer);
+  }
+  timeOptions(): Promise<ApiResult<TimeOptions>> {
+    return this.request('/api/time/options', 'GET', time.timeOptions);
+  }
+  private async timerBound(expected: TimerExpected | null): Promise<ApiResult<WorkTimer | null>> {
+    const epoch = this.epoch,
+      owner = this.owner;
+    const current = await this.timer();
+    if (epoch !== this.epoch || owner !== this.owner) return failure('stale_session');
+    if (!current.ok) return current;
+    return matchesTimer(current.data, expected) ? current : failure('timer_changed');
+  }
+  /** Preflight reduces stale-window mistakes. Server CAS is still required for atomic safety. */
+  private async timerWrite(
+    action: 'start' | 'pause' | 'resume' | 'reset' | 'finish',
+    expected: TimerExpected | null,
+    body?: object,
+  ): Promise<ApiResult<WorkTimer | null>> {
+    if (expected !== null && !expectedValid(expected)) return failure('validation');
+    if (this.timerFlight?.epoch === this.epoch) return failure('timer_busy');
+    const flight = { epoch: this.epoch };
+    this.timerFlight = flight;
+    try {
+      const current = await this.timerBound(expected);
+      if (!current.ok) return current;
+      if (flight.epoch !== this.epoch) return failure('stale_session');
+      return await this.request(
+        `/api/time/timer${action === 'reset' ? '' : `/${action}`}`,
+        action === 'reset' ? 'DELETE' : 'POST',
+        (raw) => {
+          const timer = time.workTimer(raw);
+          if (action === 'finish' || action === 'reset' ? timer !== null : timer === null)
+            throw new parse.InvalidData();
+          if (timer && body && 'taskId' in body && timer.task.id !== body.taskId)
+            throw new parse.InvalidData();
+          if (
+            timer &&
+            expected &&
+            (timer.task.id !== expected.taskId || timer.startedAt !== expected.startedAt)
+          )
+            throw new parse.InvalidData();
+          if (
+            timer &&
+            ((action === 'pause' && timer.state !== 'pause') ||
+              ((action === 'start' || action === 'resume') && timer.state !== 'run'))
+          )
+            throw new parse.InvalidData();
+          return timer;
+        },
+        body,
+      );
+    } finally {
+      if (this.timerFlight === flight) this.timerFlight = undefined;
+    }
+  }
+  timerStart(taskId: number, expected: TimerExpected | null): Promise<ApiResult<WorkTimer | null>> {
+    if (!positiveId(taskId)) return Promise.resolve(failure('validation'));
+    if (expected !== null && expected.taskId !== taskId)
+      return Promise.resolve(failure('timer_running'));
+    return this.timerWrite('start', expected, { taskId });
+  }
+  timerPause(expected: TimerExpected): Promise<ApiResult<WorkTimer | null>> {
+    return this.timerWrite('pause', expected, { reason: 'manual' });
+  }
+  timerResume(expected: TimerExpected): Promise<ApiResult<WorkTimer | null>> {
+    return this.timerWrite('resume', expected);
+  }
+  timerReset(expected: TimerExpected): Promise<ApiResult<WorkTimer | null>> {
+    return this.timerWrite('reset', expected);
+  }
+  timerFinish(
+    expected: TimerExpected,
+    rows: TimerRow[],
+    note: string,
+  ): Promise<ApiResult<WorkTimer | null>> {
+    if (
+      !expectedValid(expected) ||
+      !timerRowsValid(rows) ||
+      rows.some((row) => row.taskId !== expected.taskId) ||
+      typeof note !== 'string' ||
+      note.length > 500
+    )
+      return Promise.resolve(failure('validation'));
+    return this.timerWrite('finish', expected, { rows, note: note.trim() || null });
+  }
+  async timerProposal(expected: TimerExpected): Promise<ApiResult<TimerPrepared>> {
+    if (!expectedValid(expected)) return failure('validation');
+    const current = await this.timerBound(expected);
+    if (!current.ok) return current;
+    if (current.data === null) return failure('no_timer');
+    const epoch = this.epoch,
+      owner = this.owner;
+    const proposal = await this.request('/api/time/timer/proposal', 'GET', time.timerProposal);
+    if (epoch !== this.epoch || owner !== this.owner) return failure('stale_session');
+    if (!proposal.ok) return proposal;
+    if (proposal.data.task.id !== expected.taskId) return failure('timer_changed');
+    const after = await this.timerBound(expected);
+    if (!after.ok) return after;
+    return { ok: true, data: { current: current.data, proposal: proposal.data } };
   }
   detail(chatId: number): Promise<ApiResult<ChatDetail>> {
     return this.validId(chatId)
@@ -480,6 +599,22 @@ export class TeamsApi {
       }
       const error = this.httpFailure<T>(raw, MUTATIONS.has(method));
       if (error.ok) return error;
+      if (path === '/api/time/timer/finish' && raw.status === 400 && error.code === 'validation') {
+        try {
+          const meta = parse.object(parse.object(raw.body).error);
+          if (
+            typeof meta.row === 'number' &&
+            Number.isSafeInteger(meta.row) &&
+            meta.row >= 0 &&
+            meta.row < 20
+          )
+            error.row = meta.row;
+          if (['date', 'from', 'to', 'taskId'].includes(String(meta.field)))
+            error.field = meta.field as 'date' | 'from' | 'to' | 'taskId';
+        } catch {
+          /* Only bounded row/field metadata, never server messages. */
+        }
+      }
       if (protectedRoute && (raw.status === 401 || error.code === 'password_change_required')) {
         this.authLost(epoch);
         return raw.status === 401 ? failure('unauthenticated') : error;
