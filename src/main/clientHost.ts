@@ -60,8 +60,17 @@ import type { Health } from '../shared/client';
 import type { RevitInventory } from '../shared/setup';
 import { RevitInventoryService } from './desktop/revitInventory';
 import { ReportService, type ReportBackend } from './diagnostics/service';
+import { SupportLedger, supportStorage } from './diagnostics/ledger';
+import { SupportSender, type SupportContext } from './diagnostics/sender';
+import {
+  MorningNotices,
+  bureauMorning,
+  type MorningContext,
+  type MorningTicket,
+} from './notifications/morning';
 
 interface Options {
+  supportPersistence?: SupportLedger;
   pausePersistence?: { outbox: PauseOutbox; returns: PauseReturns };
   main: MainWindow;
   server: URL | null;
@@ -80,6 +89,7 @@ interface Options {
   report?: Omit<ReportBackend, 'metadata'>;
 }
 interface Notice {
+  morning?: MorningTicket;
   recovery?: PauseReturn;
   reminder?: ReminderTicket;
   timerStopped?: boolean;
@@ -146,6 +156,13 @@ export class ClientHost {
   private readonly configuration: ServerConfigurationService;
   private readonly inventory: RevitInventoryService;
   private readonly report: ReportService;
+  private readonly support: SupportSender;
+  private reportBinding?: { id: string; epoch: number; owner: number; serverHash: string };
+  private reportExportBinding?: { id: string; epoch: number; owner: number; serverHash: string };
+  private readonly morning = new MorningNotices();
+  private morningFlight = false;
+  private morningAttempt?: { key: string; at: number };
+  private morningSaveWarning?: MorningTicket;
   private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
@@ -235,6 +252,24 @@ export class ClientHost {
       choose: o.report?.choose ?? (async () => null),
       reveal: o.report?.reveal ?? (() => {}),
       saved: () => o.log.info('архив диагностики сохранён'),
+    });
+    this.support = new SupportSender({
+      ledger:
+        o.supportPersistence ??
+        new SupportLedger(
+          supportStorage(join(app.getPath('userData'), 'support-send-ledger.json')),
+        ),
+      fresh: () => this.freshSupportContext(),
+      current: (context) => this.supportCurrent(context),
+      previewCurrent: (id, context) =>
+        this.report.current(id) &&
+        this.reportBinding?.id === id &&
+        this.reportBinding.epoch === context.epoch &&
+        this.reportBinding.owner === context.ownerId &&
+        this.reportBinding.serverHash === context.serverHash,
+      bundle: (id) => this.report.bundle(id),
+      upload: (name, bytes) => this.api.supportUpload(name, bytes),
+      post: (payload, key) => this.api.supportSend(payload, key),
     });
     this.inventory = new RevitInventoryService(
       o.readRevit ??
@@ -341,6 +376,10 @@ export class ClientHost {
       onButton: (spec, index) => {
         const n = this.notices.get(spec);
         if (!n || !this.owned(n)) return;
+        if (n.morning) {
+          if (this.morningValid(n.morning, true)) this.openNotice(n);
+          return;
+        }
         if (n.recovery) {
           if (!this.current(n)) return;
           const shownScope = this.pauseScope();
@@ -371,11 +410,21 @@ export class ClientHost {
       },
       onOpen: (spec) => {
         const n = this.notices.get(spec);
-        if (n && this.owned(n) && (!n.reminder || this.current(n))) this.openNotice(n);
+        if (
+          n &&
+          this.owned(n) &&
+          (!n.reminder || this.current(n)) &&
+          (!n.morning || this.morningValid(n.morning, true))
+        )
+          this.openNotice(n);
       },
       onShow: (spec) => {
         const n = this.notices.get(spec);
         if (n && this.current(n)) {
+          if (n.morning) {
+            this.morning.shown(n.morning);
+            this.saveMorning(n.morning);
+          }
           if (n.recovery) {
             const scope = this.pauseScope();
             if (scope && !this.pauseReturns.shown(scope, n.recovery.key)) {
@@ -670,6 +719,7 @@ export class ClientHost {
     if (this.destroyed || boot !== this.boot) return;
     this.configEpoch = config.ok ? this.api.epoch : -1;
     this.state.bureau = config.ok ? config.data.bureau : null;
+    if (config.ok) this.observeServerTime(config.data.serverNow);
     this.state.timerControl = config.ok && (config.data.capabilities.timerControl ?? 0) >= 2;
     this.retry = 0;
     this.state.connection = this.socketOnline ? 'online' : 'connecting';
@@ -717,6 +767,7 @@ export class ClientHost {
         this.configEpoch = config.ok ? epoch : -1;
         this.state.timerControl = config.ok && (config.data.capabilities.timerControl ?? 0) >= 2;
         this.state.bureau = config.ok ? config.data.bureau : null;
+        if (config.ok) this.observeServerTime(config.data.serverNow);
       }
       const [chats, notifications, focus] = await Promise.all([
         this.api.listChats(),
@@ -741,6 +792,7 @@ export class ClientHost {
       this.state.historyRevision = (this.state.historyRevision ?? 0) + 1;
       this.publish();
       if (focus.ok) this.checkReminder();
+      void this.checkMorning();
       await this.checkTimerPending();
       void this.flushAbsencePause();
     } finally {
@@ -754,6 +806,160 @@ export class ClientHost {
   private observeServerTime(value: unknown): void {
     if (utcInstant(value))
       this.serverClock = { ms: Date.parse(value), observedAt: performance.now() };
+  }
+  private supportCurrent(context: SupportContext): boolean {
+    const config = this.api.desktopConfiguration;
+    return (
+      !this.destroyed &&
+      this.api.owner === context.ownerId &&
+      this.state.user?.id === context.ownerId &&
+      this.api.epoch === context.epoch &&
+      context.serverHash === this.serverScopeHash &&
+      this.configEpoch === context.epoch &&
+      (config?.capabilities.support ?? 0) >= 1 &&
+      config?.supportChatId === context.chatId
+    );
+  }
+  private async freshSupportContext(): Promise<ApiResult<SupportContext>> {
+    const epoch = this.api.epoch,
+      owner = this.api.owner,
+      started = performance.now();
+    if (!owner || this.destroyed) return failure('unauthenticated');
+    const auth = await this.api.authenticate();
+    if (this.destroyed || this.api.epoch !== epoch || this.api.owner !== owner)
+      return failure('stale_session');
+    if (!auth.ok) return auth;
+    if (auth.data.id !== owner) return failure('stale_session');
+    const config = await this.api.readDesktopConfig();
+    if (this.destroyed || this.api.epoch !== epoch || this.api.owner !== owner)
+      return failure('stale_session');
+    this.configEpoch = config.ok ? epoch : -1;
+    this.state.bureau = config.ok ? config.data.bureau : null;
+    this.state.timerControl = config.ok && (config.data.capabilities.timerControl ?? 0) >= 2;
+    if (!config.ok) return config;
+    this.state.bureau = config.data.bureau;
+    this.state.timerControl = (config.data.capabilities.timerControl ?? 0) >= 2;
+    this.observeServerTime(config.data.serverNow);
+    if ((config.data.capabilities.support ?? 0) < 1 || !config.data.supportChatId)
+      return failure('no_support_chat');
+    const uncertaintyMs = performance.now() - started;
+    if (!Number.isFinite(uncertaintyMs) || uncertaintyMs < 0 || uncertaintyMs > 60000)
+      return failure('timeout');
+    return ok({
+      serverHash: this.serverScopeHash,
+      ownerId: owner,
+      epoch,
+      chatId: config.data.supportChatId,
+      serverNow: config.data.serverNow,
+      uncertaintyMs,
+    });
+  }
+  private morningContext(): MorningContext | null {
+    const config = this.api.desktopConfiguration,
+      owner = this.api.owner;
+    if (
+      this.destroyed ||
+      !owner ||
+      this.state.user?.id !== owner ||
+      this.state.connection !== 'online' ||
+      this.configEpoch !== this.api.epoch ||
+      (config?.capabilities.morning ?? 0) < 1 ||
+      !config
+    )
+      return null;
+    return {
+      serverHash: this.serverScopeHash,
+      owner,
+      epoch: this.api.epoch,
+      timeZone: config.bureau.timeZone,
+      now: this.serverTime(),
+    };
+  }
+  private morningValid(ticket: MorningTicket, shownAction = false): boolean {
+    const context = this.morningContext();
+    return (
+      this.o.settings.get().notifications.morning &&
+      !!context &&
+      !this.locked &&
+      !this.suspended &&
+      this.morning.valid(ticket, context, this.o.settings.get().morningSeen, shownAction)
+    );
+  }
+  private saveMorning(ticket: MorningTicket): void {
+    try {
+      this.o.settings.update({
+        morningSeen: [...new Set([...this.o.settings.get().morningSeen, ticket.key])].slice(-128),
+      });
+      this.morningSaveWarning = undefined;
+      this.state.morningWarning = null;
+    } catch {
+      this.morningSaveWarning = ticket;
+      this.state.morningWarning =
+        'Утренний обзор показан, но сохранить отметку не удалось. После перезапуска возможен повтор.';
+    }
+    this.publish();
+  }
+  private async checkMorning(): Promise<void> {
+    const context = this.morningContext();
+    if (
+      !context ||
+      this.morningFlight ||
+      this.locked ||
+      this.suspended ||
+      !this.o.settings.get().notifications.enabled ||
+      !this.o.settings.get().notifications.morning
+    )
+      return;
+    if (
+      this.morningSaveWarning &&
+      this.morningSaveWarning.context.owner === context.owner &&
+      this.morningSaveWarning.context.serverHash === context.serverHash
+    )
+      this.saveMorning(this.morningSaveWarning);
+    const clock = bureauMorning(context.now, context.timeZone);
+    if (!clock?.afterEight) return;
+    const key = `${context.serverHash}:${context.owner}:${clock.date}`;
+    if (this.o.settings.get().morningSeen.includes(key)) return;
+    if (this.morningAttempt?.key === key && performance.now() - this.morningAttempt.at < 60000)
+      return;
+    this.morningAttempt = { key, at: performance.now() };
+    this.morningFlight = true;
+    try {
+      const result = await this.api.morning();
+      const current = this.morningContext();
+      if (
+        !result.ok ||
+        !current ||
+        current.epoch !== context.epoch ||
+        current.owner !== context.owner ||
+        current.serverHash !== context.serverHash
+      )
+        return;
+      const ticket = this.morning.ticket(current, result.data, this.o.settings.get().morningSeen);
+      if (!ticket || !this.morningValid(ticket)) return;
+      this.showNotice(
+        ticket.key,
+        'Доброе утро',
+        [
+          result.data.dueToday ? `Сроки сегодня: ${result.data.dueToday}` : null,
+          result.data.review ? `На проверке: ${result.data.review}` : null,
+          result.data.newRemarks ? `Новых замечаний: ${result.data.newRemarks}` : null,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+        {
+          morning: ticket,
+          epoch: context.epoch,
+          owner: context.owner,
+          chatId: null,
+          link: '/my',
+          mention: false,
+          ordinary: true,
+        },
+      );
+    } finally {
+      this.morningFlight = false;
+    }
   }
   private serverTime(): number {
     return this.serverClock
@@ -1453,7 +1659,9 @@ export class ClientHost {
         ? body
         : notice.timerStopped
           ? 'Запись трудозатрат требует проверки.'
-          : 'Новое сообщение',
+          : notice.morning
+            ? 'Откройте «Мою работу», чтобы посмотреть сводку.'
+            : 'Новое сообщение',
       hasReply: notice.chatId !== null,
       buttons: notice.timerStopped
         ? ['Проверить запись', 'Прочитано']
@@ -1506,6 +1714,7 @@ export class ClientHost {
   private current(n: Notice): boolean {
     return (
       this.owned(n) &&
+      (!n.morning || this.morningValid(n.morning)) &&
       (!n.recovery || this.currentRecovery(n.recovery)) &&
       !(
         n.chatId &&
@@ -1631,11 +1840,25 @@ export class ClientHost {
         this.o.main.show();
         this.trayWindow?.hide();
         this.publish();
+        if (this.api.owner && (this.api.desktopConfiguration?.capabilities.support ?? 0) >= 1) {
+          const epoch = this.api.epoch;
+          void this.freshSupportContext()
+            .then(() => {
+              if (!this.destroyed && this.api.epoch === epoch) this.publish();
+            })
+            .catch(() => {
+              /* Read-only availability refresh; send/retry perform their own guarded preflight. */
+            });
+        }
         return ok(null);
       case 'report.clear':
+        this.reportExportBinding = undefined;
+        this.reportBinding = undefined;
         this.report.clear();
         return ok(null);
       case 'report.edit':
+        this.reportExportBinding = undefined;
+        this.reportBinding = undefined;
         this.report.edit();
         return ok(null);
       case 'report.screens':
@@ -1646,8 +1869,29 @@ export class ClientHost {
       case 'report.reveal':
         try {
           if (r.kind === 'report.capture') return ok(await this.report.capture(r.target));
-          if (r.kind === 'report.prepare') return ok(await this.report.prepare(r.options));
-          if (r.kind === 'report.export') return ok(await this.report.export(r.id));
+          if (r.kind === 'report.prepare') {
+            const epoch = this.api.epoch,
+              owner = this.api.owner;
+            const preview = await this.report.prepare(r.options);
+            if (this.destroyed || this.api.epoch !== epoch || this.api.owner !== owner)
+              return failure('stale_session');
+            this.reportBinding = owner
+              ? { id: preview.id, epoch, owner, serverHash: this.serverScopeHash }
+              : undefined;
+            return ok(preview);
+          }
+          if (r.kind === 'report.export') {
+            const epoch = this.api.epoch,
+              owner = this.api.owner;
+            const exported = await this.report.export(r.id);
+            if (this.destroyed || this.api.epoch !== epoch || this.api.owner !== owner)
+              return failure('stale_session');
+            this.reportExportBinding =
+              exported && owner
+                ? { id: exported.id, epoch, owner, serverHash: this.serverScopeHash }
+                : undefined;
+            return ok(exported);
+          }
           return this.report.reveal(r.id) ? ok(null) : failure('validation');
         } catch {
           return {
@@ -1805,6 +2049,72 @@ export class ClientHost {
     )
       return failure('precondition_required');
     switch (r.kind) {
+      case 'report.send':
+      case 'report.retry': {
+        const result =
+          r.kind === 'report.send' ? await this.support.send(r.id) : await this.support.retry(r.id);
+        if (!this.destroyed && r.epoch === this.api.epoch) this.publish();
+        return result;
+      }
+      case 'report.resolve': {
+        const owner = this.api.owner;
+        if (
+          !owner ||
+          !this.support.resolve({ serverHash: this.serverScopeHash, ownerId: owner }, r.id)
+        )
+          return failure('busy');
+        this.publish();
+        return ok(null);
+      }
+      case 'report.fallback': {
+        const owner = this.api.owner,
+          bound = this.reportExportBinding;
+        if (
+          !owner ||
+          !this.o.server ||
+          !bound ||
+          bound.id !== r.id ||
+          bound.owner !== owner ||
+          bound.epoch !== r.epoch ||
+          bound.serverHash !== this.serverScopeHash ||
+          !this.report.hasExport(r.id)
+        )
+          return failure('validation');
+        const status = this.support.status(
+          { serverHash: this.serverScopeHash, ownerId: owner },
+          null,
+          false,
+          this.serverTime(),
+        );
+        if (status.error)
+          return { ok: false, code: 'support_storage', error: status.error, retryable: false };
+        if (status.attempt && ['unresolved', 'review'].includes(status.attempt.status))
+          return {
+            ok: false,
+            code: 'support_unresolved',
+            error: 'Результат прежней отправки пока неизвестен. Сначала проверьте отправку.',
+            retryable: false,
+          };
+        try {
+          await shell.openExternal(new URL('/?feedback=mine', this.o.server.origin).href);
+        } catch {
+          return {
+            ok: false,
+            code: 'open_error',
+            error:
+              'Не удалось открыть обратную связь. Архив сохранён; передайте его администратору вручную.',
+            retryable: false,
+          };
+        }
+        if (
+          this.destroyed ||
+          this.api.epoch !== r.epoch ||
+          this.api.owner !== owner ||
+          this.reportExportBinding !== bound
+        )
+          return failure('stale_session');
+        return this.report.reveal(r.id) ? ok(null) : failure('validation');
+      }
       case 'setup.finish': {
         if (this.state.connection !== 'online') return failure('network');
         const health = await this.api.health();
@@ -2015,6 +2325,22 @@ export class ClientHost {
     }
   }
   private publish(): void {
+    if (this.support) {
+      const config = this.api.desktopConfiguration,
+        owner = this.api.owner;
+      const available =
+        !!owner &&
+        this.state.connection === 'online' &&
+        this.configEpoch === this.api.epoch &&
+        (config?.capabilities.support ?? 0) >= 1 &&
+        !!config?.supportChatId;
+      this.state.reportSupport = this.support.status(
+        owner ? { serverHash: this.serverScopeHash, ownerId: owner } : null,
+        config?.supportChatId ?? null,
+        available,
+        this.serverTime(),
+      );
+    }
     this.state.setupRequired = !this.o.settings.get().onboardingComplete;
     this.state.preferences = this.preferences();
     this.state.timerReminderTime = this.o.settings.get().timer.reminderTime;

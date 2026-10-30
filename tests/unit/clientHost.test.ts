@@ -1,5 +1,6 @@
 import { PauseOutbox, type PauseOutboxStorage } from '../../src/main/timer/pauseOutbox';
 import { PauseReturns } from '../../src/main/timer/pauseReturns';
+import { SupportLedger } from '../../src/main/diagnostics/ledger';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IpcMainInvokeEvent, Tray } from 'electron';
@@ -59,6 +60,10 @@ const h = vi.hoisted(() => ({
   delete: vi.fn(),
   pin: vi.fn(),
   top: vi.fn(),
+  morning: vi.fn(),
+  supportUpload: vi.fn(),
+  supportSend: vi.fn(),
+  desktopConfig: undefined as undefined | import('../../src/shared/desktopConfig').DesktopConfig,
   chatQuiet: undefined as number | undefined,
   realtimeStatus: undefined as undefined | ((online: boolean) => void),
   search: vi.fn(),
@@ -82,6 +87,7 @@ const h = vi.hoisted(() => ({
         onShow: (spec: ToastSpec) => void;
         onClose: (spec: ToastSpec) => void;
         onButton: (spec: ToastSpec, index: number) => void;
+        onOpen: (spec: ToastSpec) => void;
       },
   toastClear: vi.fn(),
   toastDestroy: vi.fn(),
@@ -137,7 +143,7 @@ vi.mock('../../src/main/api/client', async (original) => {
         return h.api.owner;
       }
       get desktopConfiguration() {
-        return { capabilities: { chatQuiet: h.chatQuiet } };
+        return h.desktopConfig ?? { capabilities: { chatQuiet: h.chatQuiet } };
       }
       clear() {
         h.clear();
@@ -168,6 +174,9 @@ vi.mock('../../src/main/api/client', async (original) => {
       delete = h.delete;
       pin = h.pin;
       top = h.top;
+      morning = h.morning;
+      supportUpload = h.supportUpload;
+      supportSend = h.supportSend;
       search = h.search;
       objectInfo = h.objectInfo;
       timer = h.timer;
@@ -251,6 +260,7 @@ function deferred<T>() {
 function fixture(
   patch: Partial<Settings> = {},
   persistence?: { outbox: PauseOutbox; returns: PauseReturns },
+  supportLedger?: SupportLedger,
 ) {
   let settings = normalizeSettings(patch);
   const settingsUpdate = vi.fn((change: Partial<Settings>) => {
@@ -283,6 +293,7 @@ function fixture(
     };
   };
   const host: ClientHost = new ClientHost({
+    supportPersistence: supportLedger ?? new SupportLedger(memory()),
     pausePersistence: persistence ?? {
       outbox: new PauseOutbox('fixture-outbox', {
         storage: memory(),
@@ -340,6 +351,7 @@ beforeEach(() => {
   h.api.epoch = 7;
   h.api.owner = 1;
   h.chatQuiet = undefined;
+  h.desktopConfig = undefined;
   // Не запускаем bootstrap/сокет: эти тесты проверяют только маршрутизацию
   // настоящего IPC handler при управляемых поколениях API и cookie jar.
   h.health.mockImplementation(() => new Promise(() => {}));
@@ -564,7 +576,7 @@ describe('ClientHost: поколение входа проверяется в д
         autostart: true,
         autostartAvailable: true,
         theme: 'system',
-        notifications: { enabled: true, sound: true, preview: true },
+        notifications: { enabled: true, sound: true, preview: true, morning: true },
       },
     });
     const result = await invoke({
@@ -572,7 +584,12 @@ describe('ClientHost: поколение входа проверяется в д
       patch: { notifications: { sound: false } },
     });
     expect(result.ok).toBe(true);
-    expect(getSettings().notifications).toEqual({ enabled: true, sound: false, preview: true });
+    expect(getSettings().notifications).toEqual({
+      enabled: true,
+      sound: false,
+      preview: true,
+      morning: true,
+    });
     expect(getSettings().timer.reminderTime).toBe('19:00');
     expect(getSettings().recentTimeTaskIds).toEqual({ '1': [21] });
     expect(JSON.stringify(result)).not.toContain('private.example.test');
@@ -667,7 +684,7 @@ describe('ClientHost: поколение входа проверяется в д
   it('Focus suppresses local reminder; disabled preview does not leak task name', () => {
     vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
     const { host, owned } = fixture({
-      notifications: { enabled: true, sound: false, preview: false },
+      notifications: { enabled: true, sound: false, preview: false, morning: true },
     });
     owned.state.focus.until = new Date(Date.now() + 60000).toISOString();
     const ownedHost = host as unknown as {
@@ -950,6 +967,246 @@ describe('ClientHost: поколение входа проверяется в д
     expect(await pending).toMatchObject({ ok: false, code: 'stale_session' });
     expect(state.focus).toBe(previous);
     expect(h.published).toEqual([]);
+  });
+});
+
+describe('Support Host authenticated main boundary', () => {
+  const configure = (owner = 1) => {
+    h.desktopConfig = {
+      bureau: { timeZone: 'Asia/Yekaterinburg', workEnd: '18:00' },
+      serverNow: '2026-10-31T04:00:00.000Z',
+      supportChatId: 9,
+      capabilities: { support: 1, timerControl: 2 },
+    };
+    h.authenticate.mockResolvedValue({
+      ok: true,
+      data: { id: owner, shortName: 'Тест', mustChangePassword: false },
+    });
+    h.readDesktopConfig.mockResolvedValue({ ok: true, data: h.desktopConfig });
+    h.supportUpload.mockImplementation(async (name: string, bytes: Uint8Array) => ({
+      ok: true,
+      data: {
+        fileId: 30,
+        fileName: name,
+        size: bytes.length,
+        mime: 'application/octet-stream',
+        isImage: false,
+      },
+    }));
+    h.supportSend.mockResolvedValue({ ok: true, data: { chatId: 9, messageId: 80 } });
+  };
+  const preview = async (f: ReturnType<typeof fixture>) => {
+    const result = await f.invoke({
+      kind: 'report.prepare',
+      options: {
+        description: 'Одобренное описание',
+        applicationLogs: false,
+        revitYear: null,
+        includeScreenshot: false,
+      },
+    });
+    if (!result.ok) throw Error('No preview');
+    return (result.data as { id: string }).id;
+  };
+  it('sequential report.send IPC for the same confirmed preview returns one receipt without a second upload/post', async () => {
+    const f = fixture();
+    configure();
+    const id = await preview(f);
+    const first = await f.invoke({ kind: 'report.send', epoch: 7, id });
+    expect(first).toMatchObject({
+      ok: true,
+      data: { status: 'confirmed', receipt: { messageId: 80 } },
+    });
+    expect(await f.invoke({ kind: 'report.send', epoch: 7, id })).toEqual(first);
+    expect(h.supportUpload).toHaveBeenCalledTimes(1);
+    expect(h.supportSend).toHaveBeenCalledTimes(1);
+    const next = await preview(f);
+    expect(next).not.toBe(id);
+    expect(await f.invoke({ kind: 'report.send', epoch: 7, id: next })).toMatchObject({ ok: true });
+    expect(h.supportSend).toHaveBeenCalledTimes(2);
+  });
+  it('destroyed old Host completion cannot overwrite a new Host confirmed owner entry', async () => {
+    let text: string | null = null;
+    const storage = {
+      read: () => text,
+      replace: (next: string) => {
+        text = next;
+      },
+    };
+    const first = fixture({}, undefined, new SupportLedger(storage));
+    configure();
+    const id = await preview(first),
+      pending = deferred<unknown>();
+    h.supportSend.mockReturnValueOnce(pending.promise);
+    const oldWork = first.invoke({ kind: 'report.send', epoch: 7, id });
+    await vi.waitFor(() => expect(h.supportSend).toHaveBeenCalledTimes(1));
+    expect(h.supportSend).toHaveBeenCalledTimes(1);
+    first.host.destroy();
+    h.api.owner = 2;
+    h.api.epoch = 8;
+    const second = fixture({}, undefined, new SupportLedger(storage));
+    second.state.user = { id: 2, shortName: 'Другой', mustChangePassword: false };
+    configure(2);
+    h.supportSend.mockResolvedValue({ ok: true, data: { chatId: 9, messageId: 81 } });
+    const otherId = await preview(second);
+    expect(await second.invoke({ kind: 'report.send', epoch: 8, id: otherId })).toMatchObject({
+      ok: true,
+      data: { receipt: { messageId: 81 } },
+    });
+    const before = text;
+    pending.resolve({ ok: false, code: 'unauthenticated', error: 'Нет входа', retryable: false });
+    expect(await oldWork).toMatchObject({ ok: false, code: 'stale_session' });
+    expect(text).toBe(before);
+    const persisted = new SupportLedger(storage);
+    expect(
+      persisted.current({
+        serverHash: (second.host as unknown as { serverScopeHash: string }).serverScopeHash,
+        ownerId: 2,
+      })?.receipt?.messageId,
+    ).toBe(81);
+  });
+});
+
+describe('Morning summary: actual-show persistence and current scope', () => {
+  const setup = () => {
+    vi.setSystemTime(new Date('2026-10-31T04:00:00.000Z'));
+    const f = fixture();
+    h.desktopConfig = {
+      bureau: { timeZone: 'Asia/Yekaterinburg', workEnd: '18:00' },
+      serverNow: '2026-10-31T04:00:00.000Z',
+      supportChatId: null,
+      capabilities: { morning: 1, timerControl: 2 },
+    };
+    f.state.bureau = h.desktopConfig.bureau;
+    const host = f.host as unknown as {
+      checkMorning: () => Promise<void>;
+      observeServerTime: (v: unknown) => void;
+      morningAttempt: unknown;
+    };
+    host.observeServerTime(h.desktopConfig.serverNow);
+    h.morning.mockResolvedValue({
+      ok: true,
+      data: { date: '2026-10-31', workday: true, dueToday: 2, review: 0, newRemarks: 3 },
+    });
+    return { ...f, host };
+  };
+  it('mixed counts hide zero rows and only onShow persists; own shown button and body still open /my', async () => {
+    const f = setup();
+    await f.host.checkMorning();
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    expect(spec.body).toBe('Сроки сегодня: 2 · Новых замечаний: 3');
+    expect(f.getSettings().morningSeen).toEqual([]);
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(true);
+    required(h.toastOptions).onShow(spec);
+    expect(f.getSettings().morningSeen).toHaveLength(1);
+    expect(f.getSettings().morningSeen[0]).toMatch(/:1:2026-10-31$/);
+    required(h.toastOptions).onButton(spec, 0);
+    required(h.toastOptions).onOpen(spec);
+    expect(h.openExternal).toHaveBeenCalledTimes(2);
+    expect(h.openExternal).toHaveBeenLastCalledWith('https://example.test/my');
+    f.host.morningAttempt = undefined;
+    await f.host.checkMorning();
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+  });
+  it('all-zero and server holiday do not consume day, later positive same day remains eligible', async () => {
+    const f = setup();
+    h.morning.mockResolvedValueOnce({
+      ok: true,
+      data: { date: '2026-10-31', workday: true, dueToday: 0, review: 0, newRemarks: 0 },
+    });
+    await f.host.checkMorning();
+    expect(h.toastShow).not.toHaveBeenCalled();
+    expect(f.getSettings().morningSeen).toEqual([]);
+    f.host.morningAttempt = undefined;
+    h.morning.mockResolvedValueOnce({
+      ok: true,
+      data: { date: '2026-10-31', workday: false, dueToday: 2, review: 0, newRemarks: 3 },
+    });
+    await f.host.checkMorning();
+    expect(h.toastShow).not.toHaveBeenCalled();
+    expect(f.getSettings().morningSeen).toEqual([]);
+    f.host.morningAttempt = undefined;
+    await f.invoke({ kind: 'settings.patch', patch: { notifications: { preview: false } } });
+    await f.host.checkMorning();
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+    expect((required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec).body).toBe(
+      'Откройте «Мою работу», чтобы посмотреть сводку.',
+    );
+  });
+  it('disabled toggle and missing capability prevent the read; before 08:00 does too', async () => {
+    const f = setup();
+    await f.invoke({ kind: 'settings.patch', patch: { notifications: { morning: false } } });
+    await f.host.checkMorning();
+    expect(h.morning).not.toHaveBeenCalled();
+    await f.invoke({ kind: 'settings.patch', patch: { notifications: { morning: true } } });
+    f.host.observeServerTime('2026-10-31T02:59:59.000Z');
+    await f.host.checkMorning();
+    expect(h.morning).not.toHaveBeenCalled();
+    f.host.observeServerTime('2026-10-31T04:00:00.000Z');
+    h.desktopConfig = { ...required(h.desktopConfig), capabilities: { timerControl: 2 } };
+    await f.host.checkMorning();
+    expect(h.morning).not.toHaveBeenCalled();
+  });
+  it('DND and a delayed policy after toggleOff never mark a shown day', async () => {
+    const f = setup();
+    await f.host.checkMorning();
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    h.policyAllows.mockResolvedValueOnce(false);
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(false);
+    expect(f.getSettings().morningSeen).toEqual([]);
+    const policy = deferred<boolean>();
+    h.policyAllows.mockReturnValueOnce(policy.promise);
+    const waiting = required(h.toastOptions).beforeShow(spec);
+    await f.invoke({ kind: 'settings.patch', patch: { notifications: { morning: false } } });
+    policy.resolve(true);
+    expect(await waiting).toBe(false);
+    required(h.toastOptions).onShow(spec);
+    expect(f.getSettings().morningSeen).toEqual([]);
+    expect(h.beep).not.toHaveBeenCalled();
+  });
+  it('late response after logout/owner epoch change cannot create an old summary', async () => {
+    const f = setup(),
+      pending = deferred<unknown>();
+    h.morning.mockReturnValueOnce(pending.promise);
+    const read = f.host.checkMorning();
+    h.api.epoch = 8;
+    h.api.owner = 2;
+    f.state.epoch = 8;
+    f.state.user = { id: 2, shortName: 'Другой вход', mustChangePassword: false };
+    pending.resolve({
+      ok: true,
+      data: { date: '2026-10-31', workday: true, dueToday: 2, review: 0, newRemarks: 3 },
+    });
+    await read;
+    expect(h.toastShow).not.toHaveBeenCalled();
+    expect(f.getSettings().morningSeen).toEqual([]);
+  });
+  it('storage failure shows honest warning, does not claim durable seen, retries persistence without another popup', async () => {
+    const f = setup();
+    await f.host.checkMorning();
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    f.settingsUpdate.mockImplementationOnce(() => {
+      throw Error('disk');
+    });
+    required(h.toastOptions).onShow(spec);
+    expect(f.getSettings().morningSeen).toEqual([]);
+    expect(f.state.morningWarning).toContain('сохранить отметку не удалось');
+    f.host.morningAttempt = undefined;
+    await f.host.checkMorning();
+    expect(f.getSettings().morningSeen).toHaveLength(1);
+    expect(f.state.morningWarning).toBeNull();
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+  });
+  it('old day blocks both body and button after a delayed show policy', async () => {
+    const f = setup();
+    await f.host.checkMorning();
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    f.host.observeServerTime('2026-11-01T04:00:00.000Z');
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(false);
+    required(h.toastOptions).onButton(spec, 0);
+    required(h.toastOptions).onOpen(spec);
+    expect(h.openExternal).not.toHaveBeenCalled();
+    expect(f.getSettings().morningSeen).toEqual([]);
   });
 });
 

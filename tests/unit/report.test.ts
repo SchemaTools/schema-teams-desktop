@@ -47,6 +47,38 @@ function fixture() {
   return { root, target, backend, service: new ReportService(backend) };
 }
 afterEach(() => vi.useRealTimers());
+describe('Approved support ZIP snapshot', () => {
+  it('freezes ZIP once for upload/export and never rereads changed source logs', async () => {
+    const f = fixture();
+    vi.mocked(f.backend.readApplication).mockResolvedValueOnce([
+      { name: 'application/app.log', text: 'Одобренный журнал', truncated: false },
+    ]);
+    const preview = await f.service.prepare({ ...options, applicationLogs: true });
+    const first = await f.service.bundle(preview.id);
+    vi.mocked(f.backend.readApplication).mockResolvedValue([
+      { name: 'application/app.log', text: 'Новые записи не одобрены', truncated: false },
+    ]);
+    await f.service.export(preview.id);
+    const second = await f.service.bundle(preview.id);
+    expect(Buffer.from(first.files[0]?.bytes ?? [])).toEqual(readFileSync(f.target));
+    expect(second).toEqual(first);
+    expect(f.backend.readApplication).toHaveBeenCalledTimes(1);
+    const entries = unzipSync(required(first.files[0]).bytes);
+    expect(strFromU8(required(entries['application/app.log']))).toBe('Одобренный журнал');
+  });
+  it('clear while ZIP is pending and expired preview both revoke first-send permission', async () => {
+    const f = fixture(),
+      preview = await f.service.prepare(options),
+      pending = f.service.bundle(preview.id);
+    f.service.clear();
+    await expect(pending).rejects.toThrow('stale_report');
+    vi.useFakeTimers();
+    const g = fixture(),
+      other = await g.service.prepare(options);
+    vi.setSystemTime(Date.now() + 31 * 60000);
+    await expect(g.service.bundle(other.id)).rejects.toThrow('stale_report');
+  });
+});
 describe('Диагностические журналы', () => {
   it('projects only known events and safe fields; unknown text and exception details cannot leak', () => {
     const output = applicationLog(

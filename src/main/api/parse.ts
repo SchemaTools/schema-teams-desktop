@@ -19,8 +19,26 @@ import type {
   SafeUser,
   ObjectInfo,
 } from '../../shared/client';
+import type { MorningSummary } from '../../shared/morning';
+import type { SupportReceipt } from '../../shared/report';
+import { isoDay } from '../../shared/time';
 
 export class InvalidData extends Error {}
+export function morning(v: unknown): MorningSummary {
+  const x = object(v);
+  if (!isoDay(x.date)) throw new InvalidData();
+  return {
+    date: x.date,
+    workday: flag(x.workday),
+    dueToday: count(x.dueToday),
+    review: count(x.review),
+    newRemarks: count(x.newRemarks),
+  };
+}
+export function supportReceipt(v: unknown): SupportReceipt {
+  const x = object(v);
+  return { chatId: id(x.chatId), messageId: id(x.messageId) };
+}
 export const object = (v: unknown): Record<string, unknown> => {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) throw new InvalidData();
   return v as Record<string, unknown>;

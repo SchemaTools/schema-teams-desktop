@@ -22,6 +22,50 @@ export interface ReportScreen {
   id: string;
   label: string;
 }
+export interface SupportReceipt {
+  chatId: number;
+  messageId: number;
+}
+export interface SupportPayload {
+  text: string;
+  fileIds: number[];
+}
+export interface SupportFileManifest {
+  name: string;
+  size: number;
+  sha256: string;
+  fileId: number;
+}
+export interface SupportAttemptView {
+  id: string;
+  previewId: string;
+  text: string;
+  files: { name: string; size: number }[];
+  status: 'unresolved' | 'review' | 'confirmed' | 'rejected' | 'resolved';
+  retryAllowed: boolean;
+  receipt?: SupportReceipt;
+}
+export interface ReportSupportState {
+  available: boolean;
+  error: string | null;
+  attempt: SupportAttemptView | null;
+}
+export function supportPayloadValid(v: unknown): v is SupportPayload {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+  const x = v as Record<string, unknown>;
+  return (
+    Object.keys(x).length === 2 &&
+    Object.keys(x).every((k) => ['text', 'fileIds'].includes(k)) &&
+    typeof x.text === 'string' &&
+    x.text === x.text.trim() &&
+    x.text.length <= 4000 &&
+    Array.isArray(x.fileIds) &&
+    x.fileIds.length <= 3 &&
+    x.fileIds.every((id) => typeof id === 'number' && Number.isSafeInteger(id) && id > 0) &&
+    new Set(x.fileIds).size === x.fileIds.length &&
+    (x.text.length > 0 || x.fileIds.length > 0)
+  );
+}
 export function reportOptionsValid(raw: unknown): raw is ReportOptions {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
   const x = raw as Record<string, unknown>;

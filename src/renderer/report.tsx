@@ -22,7 +22,10 @@ export function ReportPanel({
     [preview, setPreview] = useState<ReportPreview | null>(null),
     [selected, setSelected] = useState('report.txt'),
     [exported, setExported] = useState<ReportExport | null>(null),
-    [pending, setPending] = useState<'capture' | 'prepare' | 'export' | null>(null),
+    [pending, setPending] = useState<
+      'capture' | 'prepare' | 'export' | 'send' | 'retry' | 'resolve' | 'fallback' | null
+    >(null),
+    [reviewed, setReviewed] = useState(false),
     [error, setError] = useState('');
   const alive = useRef(true),
     flight = useRef(false),
@@ -52,6 +55,7 @@ export function ReportPanel({
       setPreview(null);
       setExported(null);
       setDescription('');
+      setReviewed(false);
       setError('Вход изменился. Диагностика очищена.');
       void request({ kind: 'report.clear' });
     }
@@ -116,7 +120,59 @@ export function ReportPanel({
       if (result.data) setExported(result.data);
     } else setError(result.error);
   }
+  async function supportAction(kind: 'send' | 'retry' | 'resolve') {
+    const attempt = snapshot.reportSupport?.attempt;
+    if (
+      flight.current ||
+      (kind === 'send' && !preview) ||
+      (kind !== 'send' && !attempt) ||
+      (kind === 'resolve' && !reviewed)
+    )
+      return;
+    flight.current = true;
+    setPending(kind);
+    setError('');
+    const ticket = ++generation.current,
+      epoch = snapshot.epoch;
+    const result =
+      kind === 'send' && preview
+        ? await request({ kind: 'report.send', epoch, id: preview.id })
+        : kind === 'retry' && attempt
+          ? await request({ kind: 'report.retry', epoch, id: attempt.id })
+          : attempt
+            ? await request({ kind: 'report.resolve', epoch, id: attempt.id, confirmed: true })
+            : null;
+    if (!alive.current || ticket !== generation.current) return;
+    flight.current = false;
+    setPending(null);
+    setReviewed(false);
+    if (result && !result.ok) setError(result.error);
+  }
+  const support = snapshot.reportSupport,
+    attempt = support?.attempt;
+  const unresolved = !!attempt && ['unresolved', 'review'].includes(attempt.status);
+  const consumed =
+    !!attempt &&
+    attempt.previewId === preview?.id &&
+    ['confirmed', 'resolved'].includes(attempt.status);
+  useEffect(() => setReviewed(false), [attempt?.id]);
   const file = preview?.files.find((item) => item.name === selected);
+  async function fallback() {
+    if (flight.current || !exported) return;
+    flight.current = true;
+    setPending('fallback');
+    setError('');
+    const ticket = ++generation.current;
+    const result = await request({
+      kind: 'report.fallback',
+      epoch: snapshot.epoch,
+      id: exported.id,
+    });
+    if (!alive.current || ticket !== generation.current) return;
+    flight.current = false;
+    setPending(null);
+    if (!result.ok) setError(result.error);
+  }
   return (
     <div
       className="report-backdrop"
@@ -165,9 +221,75 @@ export function ReportPanel({
         </header>
         <div className="report-content">
           <p className="report-note">
-            Чат поддержки ещё не настроен. Сейчас можно сохранить ZIP и передать администратору
-            вручную. Приложение ничего не отправляет автоматически.
+            {support?.error
+              ? 'Результат прежней отправки может быть неизвестен. Сохраните архив локально и сначала проверьте состояние обращения.'
+              : unresolved
+                ? 'Сначала проверьте результат предыдущей отправки. Архив можно сохранить локально.'
+                : consumed
+                  ? 'Для нового обращения измените описание и подготовьте новый предпросмотр.'
+                  : support?.available
+                    ? 'После просмотра можно отправить обращение в поддержку. Ответ придёт в личные.'
+                    : 'Отправка в поддержку сейчас недоступна. Сохраните архив и передайте администратору вручную.'}{' '}
+            Приложение ничего не отправляет автоматически.
           </p>
+          {support?.error && (
+            <p role="alert" className="preferences-error">
+              {support.error}
+            </p>
+          )}
+          {attempt && (
+            <section className="report-note" aria-label="Состояние обращения">
+              <p role="status">
+                {attempt.status === 'confirmed'
+                  ? `${attempt.previewId === preview?.id ? 'Обращение' : 'Предыдущее обращение'} отправлено. Ответ придёт в личные.`
+                  : unresolved
+                    ? 'Результат отправки пока неизвестен.'
+                    : attempt.status === 'resolved'
+                      ? 'Результат проверен вручную. Для нового обращения подготовьте новый предпросмотр.'
+                      : 'Сервер не принял обращение.'}
+              </p>
+              {unresolved && (
+                <>
+                  <p>{attempt.text}</p>
+                  <ul>
+                    {attempt.files.map((f) => (
+                      <li key={f.name}>
+                        {f.name} · {new Intl.NumberFormat('ru-RU').format(f.size)} Б
+                      </li>
+                    ))}
+                  </ul>
+                  <p>
+                    Сохранены описание и список вложений. Повтор использует прежнее обращение; файлы
+                    заново не собираются.
+                  </p>
+                  <button
+                    disabled={Boolean(pending) || !attempt.retryAllowed}
+                    onClick={() => void supportAction('retry')}
+                  >
+                    {pending === 'retry' ? 'Проверка…' : 'Проверить отправку'}
+                  </button>
+                  {!attempt.retryAllowed && (
+                    <p>Безопасный повтор сейчас недоступен. Проверьте результат с поддержкой.</p>
+                  )}
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={reviewed}
+                      disabled={Boolean(pending)}
+                      onChange={(e) => setReviewed(e.target.checked)}
+                    />
+                    Я проверил результат с поддержкой
+                  </label>
+                  <button
+                    disabled={Boolean(pending) || !reviewed}
+                    onClick={() => void supportAction('resolve')}
+                  >
+                    Результат проверен вручную
+                  </button>
+                </>
+              )}
+            </section>
+          )}
           {error && (
             <p role="alert" className="preferences-error">
               {error}
@@ -326,6 +448,26 @@ export function ReportPanel({
                   Архив сохранён: {exported.fileName}
                 </p>
               )}
+              {exported && !support?.available && (
+                <>
+                  <p>
+                    В обратной связи сайта выберите «Написать». Архив передайте администратору
+                    вручную. Кнопка также покажет сохранённый архив в папке.
+                  </p>
+                  <button
+                    disabled={
+                      Boolean(pending) ||
+                      unresolved ||
+                      consumed ||
+                      !!support?.error ||
+                      !snapshot.user
+                    }
+                    onClick={() => void fallback()}
+                  >
+                    {pending === 'fallback' ? 'Открываем…' : 'Открыть обратную связь на сайте'}
+                  </button>
+                </>
+              )}
             </section>
           )}
         </div>
@@ -344,6 +486,15 @@ export function ReportPanel({
             </button>
           )}
           <span />
+          {preview && (
+            <button
+              className="primary-button"
+              disabled={Boolean(pending) || !support?.available || unresolved || consumed}
+              onClick={() => void supportAction('send')}
+            >
+              {pending === 'send' ? 'Отправка…' : 'Отправить в поддержку'}
+            </button>
+          )}
           {!preview ? (
             <button
               className="primary-button"
@@ -362,7 +513,7 @@ export function ReportPanel({
               disabled={Boolean(pending)}
               onClick={() => void save()}
             >
-              {pending === 'export' ? 'Сохранение…' : 'Сохранить ZIP'}
+              {pending === 'export' ? 'Сохранение…' : 'Сохранить архив'}
             </button>
           )}
         </footer>

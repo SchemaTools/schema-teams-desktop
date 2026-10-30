@@ -42,6 +42,21 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
   const only = (...keys: string[]) =>
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
+    case 'report.send':
+    case 'report.retry':
+    case 'report.fallback':
+      return (
+        only('id') &&
+        typeof r.id === 'string' &&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(r.id)
+      );
+    case 'report.resolve':
+      return (
+        only('id', 'confirmed') &&
+        typeof r.id === 'string' &&
+        /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(r.id) &&
+        r.confirmed === true
+      );
     case 'report.open':
     case 'report.clear':
     case 'report.edit':

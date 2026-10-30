@@ -33,6 +33,24 @@ export interface FixtureCall {
   bytes?: number;
 }
 export interface FixtureState {
+  desktopConfig: import('../../src/shared/desktopConfig').DesktopConfig | null;
+  morningSummary: import('../../src/shared/morning').MorningSummary;
+  morningDelayMs: number;
+  morningResponses: number;
+  supportUploadStatus: number | null;
+  supportUploadLostResponse: boolean;
+  supportUploadDelayMs: number;
+  supportFinalStatus: number | null;
+  supportFinalLostResponse: boolean;
+  supportFinalDelayMs: number;
+  supportMessages: {
+    userId: number;
+    chatId: number;
+    messageId: number;
+    text: string;
+    fileIds: number[];
+    key: string;
+  }[];
   extraChats: ChatSummary[];
   legacyChatFields: boolean;
   chatTopStatus: number | null;
@@ -136,6 +154,17 @@ export const fixtureMessage = (
 export async function startClientStub() {
   const files = new Map<number, { bytes: Buffer; mime: string; status?: number }>();
   const state: FixtureState = {
+    desktopConfig: null,
+    morningSummary: { date: '2026-10-31', workday: true, dueToday: 0, review: 0, newRemarks: 0 },
+    morningDelayMs: 0,
+    morningResponses: 0,
+    supportUploadStatus: null,
+    supportUploadLostResponse: false,
+    supportUploadDelayMs: 0,
+    supportFinalStatus: null,
+    supportFinalLostResponse: false,
+    supportFinalDelayMs: 0,
+    supportMessages: [],
     extraChats: [],
     legacyChatFields: false,
     chatTopStatus: null,
@@ -189,6 +218,11 @@ export async function startClientStub() {
   const uploads = new Map<number, { file: ChatFile; chatId: number; userId: number }>();
   const pins = new Map<number, number>();
   let nextFileId = 2000;
+  const supportFiles = new Map<
+    number,
+    { userId: number; chatId: number; name: string; bytes: Buffer; used: boolean }
+  >();
+  const supportKeys = new Map<string, { chatId: number; messageId: number }>();
   const conversations = new Map<number, ChatMessage[]>([
     [
       4,
@@ -443,7 +477,147 @@ export async function startClientStub() {
       return;
     }
     if (path === '/api/desktop/config') {
-      json(res, 200, configFixture());
+      json(res, 200, state.desktopConfig ?? configFixture());
+      return;
+    }
+    if (path === '/api/desktop/morning' && method === 'GET') {
+      if (state.morningDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.morningDelayMs));
+      state.morningResponses++;
+      json(res, 200, state.morningSummary);
+      return;
+    }
+    if (path === '/api/desktop/support/files' && method === 'POST') {
+      const chatId = state.desktopConfig?.supportChatId;
+      if (!chatId) {
+        denied(res, 'no_support_chat', 409);
+        return;
+      }
+      if (state.supportUploadDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.supportUploadDelayMs));
+      if (state.supportUploadStatus) {
+        denied(
+          res,
+          state.supportUploadStatus === 403 ? 'forbidden' : 'server_error',
+          state.supportUploadStatus,
+        );
+        return;
+      }
+      let name: string;
+      try {
+        name = decodeURIComponent(String(req.headers['x-file-name'] ?? ''));
+      } catch {
+        denied(res, 'validation', 400);
+        return;
+      }
+      if (
+        req.headers['content-type'] !== 'application/octet-stream' ||
+        !rawBody.length ||
+        rawBody.length > 50 * 1024 * 1024 ||
+        !name ||
+        name.length > 200 ||
+        /[\\/]/.test(name)
+      ) {
+        denied(res, 'validation', 400);
+        return;
+      }
+      const fileId = nextFileId++;
+      supportFiles.set(fileId, {
+        userId: user,
+        chatId,
+        name,
+        bytes: Buffer.from(rawBody),
+        used: false,
+      });
+      if (state.supportUploadLostResponse) {
+        res.destroy();
+        return;
+      }
+      json(res, 201, {
+        fileId,
+        fileName: name,
+        size: rawBody.length,
+        mime: 'application/octet-stream',
+        isImage: false,
+      });
+      return;
+    }
+    if (path === '/api/desktop/support' && method === 'POST') {
+      const chatId = state.desktopConfig?.supportChatId;
+      if (!chatId) {
+        denied(res, 'no_support_chat', 409);
+        return;
+      }
+      if (state.supportFinalDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.supportFinalDelayMs));
+      if (state.supportFinalStatus) {
+        denied(
+          res,
+          state.supportFinalStatus === 403 ? 'forbidden' : 'server_error',
+          state.supportFinalStatus,
+        );
+        return;
+      }
+      const key = String(req.headers['idempotency-key'] ?? ''),
+        old = supportKeys.get(`${user}:${key}`);
+      // Actual server checks repeat before body validation; changed body is NOT a conflict.
+      if (old) {
+        if (old.chatId !== chatId) {
+          denied(res, 'idempotency_conflict', 409);
+          return;
+        }
+        if (state.supportFinalLostResponse) {
+          res.destroy();
+          return;
+        }
+        json(res, 200, old);
+        return;
+      }
+      if (
+        !/^[A-Za-z0-9._:-]{8,100}$/.test(key) ||
+        !body ||
+        Object.keys(body).some((k) => !['text', 'fileIds'].includes(k)) ||
+        typeof body.text !== 'string' ||
+        body.text !== body.text.trim() ||
+        body.text.length > 4000 ||
+        !Array.isArray(body.fileIds) ||
+        body.fileIds.length > 3 ||
+        !body.fileIds.every((id) => typeof id === 'number' && Number.isSafeInteger(id) && id > 0) ||
+        (!body.text && !body.fileIds.length)
+      ) {
+        denied(res, 'validation', 400);
+        return;
+      }
+      const fileIds = [...new Set(body.fileIds as number[])];
+      if (
+        fileIds.some((id) => {
+          const file = supportFiles.get(id);
+          return !file || file.userId !== user || file.chatId !== chatId || file.used;
+        })
+      ) {
+        denied(res, 'validation', 400);
+        return;
+      }
+      const messageId = nextId++,
+        receipt = { chatId, messageId };
+      supportKeys.set(`${user}:${key}`, receipt);
+      for (const id of fileIds) {
+        const file = supportFiles.get(id);
+        if (file) file.used = true;
+      }
+      state.supportMessages.push({
+        userId: user,
+        chatId,
+        messageId,
+        text: body.text,
+        fileIds,
+        key,
+      });
+      if (state.supportFinalLostResponse) {
+        res.destroy();
+        return;
+      }
+      json(res, 201, receipt);
       return;
     }
     if (path === '/api/desktop/timer-notices/pending') {
@@ -467,7 +641,12 @@ export async function startClientStub() {
               .map((id) => timeTasks.find((t) => t.id === id))
               .filter(Boolean),
           });
-        else json(res, 200, timerPushFixture(timer, new Date().toISOString()));
+        else
+          json(
+            res,
+            200,
+            timerPushFixture(timer, state.desktopConfig?.serverNow ?? new Date().toISOString()),
+          );
         return;
       }
       const key = String(req.headers['idempotency-key'] ?? ''),
@@ -643,7 +822,10 @@ export async function startClientStub() {
         return;
       }
       state.timers[user] = next;
-      const result = timerPushFixture(next, new Date().toISOString());
+      const result = timerPushFixture(
+        next,
+        state.desktopConfig?.serverNow ?? new Date().toISOString(),
+      );
       operations.set(operationId, { fingerprint, result });
       io.to(`user:${user}`).emit('time:timer', result);
       if (path.endsWith('/finish') && state.timerFinishLostAck) {
@@ -1031,6 +1213,7 @@ export async function startClientStub() {
     url: `http://127.0.0.1:${port}/`,
     state,
     files,
+    supportFiles,
     notifications: events,
     messages: (chatId = 4) => conversations.get(chatId) ?? [],
     push: (text: string, chatId = 4, emit = true) => {
@@ -1045,7 +1228,10 @@ export async function startClientStub() {
     disconnect: () => io.disconnectSockets(true),
     pushTimer: (timer: WorkTimer | null, userId = 1) => {
       state.timers[userId] = timer;
-      io.to(`user:${userId}`).emit('time:timer', timerPushFixture(timer));
+      io.to(`user:${userId}`).emit(
+        'time:timer',
+        timerPushFixture(timer, state.desktopConfig?.serverNow ?? new Date().toISOString()),
+      );
     },
     typing: (shortName = 'Петров П.П.', chatId = 4, userId = 2) =>
       io.to(`user:${chatId === 4 ? 1 : 2}`).emit('chat:typing', { chatId, userId, shortName }),

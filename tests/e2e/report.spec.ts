@@ -96,7 +96,7 @@ test('до входа доступны описание, клавиатура и
   const page = await launch();
   await open(page);
   const p = panel(page);
-  await expect(p).toContainText('Чат поддержки ещё не настроен');
+  await expect(p).toContainText('Отправка в поддержку сейчас недоступна');
   await expect(p.getByRole('button', { name: 'Подготовить и просмотреть' })).toBeDisabled();
   for (const checkbox of await p.getByRole('checkbox').all())
     await expect(checkbox).not.toBeChecked();
@@ -119,7 +119,7 @@ test('до входа доступны описание, клавиатура и
   await page.screenshot({ path: test.info().outputPath('report-dark.png') });
   await p.getByRole('button', { name: 'Закрыть сообщение о проблеме' }).focus();
   await page.keyboard.press('Shift+Tab');
-  await expect(p.getByRole('button', { name: 'Сохранить ZIP' })).toBeFocused();
+  await expect(p.getByRole('button', { name: 'Сохранить архив' })).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(p).toHaveCount(0);
   expect(stub.state.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
@@ -154,7 +154,7 @@ test('журналы и реальный снимок своего окна пр
   }
   expect(expected['application/app.1.log']).not.toMatch(/private|hidden-value/);
   writeFileSync(join(profile, 'logs', 'app.1.log'), 'changed after preview');
-  await p.getByRole('button', { name: 'Сохранить ZIP' }).dblclick();
+  await p.getByRole('button', { name: 'Сохранить архив' }).dblclick();
   await expect(p.getByRole('status')).toContainText('Архив сохранён: reviewed.zip');
   const zip = unzipSync(readFileSync(target));
   expect(Object.keys(zip)).toHaveLength(Object.keys(expected).length + 1);
@@ -204,13 +204,13 @@ test('отсутствующий журнал показан итогом, от�
   await active().evaluate(() => {
     (globalThis as typeof globalThis & { reportCancel: boolean }).reportCancel = true;
   });
-  await p.getByRole('button', { name: 'Сохранить ZIP' }).click();
-  await expect(p.getByRole('button', { name: 'Сохранить ZIP' })).toBeEnabled();
+  await p.getByRole('button', { name: 'Сохранить архив' }).click();
+  await expect(p.getByRole('button', { name: 'Сохранить архив' })).toBeEnabled();
   await expect(p.getByRole('status')).toHaveCount(0);
   await active().evaluate(() => {
     (globalThis as typeof globalThis & { reportCancel: boolean }).reportCancel = false;
   });
-  await p.getByRole('button', { name: 'Сохранить ZIP' }).click();
+  await p.getByRole('button', { name: 'Сохранить архив' }).click();
   await expect(p.getByRole('status')).toContainText('Архив сохранён');
   expect(Object.keys(unzipSync(readFileSync(target)))).toEqual(['report.txt']);
 });
@@ -249,7 +249,7 @@ test('выход очищает описание, снимок и доказат
   expect(result?.ok).toBe(true);
   await expect(panel(page).getByRole('textbox', { name: 'Что случилось' })).toHaveValue('');
   await expect(panel(page)).toContainText('Вход изменился. Диагностика очищена.');
-  await expect(panel(page).getByRole('button', { name: 'Сохранить ZIP' })).toHaveCount(0);
+  await expect(panel(page).getByRole('button', { name: 'Сохранить архив' })).toHaveCount(0);
 });
 test('настоящее меню трея открывает диагностику; ошибка снимка не выдаёт системные подробности', async () => {
   const page = await launch();

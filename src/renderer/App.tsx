@@ -1227,10 +1227,10 @@ export function App() {
                 </button>
               </div>
             )}
-            {(uiError || snapshot.error) && (
+            {(uiError || snapshot.error || snapshot.morningWarning) && (
               <div className="banner error-banner" role="status">
                 <CircleAlert size={17} />
-                {uiError || snapshot.error}
+                {uiError || snapshot.error || snapshot.morningWarning}
               </div>
             )}
             {selection === 'events' ? (

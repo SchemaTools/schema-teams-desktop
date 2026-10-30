@@ -18,6 +18,8 @@ import type {
   ObjectInfo,
 } from '../../shared/client';
 import { REACTION_KINDS } from '../../shared/client';
+import { supportPayloadValid, type SupportPayload, type SupportReceipt } from '../../shared/report';
+import type { MorningSummary } from '../../shared/morning';
 import * as parse from './parse';
 import * as time from './time';
 import { desktopRelease } from './updates';
@@ -62,6 +64,7 @@ const BODY_LIMIT = 2 * 1024 * 1024;
 export const FILE_LIMIT = 50 * 1024 * 1024;
 const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const ERROR_TEXT: Record<string, string> = {
+  no_support_chat: 'Чат поддержки не настроен. Сохраните архив и передайте его администратору.',
   top_limit: 'Закрепить можно не больше 5 чатов.',
   network: 'Нет связи с сервером. Повторите действие после восстановления связи.',
   timeout: 'Сервер не подтвердил действие вовремя.',
@@ -678,6 +681,55 @@ export class TeamsApi {
         return value;
       },
       { top },
+    );
+  }
+  morning(): Promise<ApiResult<MorningSummary>> {
+    return this.request('/api/desktop/morning', 'GET', parse.morning);
+  }
+  supportUpload(fileName: string, bytes: Uint8Array): Promise<ApiResult<ChatFile>> {
+    const mime = validateUpload(fileName, bytes, 'application/octet-stream');
+    if (!mime || !bytes.length) return Promise.resolve(failure('validation'));
+    const upload: UploadBody = {
+      fileName,
+      bytes: Uint8Array.from(bytes),
+      mime: 'application/octet-stream',
+    };
+    return this.request(
+      '/api/desktop/support/files',
+      'POST',
+      (raw) => {
+        const value = parse.file(raw);
+        if (
+          value.fileName !== fileName ||
+          value.size !== upload.bytes.length ||
+          value.mime !== mime ||
+          value.isImage !== mime.startsWith('image/')
+        )
+          throw new parse.InvalidData();
+        return value;
+      },
+      undefined,
+      true,
+      [201],
+      undefined,
+      upload,
+    );
+  }
+  supportSend(payload: SupportPayload, key: string): Promise<ApiResult<SupportReceipt>> {
+    if (
+      !supportPayloadValid(payload) ||
+      typeof key !== 'string' ||
+      !/^[A-Za-z0-9._:-]{8,100}$/.test(key)
+    )
+      return Promise.resolve(failure('validation'));
+    return this.request(
+      '/api/desktop/support',
+      'POST',
+      parse.supportReceipt,
+      { text: payload.text, fileIds: [...payload.fileIds] },
+      true,
+      [200, 201],
+      key,
     );
   }
   read(chatId: number, upTo: number): Promise<ApiResult<null>> {

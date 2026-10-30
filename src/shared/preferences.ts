@@ -3,7 +3,7 @@ export interface LocalPreferences {
   autostart: boolean;
   autostartAvailable: boolean;
   theme: 'system' | 'light' | 'dark';
-  notifications: { enabled: boolean; sound: boolean; preview: boolean };
+  notifications: { enabled: boolean; sound: boolean; preview: boolean; morning: boolean };
 }
 export interface PreferencesPatch {
   autostart?: boolean;
@@ -41,7 +41,7 @@ export function preferencesPatchValid(raw: unknown): raw is PreferencesPatch {
       !entries.length ||
       entries.some(
         ([key, value]) =>
-          !['enabled', 'sound', 'preview'].includes(key) || typeof value !== 'boolean',
+          !['enabled', 'sound', 'preview', 'morning'].includes(key) || typeof value !== 'boolean',
       )
     )
       return false;

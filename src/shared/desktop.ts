@@ -57,6 +57,8 @@ export interface ClientSnapshot {
   chats: ChatSummary[];
   unread: number;
   notifications: NotificationItem[];
+  reportSupport?: import('./report').ReportSupportState;
+  morningWarning?: string | null;
   /** Only a validated live push may initiate the issued-album celebration. */
   albumCelebration?: { notificationId: number; at: number } | null;
   notificationUnread: number;
@@ -111,6 +113,10 @@ export type DesktopRequest =
   | { kind: 'report.export' | 'report.reveal'; id: string }
   | ({ epoch: number } & (
       | { kind: 'logout' }
+      | { kind: 'report.send'; id: string }
+      | { kind: 'report.retry'; id: string }
+      | { kind: 'report.fallback'; id: string }
+      | { kind: 'report.resolve'; id: string; confirmed: true }
       | { kind: 'setup.finish'; autostart: boolean }
       | { kind: 'timer.read' }
       | { kind: 'timer.options'; q?: string }
@@ -220,6 +226,10 @@ export interface DesktopResponseMap {
   'report.prepare': ReportPreview;
   'report.export': ReportExport | null;
   'report.reveal': null;
+  'report.send': import('./report').SupportAttemptView | null;
+  'report.retry': import('./report').SupportAttemptView | null;
+  'report.fallback': null;
+  'report.resolve': null;
   'window.show': null;
   'window.hide': null;
   'app.quit': null;

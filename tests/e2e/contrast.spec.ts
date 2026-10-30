@@ -17,6 +17,12 @@ let stub: ClientStub, app: ElectronApplication | undefined, profile: string;
 test.beforeEach(async () => {
   stub = await startClientStub();
   stub.state.objectChat = true;
+  stub.state.desktopConfig = {
+    bureau: { timeZone: 'Asia/Yekaterinburg', workEnd: '18:00' },
+    serverNow: new Date().toISOString(),
+    supportChatId: 9,
+    capabilities: { timerControl: 2, support: 1 },
+  };
   for (const [id, event] of [
     [801, 'album_issued'],
     [802, 'remarks_closed'],
@@ -268,6 +274,23 @@ for (const theme of ['light', 'dark'] as const) {
     }
     await page.getByRole('button', { name: 'Сообщить о проблеме', exact: true }).click();
     await audit(page, 'report', '.report-panel');
+    const report = page.getByRole('dialog', { name: 'Сообщить о проблеме', exact: true });
+    await report
+      .getByRole('textbox', { name: 'Что случилось', exact: true })
+      .fill('Проверка отправки из одобренного предпросмотра');
+    await report.getByRole('button', { name: 'Подготовить и просмотреть' }).click();
+    stub.state.supportFinalLostResponse = true;
+    await report.getByRole('button', { name: 'Отправить в поддержку', exact: true }).click();
+    await expect(report.getByRole('status')).toContainText('Результат отправки пока неизвестен', {
+      timeout: 25000,
+    });
+    await audit(page, 'report-support-unknown', '.report-panel');
+    await page.screenshot({ path: test.info().outputPath(`support-unknown-${theme}.png`) });
+    stub.state.supportFinalLostResponse = false;
+    await report.getByRole('button', { name: 'Проверить отправку', exact: true }).click();
+    await expect(report.getByRole('status')).toContainText('Обращение отправлено');
+    await audit(page, 'report-support-confirmed', '.report-panel');
+    await page.screenshot({ path: test.info().outputPath(`support-confirmed-${theme}.png`) });
     await page.getByRole('button', { name: 'Закрыть сообщение о проблеме' }).click();
     await page.getByRole('button', { name: 'Таймер', exact: true }).click();
     await expect(page.locator('.timer-task').first()).toBeVisible();

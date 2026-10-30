@@ -33,6 +33,9 @@ export function PreferencesPanel({
     [pending, setPending] = useState(false),
     [error, setError] = useState(''),
     [feedback, setFeedback] = useState(''),
+    [morningChoice, setMorningChoice] = useState(
+      snapshot.preferences?.notifications.morning !== false,
+    ),
     [workdayEnd, setWorkdayEnd] = useState<number | undefined>();
   const mounted = useRef(true),
     flight = useRef(false),
@@ -41,6 +44,9 @@ export function PreferencesPanel({
   const prefs = snapshot.preferences ?? loaded,
     online = snapshot.connection === 'online',
     owner = `${snapshot.epoch}:${snapshot.user?.id ?? ''}`;
+  useEffect(() => {
+    if (!pending) setMorningChoice(prefs?.notifications.morning !== false);
+  }, [prefs?.notifications.morning, pending, snapshot.revision]);
   useEffect(() => {
     mounted.current = true;
     close.current?.focus();
@@ -332,6 +338,23 @@ export function PreferencesPanel({
                         }
                       />
                     </label>
+                    <label className="preference-toggle">
+                      <span>
+                        <b>Утренняя сводка</b>
+                        <small>
+                          После 08:00 по времени бюро, в рабочие дни. Пустая сводка не показывается.
+                        </small>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={morningChoice}
+                        disabled={pending}
+                        onChange={(e) => {
+                          setMorningChoice(e.target.checked);
+                          void save({ notifications: { morning: e.target.checked } });
+                        }}
+                      />
+                    </label>
                   </>
                 )}
                 <p className="preferences-hint">Какие события и тихие часы — в Teams.</p>
@@ -344,7 +367,7 @@ export function PreferencesPanel({
                   Настройки уведомлений Teams
                 </button>
                 <p className="preferences-hint">
-                  Утренние итоги сервера доступны в служебном чате.
+                  Сводка показывается не больше одного раза в день после фактического показа.
                 </p>
               </>
             )}

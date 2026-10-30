@@ -33,6 +33,15 @@ interface Draft {
   until: number;
   files: File[];
   notices: string[];
+  description: string;
+  createdAt: number;
+  monotonicUntil: number;
+  archive?: Promise<Uint8Array>;
+}
+export interface ApprovedSupportBundle {
+  previewId: string;
+  text: string;
+  files: { name: string; bytes: Uint8Array }[];
 }
 const encode = (value: string) => new TextEncoder().encode(value);
 function archive(files: File[]): Promise<Uint8Array> {
@@ -176,6 +185,9 @@ export class ReportService {
       until: Date.now() + 30 * 60 * 1000,
       files,
       notices,
+      description,
+      createdAt: Date.now(),
+      monotonicUntil: performance.now() + 30 * 60 * 1000,
     };
     this.draft = draft;
     return {
@@ -189,12 +201,38 @@ export class ReportService {
       notices: [...notices],
     };
   }
+  current(id: string): boolean {
+    const draft = this.draft;
+    return (
+      !!draft &&
+      draft.id === id &&
+      draft.generation === this.generation &&
+      Date.now() >= draft.createdAt &&
+      Date.now() < draft.until &&
+      performance.now() < draft.monotonicUntil
+    );
+  }
+  private archive(draft: Draft): Promise<Uint8Array> {
+    // Freeze the ZIP once: its entry metadata must not change between export/upload.
+    return (draft.archive ??= archive(draft.files));
+  }
+  async bundle(id: string): Promise<ApprovedSupportBundle> {
+    const draft = this.draft;
+    if (this.collecting || this.exporting || !draft || !this.current(id))
+      throw Error('stale_report');
+    const bytes = await this.archive(draft);
+    if (this.draft !== draft || !this.current(id)) throw Error('stale_report');
+    return {
+      previewId: id,
+      text: draft.description,
+      files: [{ name: 'Schema Teams report.zip', bytes: Uint8Array.from(bytes) }],
+    };
+  }
   async export(id: string): Promise<ReportExport | null> {
     const draft = this.draft;
     if (this.collecting || this.exporting || !draft || draft.id !== id || Date.now() >= draft.until)
       throw Error('stale_report');
-    const current = () =>
-      this.draft === draft && this.generation === draft.generation && Date.now() < draft.until;
+    const current = () => this.draft === draft && this.current(id);
     this.exporting = true;
     let temporary: string | undefined;
     try {
@@ -205,7 +243,7 @@ export class ReportService {
       if (target === null) return null;
       if (!isAbsolute(target) || extname(target).toLowerCase() !== '.zip')
         throw Error('invalid_extension');
-      const bytes = await archive(draft.files);
+      const bytes = await this.archive(draft);
       if (!current()) throw Error('stale_report');
       temporary = join(dirname(target), `.schema-report-${randomUUID()}.tmp`);
       await writeFile(temporary, bytes, { flag: 'wx' });
@@ -231,5 +269,8 @@ export class ReportService {
     if (!this.exported || this.exported.id !== id) return false;
     this.o.reveal(this.exported.path);
     return true;
+  }
+  hasExport(id: string): boolean {
+    return this.exported?.id === id;
   }
 }

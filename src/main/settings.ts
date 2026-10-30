@@ -21,11 +21,12 @@ export interface Settings {
   /** Подсказка «работает в трее» уже показана (ТЗ, 4.3, Д-О-3) */
   trayHintShown: boolean;
   theme: 'system' | 'light' | 'dark';
-  notifications: { enabled: boolean; sound: boolean; preview: boolean };
+  notifications: { enabled: boolean; sound: boolean; preview: boolean; morning: boolean };
   /** Локальные настройки учёта времени; автопауза пока зависит от сервера. */
   timer: { pauseOnLock: boolean; askOnUnlock: boolean; reminderTime: string };
   recentTimeTaskIds: Record<string, number[]>;
   timerReminderSeen: Record<string, string>;
+  morningSeen: string[];
 }
 
 export const DEFAULTS: Settings = {
@@ -35,10 +36,11 @@ export const DEFAULTS: Settings = {
   zoomLevel: 0,
   trayHintShown: false,
   theme: 'system',
-  notifications: { enabled: true, sound: true, preview: true },
+  notifications: { enabled: true, sound: true, preview: true, morning: true },
   timer: { pauseOnLock: true, askOnUnlock: true, reminderTime: '18:30' },
   recentTimeTaskIds: {},
   timerReminderSeen: {},
+  morningSeen: [],
 };
 
 export const ZOOM_MIN = -3;
@@ -53,9 +55,22 @@ export function normalizeSettings(raw: unknown): Settings {
     timer: { ...DEFAULTS.timer },
     recentTimeTaskIds: {},
     timerReminderSeen: {},
+    morningSeen: [],
   };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
+  if (Array.isArray(r.morningSeen))
+    s.morningSeen = [
+      ...new Set(
+        r.morningSeen.filter(
+          (key): key is string =>
+            typeof key === 'string' &&
+            /^[a-f0-9]{64}:[1-9]\d{0,15}:\d{4}-\d{2}-\d{2}$/.test(key) &&
+            Number.isSafeInteger(Number(key.split(':')[1])) &&
+            isoDay(key.split(':')[2]),
+        ),
+      ),
+    ].slice(-128);
   if (
     typeof r.deviceId === 'string' &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(r.deviceId)
@@ -100,7 +115,7 @@ export function normalizeSettings(raw: unknown): Settings {
   if (r.theme === 'system' || r.theme === 'light' || r.theme === 'dark') s.theme = r.theme;
   if (typeof r.notifications === 'object' && r.notifications !== null) {
     const n = r.notifications as Record<string, unknown>;
-    for (const key of ['enabled', 'sound', 'preview'] as const)
+    for (const key of ['enabled', 'sound', 'preview', 'morning'] as const)
       if (typeof n[key] === 'boolean') s.notifications[key] = n[key];
   }
   if (typeof r.timer === 'object' && r.timer !== null) {
