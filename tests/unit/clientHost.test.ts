@@ -58,6 +58,9 @@ const h = vi.hoisted(() => ({
   edit: vi.fn(),
   delete: vi.fn(),
   pin: vi.fn(),
+  top: vi.fn(),
+  chatQuiet: undefined as number | undefined,
+  realtimeStatus: undefined as undefined | ((online: boolean) => void),
   search: vi.fn(),
   objectInfo: vi.fn(),
   timer: vi.fn(),
@@ -133,6 +136,9 @@ vi.mock('../../src/main/api/client', async (original) => {
       get owner() {
         return h.api.owner;
       }
+      get desktopConfiguration() {
+        return { capabilities: { chatQuiet: h.chatQuiet } };
+      }
       clear() {
         h.clear();
         h.api.epoch++;
@@ -161,6 +167,7 @@ vi.mock('../../src/main/api/client', async (original) => {
       edit = h.edit;
       delete = h.delete;
       pin = h.pin;
+      top = h.top;
       search = h.search;
       objectInfo = h.objectInfo;
       timer = h.timer;
@@ -222,6 +229,9 @@ vi.mock('../../src/main/desktop/notificationState', () => ({
 }));
 vi.mock('../../src/main/realtime/connection', () => ({
   RealtimeClient: class {
+    constructor(o: { onStatus: (online: boolean) => void }) {
+      h.realtimeStatus = o.onStatus;
+    }
     start = h.realtimeStart;
     stop = h.realtimeStop;
   },
@@ -329,6 +339,7 @@ beforeEach(() => {
   h.published.length = 0;
   h.api.epoch = 7;
   h.api.owner = 1;
+  h.chatQuiet = undefined;
   // Не запускаем bootstrap/сокет: эти тесты проверяют только маршрутизацию
   // настоящего IPC handler при управляемых поколениях API и cookie jar.
   h.health.mockImplementation(() => new Promise(() => {}));
@@ -942,6 +953,169 @@ describe('ClientHost: поколение входа проверяется в д
   });
 });
 
+describe('D4 live metadata and personal top routing', () => {
+  it('accepts a genuinely new live push immediately after socket online, before the REST refresh', () => {
+    const f = fixture();
+    h.chatQuiet = 1;
+    required(h.realtimeStatus)(true);
+    live(f.host).event('chat:message', message(101, false));
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+    live(f.host).event('chat:message', message(101, false));
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+  });
+  it('mention local quiet policy uses bureau time zone rather than the Windows zone', async () => {
+    vi.setSystemTime(new Date('2026-10-29T01:00:00Z'));
+    const f = fixture();
+    f.state.bureau = { timeZone: 'Asia/Yekaterinburg', workEnd: '18:00' };
+    h.notificationSettings.mockResolvedValue({
+      ok: true,
+      data: { rows: [], digestHourly: false, quiet: { from: '00:00', to: '02:00' } },
+    });
+    const host = live(f.host);
+    host.liveNotices.prime([], []);
+    const item = notification(510, 'chat_mention');
+    item.link = '/chat/4?m=101';
+    host.event('notification', { item, kind: item.event, notificationId: item.id, quiet: false });
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(true);
+    f.state.bureau = { timeZone: 'UTC', workEnd: '18:00' };
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(false);
+  });
+  const message = (id: number, quiet?: boolean) => ({
+    id,
+    chatId: 4,
+    text: 'Новое',
+    deleted: false,
+    author: { id: 2, shortName: 'Тест' },
+    mentions: [],
+    at: '2026-10-29T00:00:00Z',
+    editedAt: null,
+    replyTo: null,
+    files: [],
+    links: [],
+    canEdit: false,
+    reactions: [],
+    cards: [],
+    sticker: null,
+    poll: null,
+    ...(quiet !== undefined && { quiet }),
+  });
+  const live = (host: ClientHost) =>
+    host as unknown as {
+      event: (name: string, value: unknown) => void;
+      liveNotices: {
+        prime: (chats: never[], notifications: never[]) => void;
+        reconnect: () => void;
+      };
+    };
+  const notification = (id: number, event = 'album_issued') => ({
+    id,
+    event,
+    at: '2026-10-29T00:00:00Z',
+    read: false,
+    author: null,
+    task: null,
+    changes: [],
+    reason: null,
+    subject: 'Альбом выдан',
+    link: '/albums/7',
+  });
+  it('quiet true suppresses a live popup, remains seen, and still schedules refresh', () => {
+    const f = fixture();
+    const host = live(f.host);
+    host.liveNotices.prime([], []);
+    h.chatQuiet = 1;
+    host.event('chat:message', message(101, true));
+    expect(h.toastShow).not.toHaveBeenCalled();
+    host.event('chat:message', message(101, false));
+    expect(h.toastShow).not.toHaveBeenCalled();
+    host.event('chat:message', message(102, false));
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+    host.event('chat:message', message(102, false));
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+    host.event('chat:message', message(103));
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+    expect((f.host as unknown as { refreshTimer: unknown }).refreshTimer).toBeDefined();
+  });
+  it('legacy missing quiet uses local policy, reconnect events never flood', () => {
+    const f = fixture();
+    const host = live(f.host);
+    host.liveNotices.prime([], []);
+    host.event('chat:message', message(101));
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+    host.liveNotices.reconnect();
+    host.event('chat:message', message(102));
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+  });
+  it('validates notification kind/id, deduplicates and never celebrates quiet/closed/unknown', () => {
+    const f = fixture();
+    const host = live(f.host);
+    host.liveNotices.prime([], []);
+    host.event('notification', {
+      item: notification(501),
+      kind: 'remarks_closed',
+      notificationId: 501,
+      quiet: false,
+    });
+    expect(h.toastShow).not.toHaveBeenCalled();
+    host.event('notification', {
+      item: notification(501),
+      kind: 'album_issued',
+      notificationId: 501,
+      quiet: true,
+    });
+    expect(f.state.albumCelebration).toBeUndefined();
+    host.event('notification', {
+      item: notification(501),
+      kind: 'album_issued',
+      notificationId: 501,
+      quiet: false,
+    });
+    expect(h.toastShow).not.toHaveBeenCalled();
+    host.event('notification', {
+      item: notification(502),
+      kind: 'album_issued',
+      notificationId: 502,
+      quiet: false,
+    });
+    expect(f.state.albumCelebration).toEqual({ notificationId: 502, at: Date.now() });
+    expect(h.toastShow).toHaveBeenCalledTimes(1);
+    for (const [id, kind] of [
+      [503, 'remarks_closed'],
+      [504, 'future_event'],
+    ] as const)
+      host.event('notification', {
+        item: notification(id, kind),
+        kind,
+        notificationId: id,
+        quiet: false,
+      });
+    expect(f.state.albumCelebration?.notificationId).toBe(502);
+    expect(h.toastShow).toHaveBeenCalledTimes(3);
+  });
+  it('personal top is disabled without a server field and rejects a late previous epoch', async () => {
+    const f = fixture();
+    expect(await f.invoke({ kind: 'chat.top', epoch: 7, chatId: 4, top: true })).toMatchObject({
+      ok: false,
+      code: 'unsupported',
+    });
+    expect(h.top).not.toHaveBeenCalled();
+    f.state.chats = [{ id: 4, top: false } as import('../../src/shared/client').ChatSummary];
+    const pending = deferred<ApiResult<import('../../src/shared/client').ChatSummary>>();
+    h.top.mockReturnValueOnce(pending.promise);
+    const result = f.invoke({ kind: 'chat.top', epoch: 7, chatId: 4, top: true });
+    h.api.epoch = 8;
+    h.api.owner = 2;
+    f.state.chats = [];
+    pending.resolve({
+      ok: true,
+      data: { id: 4, top: true } as import('../../src/shared/client').ChatSummary,
+    });
+    expect(await result).toMatchObject({ ok: false, code: 'stale_session' });
+    expect(f.state.chats).toEqual([]);
+  });
+});
+
 describe('Read receipts bound popup accumulation to unread message IDs', () => {
   const notify = (host: ClientHost, id: number) =>
     (
@@ -966,6 +1140,32 @@ describe('Read receipts bound popup accumulation to unread message IDs', () => {
       sticker: null,
       poll: null,
     } as import('../../src/shared/client').ChatMessage);
+  it('out-of-order 102 then 101 keeps the newest popup link through read101 and dismisses only at read102', async () => {
+    const f = fixture();
+    notify(f.host, 102);
+    notify(f.host, 101);
+    const notice = () => {
+      const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+      const notices = (f.host as unknown as { notices: WeakMap<ToastSpec, { messageId: number }> })
+        .notices;
+      return { spec, messageId: notices.get(spec)?.messageId };
+    };
+    expect(notice().messageId).toBe(102);
+    expect(notice().spec.body).toContain('2 новых сообщений');
+    const read = (upTo: number) =>
+      (f.host as unknown as { acceptRead: (chatId: number, upTo: number) => void }).acceptRead(
+        4,
+        upTo,
+      );
+    read(101);
+    expect(notice().messageId).toBe(102);
+    expect(notice().spec.body).not.toContain('2 новых сообщений');
+    expect(await required(h.toastOptions).beforeShow(notice().spec)).toBe(true);
+    const count = h.toastShow.mock.calls.length;
+    read(102);
+    expect(h.toastDismiss).toHaveBeenCalledWith('chat:4');
+    expect(h.toastShow).toHaveBeenCalledTimes(count);
+  });
   it('deduplicates pushes and closes an existing toast only after successful read', async () => {
     const f = fixture();
     notify(f.host, 10);

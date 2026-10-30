@@ -57,6 +57,8 @@ export interface ClientSnapshot {
   chats: ChatSummary[];
   unread: number;
   notifications: NotificationItem[];
+  /** Only a validated live push may initiate the issued-album celebration. */
+  albumCelebration?: { notificationId: number; at: number } | null;
   notificationUnread: number;
   focus: FocusState;
   error: string | null;
@@ -152,6 +154,7 @@ export type DesktopRequest =
       | { kind: 'chat.edit'; chatId: number; messageId: number; text: string }
       | { kind: 'chat.delete'; chatId: number; messageId: number }
       | { kind: 'chat.pin'; chatId: number; messageId: number | null }
+      | { kind: 'chat.top'; chatId: number; top: boolean }
       | {
           kind: 'chat.reaction';
           chatId: number;
@@ -230,6 +233,7 @@ export interface DesktopResponseMap {
   'chat.edit': ChatMessage;
   'chat.delete': ChatMessage;
   'chat.pin': null;
+  'chat.top': ChatSummary;
   'chat.reaction': ChatReaction[];
   'chat.read': null;
   'chat.typing': null;

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CheckCircle, GearSix, X } from '@phosphor-icons/react';
+import { CircleCheck, Settings, X } from 'lucide-react';
 import type { ClientSnapshot } from '../shared/desktop';
 import type { RevitInventory } from '../shared/setup';
 import { request } from './bridge';
@@ -106,7 +106,7 @@ export function SetupPanel({
         aria-labelledby="setup-title"
       >
         <header>
-          <GearSix size={24} weight="duotone" />
+          <Settings size={24} />
           <h2 id="setup-title">Настройка Schema Teams</h2>
           {!snapshot.setupRequired && (
             <button
@@ -126,7 +126,7 @@ export function SetupPanel({
               aria-current={index === step ? 'step' : undefined}
               className={index < step ? 'complete' : ''}
             >
-              <span>{index < step ? <CheckCircle size={19} /> : index + 1}</span>
+              <span>{index < step ? <CircleCheck size={19} /> : index + 1}</span>
               {stage}
             </li>
           ))}

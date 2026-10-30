@@ -19,7 +19,7 @@ await copyFile('src/renderer/index.html', 'dist/renderer/index.html');
 for (const [name, file] of [
   ['react', 'LICENSE'],
   ['react-dom', 'LICENSE'],
-  ['@phosphor-icons/react', 'LICENSE'],
+  ['lucide-react', 'LICENSE'],
   ['@fontsource/inter', 'LICENSE'],
   ['@fontsource/ibm-plex-mono', 'LICENSE'],
 ])
@@ -29,7 +29,7 @@ for (const [name, file] of [
   );
 await writeFile(
   'dist/renderer/licenses/README.txt',
-  'React 18.3.1, React DOM 18.3.1, Phosphor Icons 2.1.10, Microsoft Fluent Emoji 3D: MIT. Inter and IBM Plex Mono 5.3.0: OFL-1.1. Full license texts accompany this file.\n',
+  'React 18.3.1, React DOM 18.3.1, Microsoft Fluent Emoji 3D: MIT. Inter and IBM Plex Mono 5.3.0: OFL-1.1. Lucide React 1.54.0: ISC and Feather MIT. Full license texts accompany this file.\n',
 );
 await copyFile(
   'src/renderer/assets/reactions/LICENSE.txt',

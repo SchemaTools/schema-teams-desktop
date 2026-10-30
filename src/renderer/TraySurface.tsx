@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowSquareOut,
+  ExternalLink,
   Bell,
-  ChatCircleDots,
+  MessageCircleMore,
   Check,
-  GearSix,
+  Settings,
   Info,
   Moon,
-  PaperPlaneTilt,
-  SignIn,
-  SignOut,
+  Send,
+  LogIn,
+  LogOut,
   X,
-} from '@phosphor-icons/react';
+} from 'lucide-react';
 import type { ClientSnapshot, DesktopRequest } from '../shared/desktop';
 import { Avatar } from './content';
 import { request } from './bridge';
@@ -209,7 +209,7 @@ export function TraySurface() {
           />
           <section className="tray-focus">
             <div>
-              <Moon size={17} weight="duotone" />
+              <Moon size={17} />
               <b>{focus ? R.focus : R.focusDisabled}</b>
             </div>
             <p>{focus ? R.focusUntil(timeLabel(focus)) : R.focusHint}</p>
@@ -239,7 +239,7 @@ export function TraySurface() {
             className="tray-item"
             onClick={() => void act({ kind: 'window.show', epoch: snapshot.epoch })}
           >
-            <ChatCircleDots size={20} weight="duotone" />
+            <MessageCircleMore size={20} />
             <span>{R.openApp}</span>
             {(snapshot.unread ?? 0) > 0 && <b className="unread-badge">{snapshot.unread}</b>}
           </button>
@@ -249,14 +249,14 @@ export function TraySurface() {
               void act({ kind: 'window.show', epoch: snapshot.epoch, target: 'events' })
             }
           >
-            <Bell size={20} weight="duotone" />
+            <Bell size={20} />
             <span>{R.events}</span>
             {snapshot.notificationUnread > 0 && (
               <b className="unread-badge">{snapshot.notificationUnread}</b>
             )}
           </button>
           <label className="tray-item">
-            <GearSix size={20} weight="duotone" />
+            <Settings size={20} />
             <span>{R.theme}</span>
             <select
               aria-label={R.theme}
@@ -276,7 +276,7 @@ export function TraySurface() {
         </>
       ) : (
         <button className="tray-item" onClick={() => void act({ kind: 'login' })}>
-          <SignIn size={20} weight="duotone" />
+          <LogIn size={20} />
           <span>{R.login}</span>
         </button>
       )}
@@ -284,18 +284,18 @@ export function TraySurface() {
         className="tray-item"
         onClick={() => void act({ kind: 'settings.open', tab: 'general' })}
       >
-        <GearSix size={20} weight="duotone" />
+        <Settings size={20} />
         <span>Настройки</span>
       </button>
       <button
         className="tray-item"
         onClick={() => void act({ kind: 'settings.open', tab: 'about' })}
       >
-        <Info size={20} weight="duotone" />
+        <Info size={20} />
         <span>О программе</span>
       </button>
       <button className="tray-item" onClick={() => void act({ kind: 'report.open' }, false)}>
-        <ChatCircleDots size={20} weight="duotone" />
+        <MessageCircleMore size={20} />
         <span>Сообщить о проблеме</span>
       </button>
       {snapshot?.updates?.available &&
@@ -304,7 +304,7 @@ export function TraySurface() {
             className="tray-item"
             onClick={() => void act({ kind: 'settings.open', tab: 'about' })}
           >
-            <ArrowSquareOut size={20} />
+            <ExternalLink size={20} />
             <span>Доступна версия {snapshot.updates.available.version}</span>
           </button>
         )}
@@ -315,13 +315,13 @@ export function TraySurface() {
           snapshot && void act({ kind: 'open.site', epoch: snapshot.epoch, path: '/my' })
         }
       >
-        <ArrowSquareOut size={20} weight="duotone" />
+        <ExternalLink size={20} />
         <span>{R.myTasks}</span>
       </button>
       {latest?.last && (
         <section className="tray-new">
           <header>
-            <ChatCircleDots size={15} weight="duotone" />
+            <MessageCircleMore size={15} />
             <b>{R.newMessage}</b>
             <button
               onClick={() =>
@@ -392,7 +392,7 @@ export function TraySurface() {
               aria-label={draft.pending ? R.sending : R.send}
               disabled={!canWrite || draft.pending || !draft.value.trim()}
             >
-              <PaperPlaneTilt size={18} weight="fill" />
+              <Send size={18} />
             </button>
           </form>
           {draft.error && (
@@ -411,7 +411,7 @@ export function TraySurface() {
       <footer className="tray-bottom">
         <small>{R.version(snapshot?.appVersion ?? '', snapshot?.serverVersion ?? '')}</small>
         <button className="tray-item" onClick={() => void act({ kind: 'app.quit' }, false)}>
-          <SignOut size={20} weight="duotone" />
+          <LogOut size={20} />
           <span>{R.quit}</span>
         </button>
       </footer>

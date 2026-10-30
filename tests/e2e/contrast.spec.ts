@@ -17,6 +17,22 @@ let stub: ClientStub, app: ElectronApplication | undefined, profile: string;
 test.beforeEach(async () => {
   stub = await startClientStub();
   stub.state.objectChat = true;
+  for (const [id, event] of [
+    [801, 'album_issued'],
+    [802, 'remarks_closed'],
+  ] as const)
+    stub.notifications.push({
+      id,
+      event,
+      at: new Date().toISOString(),
+      read: false,
+      author: null,
+      task: null,
+      changes: [],
+      reason: null,
+      subject: 'Проверка нового события',
+      link: '/albums/7',
+    });
   profile = mkdtempSync(join(tmpdir(), 'stdesk-contrast-'));
 });
 test.afterEach(async () => {
@@ -218,6 +234,8 @@ for (const theme of ['light', 'dark'] as const) {
     await login(page);
     await page.locator('.chat-row[data-chat-id="4"]').click();
     await expect(page.locator('.message-row')).toHaveCount(2);
+    await page.locator('.chat-top-action').first().click();
+    await expect(page.locator('.chat-top-action').first()).toHaveAttribute('aria-pressed', 'true');
     await audit(page, 'chat');
     await gradientBounds(page);
     const composer = page.getByRole('textbox', { name: 'Сообщение', exact: true });
@@ -235,8 +253,9 @@ for (const theme of ['light', 'dark'] as const) {
     expect(parseFloat(focus.width) * focus.dpr).toBeGreaterThanOrEqual(2);
     expect(parseFloat(focus.offset)).toBeGreaterThan(0);
     await page.locator('.chat-row[data-chat-id="events"]').click();
-    await expect(page.locator('.event-card')).toBeVisible();
+    await expect(page.locator('.event-card').first()).toBeVisible();
     await audit(page, 'events');
+    await page.screenshot({ path: test.info().outputPath(`d4-events-${theme}.png`) });
     await page.locator('.chat-row[data-chat-id="4"]').click();
     await page.getByRole('button', { name: 'Об объекте', exact: true }).click();
     await audit(page, 'object', '.object-info-panel');
@@ -302,6 +321,7 @@ test('контраст настоящей карточки уведомлени�
   const pending = app.waitForEvent('window');
   stub.push('Текст тестового уведомления');
   const toast = await pending;
+  await toast.screenshot({ path: test.info().outputPath('lucide-native-popup.png') });
   await audit(toast, 'toast');
   await toast.getByRole('textbox', { name: 'Ответить…' }).fill('Проверка контраста');
   await toast.getByRole('button', { name: 'Отправить', exact: true }).click();

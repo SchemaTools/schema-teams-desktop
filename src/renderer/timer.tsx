@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ArrowSquareOut,
-  ClockCountdown,
-  MagnifyingGlass,
-  Pause,
-  Play,
-  Trash,
-  X,
-} from '@phosphor-icons/react';
+import { ExternalLink, Timer, Search, Pause, Play, Trash, X } from 'lucide-react';
 import type { ApiResult } from '../shared/client';
 import type { ClientSnapshot } from '../shared/desktop';
 import {
@@ -60,7 +52,7 @@ export function TimerCard({
   return (
     <section className="timer-card" aria-label="Таймер работы">
       <div className="timer-card-top">
-        <ClockCountdown size={20} weight="duotone" />
+        <Timer size={20} />
         <b>Учёт времени</b>
         {timer && (
           <TimerElapsed
@@ -431,7 +423,7 @@ export function TimerPanel({
         aria-labelledby="timer-title"
       >
         <header>
-          <ClockCountdown size={24} weight="duotone" />
+          <Timer size={24} />
           <div>
             <h2 id="timer-title">Учёт времени</h2>
             <small>Один таймер на всех ваших устройствах</small>
@@ -762,7 +754,7 @@ export function TimerPanel({
             <section className="timer-picker" aria-label="Выбор задачи">
               <h3>{timer ? 'Выбрать задачу' : 'Начать работу'}</h3>
               <label className="timer-search">
-                <MagnifyingGlass size={18} />
+                <Search size={18} />
                 <input
                   aria-label="Поиск задачи для таймера"
                   placeholder="Марка, задача или объект"
@@ -805,7 +797,7 @@ export function TimerPanel({
                             <strong>{task.title}</strong>
                             <small>{task.place || 'Личная задача'}</small>
                           </span>
-                          <Play size={19} weight="fill" />
+                          <Play size={19} />
                         </button>
                       </div>
                     );
@@ -824,7 +816,7 @@ export function TimerPanel({
             disabled={!online || pending}
             onClick={() => void request({ kind: 'open.site', epoch, path: '/time' })}
           >
-            <ArrowSquareOut size={17} /> Все трудозатраты на сайте
+            <ExternalLink size={17} /> Все трудозатраты на сайте
           </button>
         </div>
       </section>

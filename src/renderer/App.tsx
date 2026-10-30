@@ -8,29 +8,29 @@ import {
   useState,
 } from 'react';
 import {
-  ArrowSquareOut,
-  At,
+  ExternalLink,
+  AtSign,
   Bell,
-  Buildings,
-  ChatCircleDots,
-  ClipboardText,
-  ClockCountdown,
+  BuildingComplex,
+  MessageCircleMore,
+  ClipboardList,
+  Timer,
   Check,
   File,
-  GearSix,
+  Settings,
   Info,
-  List,
+  Menu,
   Moon,
-  PaperPlaneTilt,
+  Send,
   Paperclip,
-  PushPin,
-  SignIn,
-  SignOut,
-  Stack,
+  Pin,
+  LogIn,
+  LogOut,
+  Layers,
   User,
-  WarningCircle,
+  CircleAlert,
   X,
-} from '@phosphor-icons/react';
+} from 'lucide-react';
 import type {
   ChatDetail,
   ChatFile,
@@ -43,11 +43,11 @@ import { request } from './bridge';
 import { Avatar, MessageBubble, SchemaLogo } from './content';
 import {
   chatLink,
+  chatGroups,
   chatTitle,
   dateLabel,
   filteredChats,
   mergeMessages,
-  needsReply,
   rowDate,
   timeLabel,
   type Folder,
@@ -110,6 +110,17 @@ const sameFileIds = (a: number[], b: number[]) =>
 export function App() {
   const [snapshot, setSnapshot] = useState<ClientSnapshot>(EMPTY);
   const snapshotRef = useRef(snapshot);
+  const [liveCelebration, setLiveCelebration] = useState<number>();
+  const celebrated = useRef(new Set<number>());
+  useEffect(() => {
+    if (liveCelebration === undefined) return;
+    // Reduced motion has no animationend event. Expiry is independent of animation.
+    const timer = window.setTimeout(
+      () => setLiveCelebration((current) => (current === liveCelebration ? undefined : current)),
+      1000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [liveCelebration]);
   const [folder, setFolder] = useState<Folder>('all');
   const [selection, setSelection] = useState<Selection>(null);
   const selectionRef = useRef<Selection>(null);
@@ -175,6 +186,8 @@ export function App() {
       )
         return;
       if (next.epoch !== previous.epoch || next.user?.id !== previous.user?.id) {
+        celebrated.current.clear();
+        setLiveCelebration(undefined);
         loadId.current++;
         selectionRef.current = null;
         setSelection(null);
@@ -218,6 +231,12 @@ export function App() {
         setTimerView(next.navigateTimer);
         setSettingsView(null);
       }
+      const celebration = next.albumCelebration;
+      if (celebration && !celebrated.current.has(celebration.notificationId)) {
+        celebrated.current.add(celebration.notificationId);
+        if (selectionRef.current === 'events' && Date.now() - celebration.at < 8000)
+          setLiveCelebration(celebration.notificationId);
+      }
       setSnapshot(next);
       document.documentElement.dataset.theme = next.theme;
     };
@@ -239,6 +258,7 @@ export function App() {
   const select = useCallback(
     (next: Selection, around?: number, expectedEpoch = snapshotRef.current.epoch) => {
       if (snapshotRef.current.epoch !== expectedEpoch) return;
+      setLiveCelebration(undefined);
       selectionRef.current = next;
       setSelection(next);
       navigationPending.current = true;
@@ -623,8 +643,19 @@ export function App() {
     () => filteredChats(snapshot.chats, folder, search),
     [snapshot.chats, folder, search],
   );
-  const waiting = visibleChats.filter(needsReply);
-  const rest = visibleChats.filter((chat) => !needsReply(chat));
+  const { top, waiting, active, other } = chatGroups(visibleChats);
+  const [topPending, setTopPending] = useState<number>();
+  const topFlight = useRef(false);
+  async function toggleTop(chat: ChatSummary) {
+    if (!online || topFlight.current || typeof chat.top !== 'boolean') return;
+    const epoch = snapshot.epoch;
+    topFlight.current = true;
+    setTopPending(chat.id);
+    const result = await request({ kind: 'chat.top', epoch, chatId: chat.id, top: !chat.top });
+    topFlight.current = false;
+    setTopPending(undefined);
+    if (snapshotRef.current.epoch === epoch && !result.ok) setUiError(result.error);
+  }
   const showService =
     (folder === 'all' || folder === 'events') &&
     (!search.trim() || R.appName.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
@@ -636,6 +667,23 @@ export function App() {
     const own = chat.last?.authorId === snapshot.user?.id;
     return (
       <div className="chat-row-wrap" key={chat.id}>
+        <button
+          type="button"
+          className={`chat-top-action${chat.top ? ' is-top' : ''}`}
+          disabled={!online || topPending !== undefined || typeof chat.top !== 'boolean'}
+          aria-label={chat.top ? `Открепить чат: ${title}` : `Закрепить чат: ${title}`}
+          title={
+            typeof chat.top !== 'boolean'
+              ? 'Закрепление чатов недоступно на этом сервере'
+              : chat.top
+                ? 'Открепить чат'
+                : 'Закрепить чат (до 5)'
+          }
+          aria-pressed={chat.top === true}
+          onClick={() => void toggleTop(chat)}
+        >
+          <Pin size={14} />
+        </button>
         <button
           type="button"
           className={`chat-row${selection === chat.id ? ' selected' : ''}`}
@@ -710,48 +758,57 @@ export function App() {
   );
 
   function eventTitle(item: NotificationItem): string {
+    if (item.event === 'album_issued') return 'Альбом выдан';
+    if (item.event === 'remarks_closed') return 'Все замечания закрыты';
     if (item.event === 'timer_stopped') return R.eventTimerStopped;
-    if (item.event.includes('mention')) return R.eventMention;
-    if (item.event.includes('assigned')) return R.eventAssigned;
+    if (['mention', 'chat_mention', 'space_mention'].includes(item.event)) return R.eventMention;
+    if (item.event === 'assigned') return R.eventAssigned;
     if (item.event === 'due_soon') return R.eventDueSoon;
     if (item.event === 'overdue') return R.eventOverdue;
-    if (
-      item.event.includes('deadline') ||
-      ['due_soon', 'overdue', 'due_changed'].includes(item.event)
-    )
-      return R.eventDeadline;
+    if (['due_soon', 'overdue', 'due_changed'].includes(item.event)) return R.eventDeadline;
     return item.task ? R.eventUpdated : (item.subject ?? R.notification);
   }
   function eventCard(item: NotificationItem) {
     const target = chatLink(item.link);
-    const category = item.event.includes('mention')
+    const category = ['mention', 'chat_mention', 'space_mention'].includes(item.event)
       ? 'mention'
-      : item.event.includes('assigned')
+      : item.event === 'assigned'
         ? 'assigned'
-        : item.event.includes('deadline') ||
-            ['due_soon', 'overdue', 'due_changed'].includes(item.event)
+        : ['due_soon', 'overdue', 'due_changed'].includes(item.event)
           ? 'deadline'
           : item.event === 'timer_stopped'
             ? 'timer'
-            : 'other';
+            : item.event === 'album_issued'
+              ? 'issued'
+              : item.event === 'remarks_closed'
+                ? 'closed'
+                : 'other';
     return (
       <article
         className={`event-stack event-${category}`}
         key={item.id}
         data-notification-id={item.id}
         data-event-kind={category}
+        data-celebration={
+          category === 'issued' && liveCelebration === item.id ? item.id : undefined
+        }
+        onAnimationEnd={() => {
+          if (liveCelebration === item.id) setLiveCelebration(undefined);
+        }}
       >
         <div className={`event-card${item.read ? '' : ' unread-event'}`}>
           <header>
             <span className="event-icon">
               {category === 'mention' ? (
-                <At size={21} weight="duotone" />
+                <AtSign size={21} />
               ) : category === 'assigned' ? (
-                <ClipboardText size={21} weight="duotone" />
+                <ClipboardList size={21} />
               ) : category === 'deadline' || category === 'timer' ? (
-                <ClockCountdown size={21} weight="duotone" />
+                <Timer size={21} />
+              ) : category === 'issued' || category === 'closed' ? (
+                <Check size={21} />
               ) : (
-                <Bell size={21} weight="duotone" />
+                <Bell size={21} />
               )}
             </span>
             <div>
@@ -797,11 +854,7 @@ export function App() {
                 void action({ kind: 'notifications.read', epoch: snapshot.epoch, id: item.id });
               }}
             >
-              {target ? (
-                <ChatCircleDots size={16} weight="duotone" />
-              ) : (
-                <ArrowSquareOut size={16} weight="duotone" />
-              )}
+              {target ? <MessageCircleMore size={16} /> : <ExternalLink size={16} />}
               {category === 'timer' ? R.checkTimeEntry : target ? R.openChat : R.openSite}
             </button>
           </div>
@@ -821,7 +874,7 @@ export function App() {
                   });
               }}
             >
-              <ClockCountdown size={16} weight="duotone" />
+              <Timer size={16} />
               Начать работу
             </button>
           </div>
@@ -843,7 +896,7 @@ export function App() {
       return (
         <Empty title={R.passwordTitle} text={R.passwordHint}>
           <button className="primary-button" onClick={() => void action({ kind: 'login' })}>
-            <SignIn size={16} /> {R.continueLogin}
+            <LogIn size={16} /> {R.continueLogin}
           </button>
         </Empty>
       );
@@ -851,7 +904,7 @@ export function App() {
       return (
         <Empty title={R.loginTitle} text={R.loginHint}>
           <button className="primary-button" onClick={() => void action({ kind: 'login' })}>
-            <SignIn size={16} /> {R.login}
+            <LogIn size={16} /> {R.login}
           </button>
         </Empty>
       );
@@ -924,15 +977,15 @@ export function App() {
           ref={menuButton}
           onClick={() => setMenu(!menu)}
         >
-          <List size={24} weight="duotone" />
+          <Menu size={24} />
         </button>
         {(
           [
-            ['all', R.all, ChatCircleDots, snapshot.unread + snapshot.notificationUnread],
+            ['all', R.all, MessageCircleMore, snapshot.unread + snapshot.notificationUnread],
             [
               'objects',
               R.objects,
-              Buildings,
+              BuildingComplex,
               snapshot.chats
                 .filter((chat) => chat.kind === 'object')
                 .reduce((sum, chat) => sum + chat.unread, 0),
@@ -948,13 +1001,13 @@ export function App() {
             onClick={() => chooseFolder(key)}
             aria-pressed={folder === key}
           >
-            <Icon size={24} weight={folder === key ? 'fill' : 'duotone'} />
+            <Icon size={24} />
             {label}
             {count > 0 && <b className="rail-count">{count > 99 ? '99+' : count}</b>}
           </button>
         ))}
         <button type="button" className="folder-button" disabled title={R.pluginsUnavailable}>
-          <Stack size={24} weight="duotone" />
+          <Layers size={24} />
           {R.plugins}
         </button>
         <span className="rail-spacer" />
@@ -970,7 +1023,7 @@ export function App() {
             })
           }
         >
-          <ClockCountdown size={24} weight="duotone" />
+          <Timer size={24} />
           Таймер
         </button>
         <button
@@ -978,7 +1031,7 @@ export function App() {
           className="folder-button"
           onClick={() => void action({ kind: 'open.site', epoch: snapshot.epoch, path: '/' })}
         >
-          <ArrowSquareOut size={24} weight="duotone" />
+          <ExternalLink size={24} />
           {R.website}
         </button>
       </nav>
@@ -986,18 +1039,18 @@ export function App() {
         <section className="settings-popover" aria-label={R.settings}>
           <h2>{snapshot.user?.shortName ?? R.appName}</h2>
           <button onClick={() => void action({ kind: 'settings.open', tab: 'general' })}>
-            <GearSix size={18} weight="duotone" />
+            <Settings size={18} />
             Настройки
           </button>
           <button onClick={() => void action({ kind: 'settings.open', tab: 'about' })}>
-            <Info size={18} weight="duotone" />О программе
+            <Info size={18} />О программе
           </button>
           <button onClick={() => void action({ kind: 'report.open' })}>
-            <ChatCircleDots size={18} weight="duotone" />
+            <MessageCircleMore size={18} />
             Сообщить о проблеме
           </button>
           <label>
-            <GearSix size={18} weight="duotone" />
+            <Settings size={18} />
             {R.theme}
             <select
               aria-label={R.theme}
@@ -1026,7 +1079,7 @@ export function App() {
                   setMenu(false);
                 }}
               >
-                <Moon size={18} weight="duotone" />
+                <Moon size={18} />
                 {activeFocus ? R.focusOff : R.focus30}
               </button>
               {!activeFocus && (
@@ -1036,7 +1089,7 @@ export function App() {
                     setMenu(false);
                   }}
                 >
-                  <Moon size={18} weight="duotone" />
+                  <Moon size={18} />
                   {R.focus60}
                 </button>
               )}
@@ -1048,7 +1101,7 @@ export function App() {
               setMenu(false);
             }}
           >
-            <ArrowSquareOut size={18} weight="duotone" />
+            <ExternalLink size={18} />
             {R.myTasks}
           </button>
           <button onClick={() => setMenu(false)}>
@@ -1062,7 +1115,7 @@ export function App() {
                 void action({ kind: 'logout', epoch: snapshot.epoch });
               }}
             >
-              <SignOut size={18} weight="duotone" />
+              <LogOut size={18} />
               {R.logout}
             </button>
           )}
@@ -1070,7 +1123,7 @@ export function App() {
       )}
       <aside className="chat-list">
         <label className="search-field">
-          <ChatCircleDots size={19} weight="duotone" />
+          <MessageCircleMore size={19} />
           <span className="sr-only">{R.search}</span>
           <input
             type="search"
@@ -1087,10 +1140,19 @@ export function App() {
                 showService && serviceRow
               ) : (
                 <>
+                  {top.length > 0 && (
+                    <section className="chat-group" data-chat-group="top">
+                      <h2 className="group-label">
+                        <Pin size={15} />
+                        Закреплённые · {top.length}
+                      </h2>
+                      {top.map(chatRow)}
+                    </section>
+                  )}
                   {(waiting.length > 0 || (showService && snapshot.notificationUnread > 0)) && (
                     <section className="chat-group waiting">
                       <h2 className="group-label">
-                        <ChatCircleDots size={15} weight="duotone" />
+                        <MessageCircleMore size={15} />
                         {R.waiting(
                           waiting.length + (showService && snapshot.notificationUnread > 0 ? 1 : 0),
                         )}
@@ -1099,7 +1161,21 @@ export function App() {
                       {showService && snapshot.notificationUnread > 0 && serviceRow}
                     </section>
                   )}
-                  {rest.map(chatRow)}
+                  {active.length > 0 && (
+                    <section className="chat-group" data-chat-group="active">
+                      <h2 className="group-label">
+                        <BuildingComplex size={15} />
+                        Мои задачи на объектах · {active.length}
+                      </h2>
+                      {active.map(chatRow)}
+                    </section>
+                  )}
+                  {other.length > 0 && (
+                    <section className="chat-group" data-chat-group="other">
+                      {active.length > 0 && <h2 className="group-label">Остальные чаты</h2>}
+                      {other.map(chatRow)}
+                    </section>
+                  )}
                   {showService && snapshot.notificationUnread === 0 && serviceRow}
                 </>
               )}
@@ -1134,7 +1210,7 @@ export function App() {
           <>
             {snapshot.connection === 'offline' && (
               <div className="banner">
-                <WarningCircle size={17} weight="duotone" />
+                <CircleAlert size={17} />
                 {R.offline}
                 <button onClick={() => void action({ kind: 'retry' })}>{R.retry}</button>
               </div>
@@ -1153,7 +1229,7 @@ export function App() {
             )}
             {(uiError || snapshot.error) && (
               <div className="banner error-banner" role="status">
-                <WarningCircle size={17} weight="duotone" />
+                <CircleAlert size={17} />
                 {uiError || snapshot.error}
               </div>
             )}
@@ -1210,8 +1286,7 @@ export function App() {
                   </div>
                   {activeFocus && (
                     <span className="muted-copy">
-                      <Moon size={15} weight="duotone" />{' '}
-                      {R.focusUntil(timeLabel(snapshot.focus.until ?? ''))}
+                      <Moon size={15} /> {R.focusUntil(timeLabel(snapshot.focus.until ?? ''))}
                     </span>
                   )}
                   <ChatSearch
@@ -1232,7 +1307,7 @@ export function App() {
                       disabled={!online}
                       onClick={() => setObjectInfoOpen((value) => !value)}
                     >
-                      <Info size={20} weight="duotone" />
+                      <Info size={20} />
                     </button>
                   )}
                   <button
@@ -1247,7 +1322,7 @@ export function App() {
                       })
                     }
                   >
-                    <ArrowSquareOut size={20} weight="duotone" />
+                    <ExternalLink size={20} />
                   </button>
                 </header>
                 <div className="conversation-workspace">
@@ -1260,7 +1335,7 @@ export function App() {
                             select(selectedChat.id, shownDetail.pinned?.id, snapshot.epoch)
                           }
                         >
-                          <PushPin size={19} weight="duotone" />
+                          <Pin size={19} />
                           <span className="pinned-copy">
                             <strong>
                               {shownDetail.pinned.authorShortName ?? 'Закреплённое сообщение'}
@@ -1485,7 +1560,7 @@ export function App() {
                                 className="composer-upload-chip"
                                 data-file-id={file.fileId}
                               >
-                                <File size={19} weight="duotone" aria-hidden="true" />
+                                <File size={19} aria-hidden="true" />
                                 <span className="composer-upload-copy">
                                   <span title={file.fileName}>{file.fileName}</span>
                                   <small>{U.fileSize(file.size)}</small>
@@ -1496,7 +1571,7 @@ export function App() {
                                   disabled={draft.pending || draft.uploading}
                                   onClick={() => removeAttachment(selectedChat.id, file.fileId)}
                                 >
-                                  <X size={15} weight="bold" />
+                                  <X size={15} />
                                 </button>
                               </li>
                             ))}
@@ -1532,7 +1607,7 @@ export function App() {
                           }
                           onClick={() => void uploadFiles('pick')}
                         >
-                          <Paperclip size={21} weight="duotone" />
+                          <Paperclip size={21} />
                         </button>
                         <textarea
                           ref={composerInput}
@@ -1620,7 +1695,7 @@ export function App() {
                           draft.uploading
                         }
                       >
-                        <PaperPlaneTilt size={24} weight="fill" />
+                        <Send size={24} />
                       </button>
                     </form>
                     <div className={`compose-meta${draftIssue ? ' error-copy' : ''}`} role="status">

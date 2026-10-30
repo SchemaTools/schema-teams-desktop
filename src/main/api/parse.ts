@@ -3,6 +3,7 @@ import type {
   ChatFile,
   ChatList,
   ChatMessage,
+  ChatMessageEvent,
   ChatPoll,
   ChatReaction,
   ChatSummary,
@@ -11,6 +12,7 @@ import type {
   Health,
   MessagePage,
   NotificationItem,
+  NotificationPush,
   NotificationPage,
   NotificationSettings,
   PersonRef,
@@ -103,7 +105,22 @@ export function summary(v: unknown): ChatSummary {
     unread: count(x.unread),
     mentioned: flag(x.mentioned),
     photoFileId: nullable(x.photoFileId, id),
+    ...(x.myActiveTasks !== undefined && {
+      myActiveTasks: x.myActiveTasks === null ? null : count(x.myActiveTasks),
+    }),
+    ...(x.top !== undefined && { top: x.top === null ? null : flag(x.top) }),
   };
+}
+/** Socket-only metadata; missing quiet remains unknown for legacy servers. */
+export function messageEvent(v: unknown): ChatMessageEvent {
+  const x = object(v);
+  return { ...message(v), quiet: x.quiet === undefined ? null : flag(x.quiet) };
+}
+export function notificationPush(v: unknown): NotificationPush {
+  const x = object(v),
+    item = notification(x.item);
+  if (text(x.kind, 100) !== item.event || id(x.notificationId) !== item.id) throw new InvalidData();
+  return { item, kind: item.event, quiet: flag(x.quiet), notificationId: item.id };
 }
 export function list(v: unknown): ChatList {
   const x = object(v);

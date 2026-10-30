@@ -1,14 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  ArrowSquareOut,
-  Bell,
-  ClockCountdown,
-  FolderOpen,
-  GearSix,
-  Info,
-  Stack,
-  X,
-} from '@phosphor-icons/react';
+import { ExternalLink, Bell, Timer, FolderOpen, Settings, Info, Layers, X } from 'lucide-react';
 import type { ClientSnapshot } from '../shared/desktop';
 import {
   preferenceTabs,
@@ -22,10 +13,10 @@ import './preferences.css';
 import { UpdatePreferences } from './updates';
 import { ServerConfigurationPanel } from './serverConfiguration';
 const tabs = {
-  general: ['Общие', GearSix],
+  general: ['Общие', Settings],
   notifications: ['Уведомления', Bell],
-  plugins: ['Плагины Revit', Stack],
-  time: ['Учёт времени', ClockCountdown],
+  plugins: ['Плагины Revit', Layers],
+  time: ['Учёт времени', Timer],
   about: ['О программе', Info],
 } as const;
 export function PreferencesPanel({
@@ -151,7 +142,7 @@ export function PreferencesPanel({
         aria-labelledby="preferences-title"
       >
         <header>
-          <GearSix size={23} weight="duotone" />
+          <Settings size={23} />
           <h2 id="preferences-title">Настройки</h2>
           <button
             className="icon-button"
@@ -217,7 +208,7 @@ export function PreferencesPanel({
                     setFeedback('');
                   }}
                 >
-                  <Icon size={20} weight="duotone" />
+                  <Icon size={20} />
                   {label}
                 </button>
               );
@@ -349,7 +340,7 @@ export function PreferencesPanel({
                   disabled={!snapshot.user || pending}
                   onClick={() => void openNotificationSettings()}
                 >
-                  <ArrowSquareOut size={17} />
+                  <ExternalLink size={17} />
                   Настройки уведомлений Teams
                 </button>
                 <p className="preferences-hint">
@@ -361,7 +352,7 @@ export function PreferencesPanel({
               <>
                 <h3>Плагины Revit</h3>
                 <div className="preferences-note">
-                  <Stack size={28} weight="duotone" />
+                  <Layers size={28} />
                   <p>
                     Каталог плагинов пока недоступен. Установка и обновление плагинов появятся после
                     подключения каталога.

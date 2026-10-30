@@ -1,4 +1,4 @@
-import { ArrowSquareOut, FolderOpen, Info, X } from '@phosphor-icons/react';
+import { ExternalLink, FolderOpen, Info, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ObjectInfo } from '../shared/client';
 import { request } from './bridge';
@@ -89,7 +89,7 @@ export function ObjectInfoPanel({
       }}
     >
       <header>
-        <Info size={20} weight="duotone" />
+        <Info size={20} />
         <h2>Об объекте</h2>
         <button
           type="button"
@@ -205,7 +205,7 @@ export function ObjectInfoPanel({
                 );
               }}
             >
-              <ArrowSquareOut size={17} />
+              <ExternalLink size={17} />
               Открыть на сайте
             </button>
             {feedback && (

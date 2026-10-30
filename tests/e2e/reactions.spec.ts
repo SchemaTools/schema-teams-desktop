@@ -77,8 +77,8 @@ test('реакция ставится и снимается по ответу AP
     .poll(() =>
       message(page).evaluate((row) => {
         const panel = row.querySelector('.message-quick-reactions')?.getBoundingClientRect();
-        const bubble = row.querySelector('.message-bubble')?.getBoundingClientRect();
-        return !!panel && !!bubble && panel.bottom <= bubble.top;
+        const view = row.closest('.messages-scroll')?.getBoundingClientRect();
+        return !!panel && !!view && panel.top >= view.top && panel.bottom <= view.bottom;
       }),
     )
     .toBe(true);
@@ -204,6 +204,7 @@ test('неизвестная реакция пропускается, локал
   } finally {
     await page.context().setOffline(false);
   }
+  await message(page).getByRole('button', { name: 'Другие реакции' }).click();
   await choice(page, 'question').click();
   await expect(badge(page, 'question')).toHaveAttribute('aria-pressed', 'true');
   expect(

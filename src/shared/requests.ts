@@ -1,4 +1,5 @@
 import type { DesktopRequest } from './desktop';
+import { REACTION_KINDS } from './client';
 import { expectedValid, timerRowsValid } from './time';
 import { preferenceTabs, preferencesPatchValid } from './preferences';
 import { releaseVersionValid } from './updates';
@@ -204,6 +205,8 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       );
     case 'chat.delete':
       return only('chatId', 'messageId') && id(r.chatId) && id(r.messageId);
+    case 'chat.top':
+      return only('chatId', 'top') && id(r.chatId) && typeof r.top === 'boolean';
     case 'chat.pin':
       return (
         only('chatId', 'messageId') && id(r.chatId) && (r.messageId === null || id(r.messageId))
@@ -214,7 +217,7 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
         id(r.chatId) &&
         id(r.messageId) &&
         typeof r.reaction === 'string' &&
-        ['like', 'done', 'look', 'heart', 'laugh', 'question'].includes(r.reaction) &&
+        REACTION_KINDS.some((kind) => kind === r.reaction) &&
         typeof r.remove === 'boolean'
       );
     case 'file.pick':

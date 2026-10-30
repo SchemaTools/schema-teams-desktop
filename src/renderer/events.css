@@ -18,6 +18,41 @@
   --event-accent: #176975;
   --event-soft: #dff2f4;
 }
+.event-issued {
+  --event-accent: #247a51;
+  --event-soft: #e1f3e8;
+}
+.event-closed {
+  --event-accent: #176975;
+  --event-soft: #dff2f4;
+}
+html[data-theme='dark'] .event-issued {
+  --event-accent: #91d6af;
+  --event-soft: #203b30;
+}
+html[data-theme='dark'] .event-closed {
+  --event-accent: #8fd6df;
+  --event-soft: #183a40;
+}
+.event-issued[data-celebration] .event-icon {
+  animation: issued-celebration 700ms ease-out;
+}
+@keyframes issued-celebration {
+  0% {
+    transform: scale(0.75) rotate(-12deg);
+  }
+  60% {
+    transform: scale(1.16) rotate(6deg);
+  }
+  100% {
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .event-issued[data-celebration] .event-icon {
+    animation: none;
+  }
+}
 html[data-theme='dark'] .event-timer {
   --event-accent: #8fd6df;
   --event-soft: #183a40;

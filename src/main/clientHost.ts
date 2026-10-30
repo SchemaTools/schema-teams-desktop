@@ -34,6 +34,7 @@ import { TimerAbsence } from './timer/absence';
 import { TimerReminders, isReminderTime, type ReminderTicket } from './timer/reminders';
 import { elapsedAt, timerClock, matchesTimer, timerExpected, utcInstant } from '../shared/time';
 import { notificationAllowed } from './api/notificationPrefs';
+import { LiveNoticeGate } from './notifications/liveGate';
 import { RealtimeClient, type RealtimeEvent } from './realtime/connection';
 import { CLIENT_FILE, CLIENT_URL, PARTITION, guardLocal, type MainWindow } from './mainWindow';
 import { LoginWindow } from './loginWindow';
@@ -116,6 +117,7 @@ export class ClientHost {
     { at: number; messages: Set<number>; last: ChatMessage }
   >();
   private readonly readThrough = new Map<number, number>();
+  private readonly liveNotices = new LiveNoticeGate();
   private trayWindow?: BrowserWindow;
   private readonly peers = new Map<number, string>();
   private readonly pending = new Map<number, number>();
@@ -430,6 +432,10 @@ export class ClientHost {
           )[0]?.value ?? null,
         onEvent: (name, data) => this.event(name, data),
         onStatus: (online) => {
+          this.liveNotices.reconnect();
+          // Socket delivery is already live. Seed from the last accepted history now,
+          // so a genuinely new push during the refresh is not mistaken for history.
+          if (online) this.liveNotices.prime(this.state.chats, this.state.notifications);
           this.socketOnline = online;
           if (!this.state.user || this.state.user.id !== this.api.owner) return;
           this.state.connection = online ? 'online' : 'offline';
@@ -502,6 +508,8 @@ export class ClientHost {
     this.toasts.clear();
     this.counts.clear();
     this.readThrough.clear();
+    this.liveNotices.reset();
+    this.state.albumCelebration = null;
     this.activeChat = null;
     this.state = {
       ...this.state,
@@ -537,6 +545,8 @@ export class ClientHost {
     this.noticePending.clear();
     this.counts.clear();
     this.readThrough.clear();
+    this.liveNotices.reset();
+    this.state.albumCelebration = null;
     this.report.clear();
     this.reminders.reset();
     this.reminderId = null;
@@ -642,6 +652,8 @@ export class ClientHost {
       this.uploads.reset();
       this.counts.clear();
       this.readThrough.clear();
+      this.liveNotices.reset();
+      this.state.albumCelebration = null;
     }
     this.state.user = user.data;
     this.state.recentTimeTaskIds =
@@ -721,6 +733,8 @@ export class ClientHost {
         this.state.notifications = notifications.data.items;
         this.state.notificationUnread = notifications.data.unread;
       }
+      if (chats.ok && notifications.ok)
+        this.liveNotices.prime(chats.data.items, notifications.data.items, true);
       if (focus.ok) this.updateFocus(focus.data);
       const bad = [chats, notifications, focus].find((r) => !r.ok);
       this.state.error = bad && !bad.ok ? bad.error : null;
@@ -1284,15 +1298,27 @@ export class ClientHost {
     }
     if (name === 'chat:message') {
       try {
-        this.messageNotice(parse.message(data));
+        const message = parse.messageEvent(data);
+        const fresh = this.liveNotices.message(message.chatId, message.id);
+        const quietSupported = (this.api.desktopConfiguration?.capabilities.chatQuiet ?? 0) >= 1;
+        if (fresh && message.quiet !== true && (!quietSupported || message.quiet === false))
+          this.messageNotice(message);
       } catch {
         this.o.log.warn('неподдержанное событие чата');
       }
     }
     if (name === 'notification') {
       try {
-        const push = parse.object(data);
-        if (push.quiet === false) this.bellNotice(parse.notification(push.item));
+        const raw = parse.object(data);
+        const modern = raw.kind !== undefined || raw.notificationId !== undefined;
+        const push = modern ? parse.notificationPush(raw) : null;
+        const item = push?.item ?? parse.notification(raw.item);
+        if (this.liveNotices.notification(item.id) && raw.quiet === false) {
+          if (push?.kind === 'album_issued') {
+            this.state.albumCelebration = { notificationId: push.notificationId, at: Date.now() };
+          }
+          this.bellNotice(item);
+        }
       } catch {
         this.o.log.warn('неподдержанное уведомление');
       }
@@ -1337,8 +1363,12 @@ export class ClientHost {
     if (messages.has(message.id)) return;
     messages.add(message.id);
     const count = messages.size;
-    this.counts.set(message.chatId, { at: Date.now(), messages, last: message });
-    this.displayMessageNotice(message, count);
+    const last =
+      previous && messages.has(previous.last.id) && previous.last.id > message.id
+        ? previous.last
+        : message;
+    this.counts.set(message.chatId, { at: Date.now(), messages, last });
+    this.displayMessageNotice(last, count);
   }
   private displayMessageNotice(message: ChatMessage, count: number): void {
     const owner = this.api.owner;
@@ -1392,7 +1422,11 @@ export class ClientHost {
       `notification:${item.id}`,
       item.event === 'timer_stopped'
         ? 'Вчерашний таймер остановлен в полночь'
-        : (item.subject ?? item.task?.title ?? 'Schema Teams'),
+        : item.event === 'album_issued'
+          ? 'Альбом выдан'
+          : item.event === 'remarks_closed'
+            ? 'Все замечания закрыты'
+            : (item.subject ?? item.task?.title ?? 'Schema Teams'),
       item.reason ??
         item.changes.map((c) => `${c.field}: ${c.from ?? '—'} → ${c.to ?? '—'}`).join('\n'),
       {
@@ -1497,13 +1531,18 @@ export class ClientHost {
   private async beforeNotice(spec: ToastSpec): Promise<boolean> {
     const n = this.notices.get(spec);
     if (!n || !this.current(n)) return false;
-    if (n.ordinary) {
+    if (n.ordinary || n.mention) {
       const epoch = this.api.epoch;
       if (!this.preferencesFlight || this.preferencesEpoch !== epoch) {
         this.preferencesEpoch = epoch;
         const flight = this.api
           .notificationSettings()
-          .then((r) => epoch === this.api.epoch && r.ok && notificationAllowed(r.data))
+          .then(
+            (r) =>
+              epoch === this.api.epoch &&
+              r.ok &&
+              notificationAllowed(r.data, Date.now(), this.state.bureau?.timeZone ?? null),
+          )
           .finally(() => {
             if (this.preferencesFlight === flight) this.preferencesFlight = undefined;
           });
@@ -1903,6 +1942,13 @@ export class ClientHost {
       }
       case 'chat.pin': {
         const result = await this.api.pin(r.chatId, r.messageId);
+        if (result.ok) this.scheduleRefresh();
+        return result;
+      }
+      case 'chat.top': {
+        if (typeof this.state.chats.find((chat) => chat.id === r.chatId)?.top !== 'boolean')
+          return failure('unsupported');
+        const result = await this.api.top(r.chatId, r.top);
         if (result.ok) this.scheduleRefresh();
         return result;
       }

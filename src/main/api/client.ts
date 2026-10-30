@@ -6,6 +6,7 @@ import type {
   ChatList,
   ChatMessage,
   ChatReaction,
+  ChatSummary,
   FocusState,
   FocusSummary,
   Health,
@@ -16,6 +17,7 @@ import type {
   SafeUser,
   ObjectInfo,
 } from '../../shared/client';
+import { REACTION_KINDS } from '../../shared/client';
 import * as parse from './parse';
 import * as time from './time';
 import { desktopRelease } from './updates';
@@ -54,12 +56,13 @@ interface UploadBody {
   fileName: string;
   mime: string;
 }
-const REACTIONS = new Set(['like', 'done', 'look', 'heart', 'laugh', 'question']);
+const REACTIONS = new Set<string>(REACTION_KINDS);
 const DEADLINE = 15000;
 const BODY_LIMIT = 2 * 1024 * 1024;
 export const FILE_LIMIT = 50 * 1024 * 1024;
 const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const ERROR_TEXT: Record<string, string> = {
+  top_limit: 'Закрепить можно не больше 5 чатов.',
   network: 'Нет связи с сервером. Повторите действие после восстановления связи.',
   timeout: 'Сервер не подтвердил действие вовремя.',
   invalid_data: 'Сервер вернул неподдерживаемые данные.',
@@ -661,6 +664,20 @@ export class TeamsApi {
       remove ? 'DELETE' : 'POST',
       parse.reactions,
       remove ? undefined : { kind },
+    );
+  }
+  top(chatId: number, top: boolean): Promise<ApiResult<ChatSummary>> {
+    if (!this.validId(chatId) || typeof top !== 'boolean')
+      return Promise.resolve(failure('validation'));
+    return this.request(
+      `/api/chats/${chatId}/top`,
+      'PUT',
+      (raw) => {
+        const value = parse.summary(raw);
+        if (value.id !== chatId || value.top !== top) throw new parse.InvalidData();
+        return value;
+      },
+      { top },
     );
   }
   read(chatId: number, upTo: number): Promise<ApiResult<null>> {

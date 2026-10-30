@@ -1,6 +1,21 @@
 .message-with-reactions {
   position: relative;
 }
+.message-row:has(.message-quick-reactions) {
+  position: relative;
+}
+.message-row:has(.message-quick-reactions):hover,
+.message-row:has(.message-quick-reactions):focus-within {
+  z-index: 4;
+}
+.message-row:has(.message-quick-reactions.expanded) {
+  z-index: 5;
+}
+.message-quick-reactions.expanded {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
 .message-quick-reactions {
   position: absolute;
   z-index: 3;
@@ -11,6 +26,8 @@
   align-items: center;
   gap: 2px;
   width: max-content;
+  max-width: 310px;
+  flex-wrap: wrap;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: 24px;
@@ -26,6 +43,10 @@
 .message-row:not(.outgoing) .message-quick-reactions {
   right: auto;
   left: 0;
+}
+.message-quick-reactions.below-message {
+  top: calc(100% + 6px);
+  bottom: auto;
 }
 .message-row:hover .message-quick-reactions,
 .message-row:focus-within .message-quick-reactions {
@@ -43,6 +64,10 @@
   border-radius: 50%;
   background: transparent;
   cursor: pointer;
+}
+.reaction-more {
+  color: var(--body);
+  font-size: 11px;
 }
 .reaction-choice:hover:not(:disabled),
 .reaction-choice:focus-visible {

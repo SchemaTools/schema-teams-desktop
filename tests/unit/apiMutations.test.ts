@@ -445,7 +445,7 @@ describe('TeamsApi: поставить/снять реакцию', () => {
   });
   it('проверяет известный набор, идентификаторы и режим до сети', async () => {
     const h = await setup();
-    for (const kind of ['fire', 'party', 'like/../path', 'LIKE', ''])
+    for (const kind of ['future', 'like/../path', 'LIKE', ''])
       expect(await h.api.reactions(4, 10, kind, false)).toMatchObject({
         ok: false,
         code: 'validation',

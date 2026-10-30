@@ -4,6 +4,35 @@ import { R } from './strings';
 export type Folder = 'all' | 'objects' | 'personal' | 'events';
 export type Selection = number | 'events' | null;
 
+export function chatGroups(chats: ChatSummary[]) {
+  const top = chats
+    .filter((chat) => chat.top === true)
+    .sort(
+      (a, b) =>
+        Date.parse(b.last?.at ?? '1970-01-01') - Date.parse(a.last?.at ?? '1970-01-01') ||
+        b.id - a.id,
+    );
+  const remaining = chats.filter((chat) => chat.top !== true);
+  const waiting = remaining.filter(needsReply);
+  const rest = remaining.filter((chat) => !needsReply(chat));
+  return {
+    top,
+    waiting,
+    active: rest.filter(
+      (chat) =>
+        chat.kind === 'object' && typeof chat.myActiveTasks === 'number' && chat.myActiveTasks > 0,
+    ),
+    other: rest.filter(
+      (chat) =>
+        !(
+          chat.kind === 'object' &&
+          typeof chat.myActiveTasks === 'number' &&
+          chat.myActiveTasks > 0
+        ),
+    ),
+  };
+}
+
 export function chatTitle(chat: ChatSummary): string {
   return chat.title || chat.peer?.shortName || R.chat;
 }

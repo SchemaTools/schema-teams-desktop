@@ -45,6 +45,9 @@ export interface ChatSummary {
   unread: number;
   mentioned: boolean;
   photoFileId: number | null;
+  /** Absent/null on older servers; never infer zero/false. */
+  myActiveTasks?: number | null;
+  top?: boolean | null;
 }
 export interface ChatList {
   items: ChatSummary[];
@@ -65,6 +68,24 @@ export interface FilePickResult {
 export interface ChatReaction {
   kind: string;
   users: PersonRef[];
+}
+export const REACTION_KINDS = [
+  'like',
+  'done',
+  'look',
+  'heart',
+  'laugh',
+  'question',
+  'fire',
+  'party',
+] as const;
+export type ReactionKind = (typeof REACTION_KINDS)[number];
+export type ChatMessageEvent = ChatMessage & { quiet: boolean | null };
+export interface NotificationPush {
+  item: NotificationItem;
+  kind: string;
+  quiet: boolean;
+  notificationId: number;
 }
 export interface ChatPoll {
   id: number;

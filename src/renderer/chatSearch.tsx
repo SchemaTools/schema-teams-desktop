@@ -1,4 +1,4 @@
-import { MagnifyingGlass, X } from '@phosphor-icons/react';
+import { Search, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatMessage } from '../shared/client';
 import { request } from './bridge';
@@ -67,7 +67,7 @@ export function ChatSearch({
         disabled={!online}
         onClick={() => (open ? close() : setOpen(true))}
       >
-        <MagnifyingGlass size={20} />
+        <Search size={20} />
       </button>
       {open && (
         <section className="chat-search-panel" aria-label="Поиск сообщений">

@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChatReaction } from '../shared/client';
+import { REACTION_KINDS, type ReactionKind } from '../shared/client';
 import { request } from './bridge';
 import { reactionAssets } from './reactionAssets';
 import { ReactionText } from './reactionStrings';
 import './reactions.css';
 
-const KINDS = ['like', 'heart', 'done', 'look', 'laugh', 'question'] as const;
-type Kind = (typeof KINDS)[number];
+const QUICK_KINDS = ['like', 'heart', 'fire', 'done', 'look', 'party'] as const;
+type Kind = ReactionKind;
 interface Confirmed {
   identity: string;
   source: ChatReaction[];
@@ -38,11 +39,35 @@ export function MessageReactions({
   onChange,
 }: Props) {
   const identity = `${epoch}:${chatId}:${messageId}:${ownId}`;
+  const root = useRef<HTMLDivElement>(null);
+  const [below, setBelow] = useState(false);
+  const [panelTop, setPanelTop] = useState<number | null>(null);
   const current = useRef(identity);
   current.current = identity;
   const mounted = useRef(true);
   const flight = useRef<{ identity: string; kind: Kind }>();
   const [confirmed, setConfirmed] = useState<Confirmed>();
+  const [more, setMore] = useState<string>();
+  useEffect(() => {
+    if (more !== identity) return;
+    const outside = (event: Event) => {
+      if (event.target instanceof Node && !root.current?.contains(event.target)) setMore(undefined);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMore(undefined);
+        root.current?.querySelector<HTMLButtonElement>('.reaction-more')?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('focusin', outside);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('focusin', outside);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [identity, more]);
   const [pending, setPending] = useState<{ identity: string; kind: Kind }>();
   const [burst, setBurst] = useState<{ identity: string; kind: Kind; key: number }>();
   const [error, setError] = useState<{ identity: string; text: string }>();
@@ -51,6 +76,39 @@ export function MessageReactions({
       ? confirmed.reactions
       : reactions;
   const busy = pending?.identity === identity;
+  useLayoutEffect(() => {
+    const row = root.current?.closest('.message-row');
+    const panel = root.current?.querySelector<HTMLElement>('.message-quick-reactions');
+    const bubble = root.current?.closest('.message-bubble');
+    const viewport = root.current?.closest('.messages-scroll');
+    if (!row || !panel || !bubble || !viewport) return;
+    const place = () => {
+      const anchor = bubble.getBoundingClientRect(),
+        view = viewport.getBoundingClientRect(),
+        height = panel.offsetHeight;
+      const needsBelow = anchor.top - height - 6 < view.top;
+      setBelow(needsBelow);
+      setPanelTop(
+        needsBelow && anchor.bottom + height + 6 > view.bottom
+          ? Math.max(view.top + 4, view.bottom - height - 4) - anchor.top
+          : null,
+      );
+    };
+    row.addEventListener('pointerenter', place);
+    row.addEventListener('pointermove', place);
+    row.addEventListener('focusin', place);
+    const observer = new ResizeObserver(place);
+    observer.observe(panel);
+    observer.observe(bubble);
+    observer.observe(viewport);
+    place();
+    return () => {
+      row.removeEventListener('pointerenter', place);
+      row.removeEventListener('pointermove', place);
+      row.removeEventListener('focusin', place);
+      observer.disconnect();
+    };
+  }, [identity, enabled]);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -89,10 +147,18 @@ export function MessageReactions({
   };
 
   return (
-    <div className="message-reactions" data-message-reactions={messageId}>
+    <div ref={root} className="message-reactions" data-message-reactions={messageId}>
       {enabled && (
-        <div className="message-quick-reactions" role="group" aria-label={ReactionText.quick}>
-          {KINDS.map((kind) => {
+        <div
+          className={`message-quick-reactions${below ? ' below-message' : ''}${more === identity ? ' expanded' : ''}`}
+          style={panelTop === null ? undefined : { top: panelTop, bottom: 'auto' }}
+          role="group"
+          aria-label={ReactionText.quick}
+        >
+          {(more === identity
+            ? [...QUICK_KINDS, 'laugh' as const, 'question' as const]
+            : QUICK_KINDS
+          ).map((kind) => {
             const active = mine(values, kind, ownId);
             const name = ReactionText.names[kind];
             return (
@@ -111,10 +177,19 @@ export function MessageReactions({
               </button>
             );
           })}
+          <button
+            type="button"
+            className="reaction-choice reaction-more"
+            aria-label="Другие реакции"
+            aria-expanded={more === identity}
+            onClick={() => setMore(more === identity ? undefined : identity)}
+          >
+            Ещё
+          </button>
         </div>
       )}
       <div className="message-reaction-badges" role="group" aria-label={ReactionText.label}>
-        {KINDS.map((kind) => {
+        {REACTION_KINDS.map((kind) => {
           const reaction = values.find((r) => r.kind === kind);
           if (!reaction?.users.length) return null;
           const active = mine(values, kind, ownId);
@@ -134,14 +209,16 @@ export function MessageReactions({
               onClick={() => void toggle(kind)}
             >
               <img
-                key={animated ? burst.key : 'still'}
+                key={animated ? `image-${burst.key}` : 'still'}
                 className={animated ? 'reaction-pulse' : undefined}
                 src={reactionAssets[kind]}
                 alt=""
                 draggable={false}
               />
               <span>{reaction.users.length}</span>
-              {animated && <span key={burst.key} className="reaction-ring" aria-hidden="true" />}
+              {animated && (
+                <span key={`ring-${burst.key}`} className="reaction-ring" aria-hidden="true" />
+              )}
             </button>
           );
         })}

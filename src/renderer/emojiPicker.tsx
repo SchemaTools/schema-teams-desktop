@@ -1,4 +1,4 @@
-import { Smiley } from '@phosphor-icons/react';
+import { Smile } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { reactionAssets } from './reactionAssets';
 const choices = [
@@ -42,7 +42,7 @@ export function EmojiPicker({
         disabled={disabled}
         onClick={() => setOpen(!open)}
       >
-        <Smiley size={21} />
+        <Smile size={21} />
       </button>
       {open && !disabled && (
         <div className="emoji-picker-panel" role="group" aria-label="Выбрать эмодзи">

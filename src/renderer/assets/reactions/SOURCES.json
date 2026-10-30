@@ -34,5 +34,17 @@
     "repository": "https://github.com/microsoft/fluentui-emoji",
     "path": "assets/Red question mark/3D/red_question_mark_3d.png",
     "gitBlobSha": "0ac084c4e2bea9bbb2b018f9d1c6138b87216f8c"
+  },
+  {
+    "gitBlobSha": "e713ad8c92a6b1c8c24322a0af27b3658ac09fbf",
+    "file": "fire.png",
+    "path": "assets/Fire/3D/fire_3d.png",
+    "repository": "https://github.com/microsoft/fluentui-emoji"
+  },
+  {
+    "gitBlobSha": "4ec55237a377b8e53b4190d3edb7b23d7e42fc9f",
+    "file": "party.png",
+    "path": "assets/Party popper/3D/party_popper_3d.png",
+    "repository": "https://github.com/microsoft/fluentui-emoji"
   }
 ]

@@ -9,6 +9,8 @@ export const ReactionText = {
     heart: 'Сердце',
     laugh: 'Смешно',
     question: 'Вопрос',
+    fire: 'Огонь',
+    party: 'Поздравляю',
   },
   add: (name: string) => `Поставить реакцию «${name}»`,
   remove: (name: string) => `Снять реакцию «${name}»`,

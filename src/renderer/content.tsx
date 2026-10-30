@@ -1,4 +1,4 @@
-import { ArrowSquareOut, Check, Checks, File, FolderOpen } from '@phosphor-icons/react';
+import { ExternalLink, Check, CheckCheck, File, FolderOpen } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatFile, ChatMessage, ChatReaction } from '../shared/client';
 import { request } from './bridge';
@@ -83,7 +83,7 @@ function MessageText({
             <div key={index}>
               {prefix}
               <div className="path-card" aria-label={R.path}>
-                <FolderOpen size={18} weight="duotone" />
+                <FolderOpen size={18} />
                 <code>{path}</code>
                 <button type="button" onClick={() => void pathAction(path)}>
                   {R.reveal}
@@ -324,7 +324,7 @@ function Attachment({
         </button>
       )}
       <div className="attachment-meta">
-        <File size={20} weight="duotone" aria-hidden="true" />
+        <File size={20} aria-hidden="true" />
         <span>
           {file.fileName}
           <small>
@@ -456,7 +456,7 @@ export function MessageBubble({
             {R.richMessage}
             <br />
             <button type="button" onClick={() => void openWeb()}>
-              <ArrowSquareOut size={14} weight="duotone" />
+              <ExternalLink size={14} />
               {R.openMessageWeb}
             </button>
           </div>
@@ -491,7 +491,7 @@ export function MessageBubble({
           <time dateTime={message.at}>{timeLabel(message.at)}</time>
           {own &&
             (read ? (
-              <Checks size={15} aria-label={R.read} />
+              <CheckCheck size={15} aria-label={R.read} />
             ) : (
               <Check size={15} aria-label={R.sent} />
             ))}

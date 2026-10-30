@@ -168,6 +168,30 @@
 .chat-row-wrap {
   position: relative;
 }
+.chat-top-action {
+  position: absolute;
+  z-index: 1;
+  right: 12px;
+  bottom: 5px;
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--incoming);
+  color: var(--accent-text);
+  opacity: 0;
+}
+.chat-row-wrap:hover .chat-top-action,
+.chat-row-wrap:focus-within .chat-top-action,
+.chat-top-action.is-top {
+  opacity: 1;
+}
+.chat-top-action:disabled {
+  color: var(--muted);
+}
 .chat-read-action {
   position: absolute;
   right: 12px;

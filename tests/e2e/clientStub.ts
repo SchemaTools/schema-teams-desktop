@@ -33,6 +33,10 @@ export interface FixtureCall {
   bytes?: number;
 }
 export interface FixtureState {
+  extraChats: ChatSummary[];
+  legacyChatFields: boolean;
+  chatTopStatus: number | null;
+  chatTopDelayMs: number;
   loginUserId: 1 | 2;
   healthOnline: boolean;
   healthVersion: string;
@@ -132,6 +136,10 @@ export const fixtureMessage = (
 export async function startClientStub() {
   const files = new Map<number, { bytes: Buffer; mime: string; status?: number }>();
   const state: FixtureState = {
+    extraChats: [],
+    legacyChatFields: false,
+    chatTopStatus: null,
+    chatTopDelayMs: 0,
     loginUserId: 1,
     healthOnline: true,
     healthVersion: '0.11.2',
@@ -199,7 +207,7 @@ export async function startClientStub() {
   const events: NotificationItem[] = [
     {
       id: 71,
-      event: 'album_assigned',
+      event: 'assigned',
       at: new Date().toISOString(),
       read: false,
       author: { id: 2, shortName: names[2] ?? '', photoFileId: null },
@@ -223,6 +231,7 @@ export async function startClientStub() {
     return token ? (sessions.get(token) ?? null) : null;
   };
   const chatOf = (user: number) => (user === 1 ? 4 : 8);
+  const tops = new Map<number, Set<number>>();
   const summary = (chatId: number, user: number): ChatSummary => {
     const last = conversations.get(chatId)?.at(-1) ?? null;
     const isObject = state.objectChat && chatId === 4;
@@ -249,6 +258,10 @@ export async function startClientStub() {
       unread: unread.get(chatId) ?? 0,
       mentioned: false,
       photoFileId: null,
+      ...(!state.legacyChatFields && {
+        top: tops.get(user)?.has(chatId) ?? false,
+        myActiveTasks: isObject ? 1 : 0,
+      }),
     };
   };
   const server = createServer((req, res) => {
@@ -643,9 +656,46 @@ export async function startClientStub() {
     }
     if (path === '/api/chats') {
       json(res, 200, {
-        items: [summary(chatOf(user), user)],
+        items: [
+          summary(chatOf(user), user),
+          ...state.extraChats.map((chat) => ({
+            ...chat,
+            ...(!state.legacyChatFields && { top: tops.get(user)?.has(chat.id) ?? false }),
+          })),
+        ],
         unreadTotal: unread.get(chatOf(user)) ?? 0,
       });
+      return;
+    }
+    const topRoute = /^\/api\/chats\/(\d+)\/top$/.exec(path);
+    if (topRoute && method === 'PUT') {
+      const id = Number(topRoute[1]);
+      const target =
+        id === chatOf(user) ? summary(id, user) : state.extraChats.find((chat) => chat.id === id);
+      if (!target || state.legacyChatFields) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      if (state.chatTopDelayMs)
+        await new Promise<void>((resolve) => setTimeout(resolve, state.chatTopDelayMs));
+      if (state.chatTopStatus) {
+        denied(res, 'forbidden', state.chatTopStatus);
+        return;
+      }
+      if (typeof body?.top !== 'boolean') {
+        denied(res, 'validation', 400);
+        return;
+      }
+      const own = tops.get(user) ?? new Set<number>();
+      if (body.top && !own.has(id) && own.size >= 5) {
+        denied(res, 'top_limit', 409);
+        return;
+      }
+      if (body.top) own.add(id);
+      else own.delete(id);
+      tops.set(user, own);
+      io.to(`user:${user}`).emit('chat:list');
+      json(res, 200, { ...target, top: body.top });
       return;
     }
     const upload = /^\/api\/chats\/(\d+)\/files$/.exec(path);
@@ -713,7 +763,7 @@ export async function startClientStub() {
       const kind = method === 'POST' ? body?.kind : reaction[3];
       if (
         typeof kind !== 'string' ||
-        !['like', 'heart', 'done', 'look', 'laugh', 'question'].includes(kind)
+        !['like', 'heart', 'done', 'look', 'laugh', 'question', 'fire', 'party'].includes(kind)
       ) {
         denied(res, 'validation', 400);
         return;
@@ -987,9 +1037,11 @@ export async function startClientStub() {
       const message = fixtureMessage(nextId++, chatId, text, chatId === 4 ? 2 : 1);
       conversations.get(chatId)?.push(message);
       unread.set(chatId, (unread.get(chatId) ?? 0) + 1);
-      if (emit) io.to(`user:${chatId === 4 ? 1 : 2}`).emit('chat:message', message);
+      if (emit)
+        io.to(`user:${chatId === 4 ? 1 : 2}`).emit('chat:message', { ...message, quiet: false });
       return message;
     },
+    emit: (name: string, data: unknown, userId = 1) => io.to(`user:${userId}`).emit(name, data),
     disconnect: () => io.disconnectSockets(true),
     pushTimer: (timer: WorkTimer | null, userId = 1) => {
       state.timers[userId] = timer;

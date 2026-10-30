@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Camera, ChatCircleDots, X } from '@phosphor-icons/react';
+import { Camera, MessageCircleMore, X } from 'lucide-react';
 import type { ClientSnapshot } from '../shared/desktop';
 import type { ReportCapture, ReportExport, ReportPreview, ReportScreen } from '../shared/report';
 import { request } from './bridge';
@@ -151,7 +151,7 @@ export function ReportPanel({
         aria-labelledby="report-title"
       >
         <header>
-          <ChatCircleDots size={24} weight="duotone" />
+          <MessageCircleMore size={24} />
           <h2 id="report-title">Сообщить о проблеме</h2>
           <button
             className="icon-button"

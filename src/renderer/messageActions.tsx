@@ -1,4 +1,4 @@
-import { ArrowBendUpLeft, PencilSimple, PushPin, Trash, X } from '@phosphor-icons/react';
+import { Reply, Pencil, Pin, Trash, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ChatMessage } from '../shared/client';
 import { request } from './bridge';
@@ -87,7 +87,7 @@ export function MessageActions({
           aria-label="Ответить с цитатой"
           onClick={onReply}
         >
-          <ArrowBendUpLeft size={17} />
+          <Reply size={17} />
         </button>
         {editable && (
           <>
@@ -102,7 +102,7 @@ export function MessageActions({
                 setMode('edit');
               }}
             >
-              <PencilSimple size={17} />
+              <Pencil size={17} />
             </button>
             <button
               type="button"
@@ -126,7 +126,7 @@ export function MessageActions({
             aria-label={pinned ? 'Открепить сообщение' : 'Закрепить сообщение'}
             onClick={() => void mutate('pin')}
           >
-            <PushPin size={17} weight={pinned ? 'fill' : 'regular'} />
+            <Pin size={17} />
           </button>
         )}
       </div>
