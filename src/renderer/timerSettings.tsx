@@ -14,6 +14,8 @@ export function TimerSettings({
 }) {
   const saved = snapshot.timerReminderTime ?? '18:30';
   const [time, setTime] = useState(saved),
+    [pauseOnLock, setPauseOnLock] = useState(snapshot.timerPauseOnLock !== false),
+    [askOnUnlock, setAskOnUnlock] = useState(snapshot.timerAskOnUnlock !== false),
     [pending, setPending] = useState(false),
     [feedback, setFeedback] = useState('');
   const mounted = useRef(true),
@@ -27,7 +29,13 @@ export function TimerSettings({
   useEffect(() => {
     setTime(saved);
   }, [saved]);
-  async function save() {
+  useEffect(() => {
+    setPauseOnLock(snapshot.timerPauseOnLock !== false);
+  }, [snapshot.timerPauseOnLock]);
+  useEffect(() => {
+    setAskOnUnlock(snapshot.timerAskOnUnlock !== false);
+  }, [snapshot.timerAskOnUnlock]);
+  async function save(patch: { pauseOnLock?: boolean; askOnUnlock?: boolean } = {}) {
     if (flight.current) return;
     flight.current = true;
     setPending(true);
@@ -36,11 +44,22 @@ export function TimerSettings({
       kind: 'timer.preferences',
       epoch: snapshot.epoch,
       reminderTime: time,
+      ...patch,
     });
     if (!mounted.current) return;
     flight.current = false;
     setPending(false);
-    setFeedback(result.ok ? 'Время напоминания сохранено на этом компьютере.' : result.error);
+    if (!result.ok) {
+      setPauseOnLock(snapshot.timerPauseOnLock !== false);
+      setAskOnUnlock(snapshot.timerAskOnUnlock !== false);
+    }
+    setFeedback(
+      result.ok
+        ? patch.pauseOnLock !== undefined || patch.askOnUnlock !== undefined
+          ? 'Настройки учёта времени сохранены на этом компьютере.'
+          : 'Время напоминания сохранено на этом компьютере.'
+        : result.error,
+    );
   }
   return (
     <details className="timer-settings" open={expanded || undefined}>
@@ -84,19 +103,30 @@ export function TimerSettings({
         <label className="timer-unsupported">
           <input
             type="checkbox"
-            checked={snapshot.timerControl === true && snapshot.timerPauseOnLock !== false}
-            disabled
-            readOnly
+            checked={snapshot.timerControl === true && pauseOnLock}
+            disabled={pending || !snapshot.timerControl}
+            onChange={(event) => {
+              setPauseOnLock(event.target.checked);
+              void save({ pauseOnLock: event.target.checked });
+            }}
           />
           Пауза при блокировке компьютера
         </label>
         <label className="timer-unsupported">
-          <input type="checkbox" checked={false} disabled readOnly />
+          <input
+            type="checkbox"
+            checked={snapshot.timerControl === true && askOnUnlock}
+            disabled={pending || !snapshot.timerControl}
+            onChange={(event) => {
+              setAskOnUnlock(event.target.checked);
+              void save({ askOnUnlock: event.target.checked });
+            }}
+          />
           Спросить «Продолжить?» после разблокировки
         </label>
         <p>
           {snapshot.timerControl
-            ? 'При блокировке и сне приложение отправляет безопасную паузу по снимку таймера и времени сервера. Автоматического продолжения нет. Если пауза не подтверждена, проверьте время отсутствия.'
+            ? 'Команда паузы сохраняется до отправки. После подтверждённой паузы и свежей проверки приложение предлагает продолжить или закончить работу. Автоматического продолжения нет.'
             : 'Без подтверждённого договора сервера приложение показывает предупреждение о времени отсутствия.'}
         </p>
       </div>

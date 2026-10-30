@@ -106,7 +106,9 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       return only('id') && id(r.id);
     case 'timer.preferences':
       return (
-        only('reminderTime') &&
+        only('reminderTime', 'pauseOnLock', 'askOnUnlock') &&
+        (r.pauseOnLock === undefined || typeof r.pauseOnLock === 'boolean') &&
+        (r.askOnUnlock === undefined || typeof r.askOnUnlock === 'boolean') &&
         typeof r.reminderTime === 'string' &&
         r.reminderTime.length === 5 &&
         /^([01]\d|2[0-3]):(00|30)$/.test(r.reminderTime)

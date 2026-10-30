@@ -15,7 +15,14 @@ import {
   type Tray,
 } from 'electron';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
+import {
+  PauseOutbox,
+  type PauseScope,
+  type PauseEnvelope,
+  type PauseEvent,
+} from './timer/pauseOutbox';
+import { PauseReturns, type PauseReturn } from './timer/pauseReturns';
 import type { ApiResult, ChatMessage, NotificationItem, FocusState } from '../shared/client';
 import type { ClientSnapshot, DesktopRequest } from '../shared/desktop';
 import { requestValid } from '../shared/requests';
@@ -25,7 +32,7 @@ import { workTimer, controlledTimer } from './api/time';
 import type { WorkTimer } from '../shared/time';
 import { TimerAbsence } from './timer/absence';
 import { TimerReminders, isReminderTime, type ReminderTicket } from './timer/reminders';
-import { elapsedAt, timerClock, matchesTimer } from '../shared/time';
+import { elapsedAt, timerClock, matchesTimer, timerExpected, utcInstant } from '../shared/time';
 import { notificationAllowed } from './api/notificationPrefs';
 import { RealtimeClient, type RealtimeEvent } from './realtime/connection';
 import { CLIENT_FILE, CLIENT_URL, PARTITION, guardLocal, type MainWindow } from './mainWindow';
@@ -54,6 +61,7 @@ import { RevitInventoryService } from './desktop/revitInventory';
 import { ReportService, type ReportBackend } from './diagnostics/service';
 
 interface Options {
+  pausePersistence?: { outbox: PauseOutbox; returns: PauseReturns };
   main: MainWindow;
   server: URL | null;
   settings: SettingsStore;
@@ -71,6 +79,7 @@ interface Options {
   report?: Omit<ReportBackend, 'metadata'>;
 }
 interface Notice {
+  recovery?: PauseReturn;
   reminder?: ReminderTicket;
   timerStopped?: boolean;
   epoch: number;
@@ -138,12 +147,21 @@ export class ClientHost {
   private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
-  private pausePending?: {
-    epoch: number;
-    expected: import('../shared/time').TimerExpected;
-    at: string;
-    key: string;
-  };
+  private readonly pauseOutbox: PauseOutbox;
+  private readonly pauseReturns: PauseReturns;
+  private readonly serverScopeHash: string;
+  private serverClock: { ms: number; observedAt: number } | null = null;
+  private configEpoch = -1;
+  private timerEpoch = -1;
+  private storageWarning = false;
+  private returnedAt: string | null = null;
+  private returnedKind: 'unlock' | 'wake' | null = null;
+  private queryCandidate?: { scope: PauseScope; key: string };
+  private readonly pauseAttempts = new Map<string, { count: number; nextAt: number }>();
+  private readonly recoveryNotices = new Set<string>();
+  private readonly sessionQuery = () => this.captureShutdownQuery();
+  private readonly sessionEnded = () => this.finalizeShutdownQuery();
+  private readonly mainActive = () => this.cancelShutdownQuery();
   private pauseFlight = false;
   private noticePending = new Set<number>();
   private readonly themeChanged = () => this.publish();
@@ -155,18 +173,20 @@ export class ClientHost {
   };
   private readonly unlock = () => {
     this.locked = false;
+    this.recordReturnTime('unlock');
     this.absence.return('unlock', this.state);
     this.publish();
     this.scheduleRefresh();
   };
   private readonly sleep = () => {
-    this.pauseForAbsence();
+    this.pauseForAbsence('suspend');
     this.absence.depart('suspend', this.state);
     this.suspended = true;
     this.toasts.clear();
   };
   private readonly wake = () => {
     this.suspended = false;
+    this.recordReturnTime('wake');
     this.absence.return('resume', this.state);
     this.publish();
     this.scheduleRefresh();
@@ -184,6 +204,18 @@ export class ClientHost {
     if (!this.loggingOut) void this.bootstrap();
   };
   constructor(private readonly o: Options) {
+    this.serverScopeHash = createHash('sha256')
+      .update(o.server?.origin ?? 'unconfigured')
+      .digest('hex');
+    this.pauseOutbox =
+      o.pausePersistence?.outbox ??
+      new PauseOutbox(join(app.getPath('userData'), 'timer-pause-outbox.json'), {
+        now: () => this.serverTime(),
+      });
+    this.pauseReturns =
+      o.pausePersistence?.returns ??
+      new PauseReturns(join(app.getPath('userData'), 'timer-pause-returns.json'));
+
     this.report = new ReportService({
       metadata: () => ({
         appVersion: app.getVersion(),
@@ -307,6 +339,25 @@ export class ClientHost {
       onButton: (spec, index) => {
         const n = this.notices.get(spec);
         if (!n || !this.owned(n)) return;
+        if (n.recovery) {
+          if (!this.current(n)) return;
+          const shownScope = this.pauseScope();
+          if (
+            !shownScope ||
+            !this.pauseReturns
+              .list(shownScope)
+              .some((record) => record.key === n.recovery?.key && record.delivery === 'shown')
+          )
+            return;
+          if (index === 0) void this.resumePauseReturn(n);
+          else {
+            const scope = this.pauseScope();
+            if (scope && !this.pauseReturns.dismiss(scope, n.recovery.key))
+              this.storageWarning = true;
+            this.openTimer('finish', undefined, n.recovery.expected);
+          }
+          return;
+        }
         if (n.reminder) {
           if (this.current(n) && index === 0) this.openTimer('finish');
           return;
@@ -323,6 +374,13 @@ export class ClientHost {
       onShow: (spec) => {
         const n = this.notices.get(spec);
         if (n && this.current(n)) {
+          if (n.recovery) {
+            const scope = this.pauseScope();
+            if (scope && !this.pauseReturns.shown(scope, n.recovery.key)) {
+              this.storageWarning = true;
+              this.publish();
+            }
+          }
           if (n.pendingDeviceId && n.notificationId) {
             const id = n.notificationId;
             void this.api.timerNoticeAck(n.pendingDeviceId, id).then((result) => {
@@ -347,6 +405,7 @@ export class ClientHost {
       },
       onClose: (spec) => {
         const n = this.notices.get(spec);
+        if (n?.recovery) this.recoveryNotices.delete(n.recovery.key);
         if (n?.pendingDeviceId && n.notificationId) this.noticePending.delete(n.notificationId);
       },
     });
@@ -376,7 +435,10 @@ export class ClientHost {
           this.state.connection = online ? 'online' : 'offline';
           this.publish();
           if (online) this.scheduleRefresh();
-          if (online) void this.flushAbsencePause();
+          if (!online) {
+            this.configEpoch = -1;
+            this.timerEpoch = -1;
+          }
         },
       });
     }
@@ -389,6 +451,9 @@ export class ClientHost {
     powerMonitor.on('unlock-screen', this.unlock);
     powerMonitor.on('suspend', this.sleep);
     powerMonitor.on('resume', this.wake);
+    o.main.win.on('query-session-end', this.sessionQuery);
+    o.main.win.on('session-end', this.sessionEnded);
+    o.main.win.on('focus', this.mainActive);
     o.main.win.on('show', () => {
       this.publish();
       this.scheduleRefresh();
@@ -414,7 +479,12 @@ export class ClientHost {
     void this.bootstrap();
   }
   private invalidate(): void {
-    this.pausePending = undefined;
+    this.configEpoch = -1;
+    this.timerEpoch = -1;
+    this.serverClock = null;
+    this.returnedAt = null;
+    this.returnedKind = null;
+    this.recoveryNotices.clear();
     this.noticePending.clear();
     this.report.clear();
     this.reminders.reset();
@@ -457,7 +527,13 @@ export class ClientHost {
     this.publish();
   }
   private signedOut(): void {
-    this.pausePending = undefined;
+    this.configEpoch = -1;
+    this.timerEpoch = -1;
+    this.serverClock = null;
+    this.returnedAt = null;
+    this.returnedKind = null;
+    this.returnedAt = null;
+    this.recoveryNotices.clear();
     this.noticePending.clear();
     this.counts.clear();
     this.readThrough.clear();
@@ -580,6 +656,7 @@ export class ClientHost {
     this.login?.close();
     const config = await this.api.readDesktopConfig();
     if (this.destroyed || boot !== this.boot) return;
+    this.configEpoch = config.ok ? this.api.epoch : -1;
     this.state.bureau = config.ok ? config.data.bureau : null;
     this.state.timerControl = config.ok && (config.data.capabilities.timerControl ?? 0) >= 2;
     this.retry = 0;
@@ -614,6 +691,21 @@ export class ClientHost {
     this.refreshing = true;
     const epoch = this.api.epoch;
     try {
+      if (this.configEpoch !== epoch) {
+        const auth = await this.api.authenticate();
+        if (
+          this.destroyed ||
+          epoch !== this.api.epoch ||
+          !auth.ok ||
+          auth.data.id !== this.state.user?.id
+        )
+          return;
+        const config = await this.api.readDesktopConfig();
+        if (this.destroyed || epoch !== this.api.epoch) return;
+        this.configEpoch = config.ok ? epoch : -1;
+        this.state.timerControl = config.ok && (config.data.capabilities.timerControl ?? 0) >= 2;
+        this.state.bureau = config.ok ? config.data.bureau : null;
+      }
       const [chats, notifications, focus] = await Promise.all([
         this.api.listChats(),
         this.api.notifications(),
@@ -645,7 +737,22 @@ export class ClientHost {
       }
     }
   }
+  private observeServerTime(value: unknown): void {
+    if (utcInstant(value))
+      this.serverClock = { ms: Date.parse(value), observedAt: performance.now() };
+  }
+  private serverTime(): number {
+    return this.serverClock
+      ? this.serverClock.ms + Math.max(0, performance.now() - this.serverClock.observedAt)
+      : NaN;
+  }
+  private pauseScope(): PauseScope | null {
+    return this.api.owner && this.state.user?.id === this.api.owner
+      ? { serverScopeHash: this.serverScopeHash, ownerId: this.api.owner }
+      : null;
+  }
   private acceptTimer(timer: WorkTimer | null): void {
+    if (timer) this.observeServerTime(timer.serverNow);
     this.state.timer = timer;
     this.state.timerReady = true;
     this.state.timerError = null;
@@ -653,10 +760,11 @@ export class ClientHost {
     // Refresh also reads Focus. Wait for it before considering a popup.
     if (!this.refreshing) this.checkReminder();
   }
-  private pauseForAbsence(): void {
-    const timer = this.state.timer;
+  private captureAbsence(kind: PauseEvent): PauseEnvelope | null {
+    const timer = this.state.timer,
+      scope = this.pauseScope();
     if (
-      this.pausePending ||
+      !scope ||
       !timer ||
       timer.state !== 'run' ||
       !timer.timerId ||
@@ -664,68 +772,369 @@ export class ClientHost {
       !this.state.timerControl ||
       !this.o.settings.get().timer.pauseOnLock
     )
-      return;
-    this.pausePending = {
-      epoch: this.api.epoch,
-      expected: {
-        timerId: timer.timerId,
-        revision: timer.version,
-        currentSegmentFrom: timer.segments.at(-1)?.from ?? null,
-      },
-      at: new Date(
-        Date.parse(timer.serverNow) +
-          Math.max(0, Date.now() - (this.state.timerObservedAt ?? Date.now())),
-      ).toISOString(),
-      key: randomUUID(),
-    };
-    void this.flushAbsencePause();
+      return null;
+    // A run snapshot is the calibration source. Ongoing elapsed time uses only a monotonic clock.
+    if (!this.serverClock) this.observeServerTime(timer.serverNow);
+    const now = this.serverTime();
+    if (!Number.isFinite(now)) {
+      this.storageWarning = true;
+      return null;
+    }
+    const command = this.pauseOutbox.capture(
+      scope,
+      timerExpected(timer),
+      new Date(now).toISOString(),
+      kind,
+    );
+    if (!command) this.storageWarning = true;
+    else {
+      this.returnedAt = null;
+      this.returnedKind = null;
+    }
+    return command;
+  }
+  private pauseForAbsence(kind: 'lock' | 'suspend' = 'lock'): void {
+    const command = this.captureAbsence(kind);
+    if (command) {
+      this.queryCandidate = undefined;
+      void this.flushAbsencePause();
+    }
+    this.publish();
+  }
+  private captureShutdownQuery(): void {
+    const command = this.captureAbsence('query-session-end');
+    if (command?.status === 'candidate')
+      this.queryCandidate = {
+        scope: { serverScopeHash: command.serverScopeHash, ownerId: command.ownerId },
+        key: command.key,
+      };
+    // Windows callback is synchronous persistence only: no network, no shutdown blocking.
+  }
+  private finalizeShutdownQuery(): void {
+    const candidate = this.queryCandidate;
+    if (candidate && !this.pauseOutbox.confirmSessionEnd(candidate.scope, candidate.key))
+      this.storageWarning = true;
+    this.queryCandidate = undefined;
+  }
+  private cancelShutdownQuery(): void {
+    const candidate = this.queryCandidate;
+    if (candidate && !this.pauseOutbox.cancelQuery(candidate.scope, candidate.key))
+      this.storageWarning = true;
+    this.queryCandidate = undefined;
+  }
+  private matchesCapturedPause(
+    timer: WorkTimer | null | undefined,
+    record: PauseEnvelope,
+  ): timer is WorkTimer {
+    const last = timer?.segments.at(-1);
+    return Boolean(
+      timer &&
+      timer.timerId === record.expected.timerId &&
+      timer.version === record.expected.revision + 1 &&
+      timer.state === 'pause' &&
+      timer.pauseReason === 'lock' &&
+      last?.from === record.expected.currentSegmentFrom &&
+      last?.to === record.at,
+    );
+  }
+  private confirmCapturedPause(
+    scope: PauseScope,
+    record: PauseEnvelope,
+    timer: WorkTimer,
+  ): boolean {
+    if (
+      !this.pauseReturns.put({
+        ...scope,
+        key: record.key,
+        expected: timerExpected(timer),
+        at: record.at,
+        returnedAt:
+          this.returnedAt && Date.parse(this.returnedAt) >= Date.parse(record.at)
+            ? this.returnedAt
+            : null,
+        returnKind:
+          this.returnedAt && Date.parse(this.returnedAt) >= Date.parse(record.at)
+            ? this.returnedKind
+            : null,
+        delivery: 'pending',
+      })
+    ) {
+      this.storageWarning = true;
+      return false;
+    }
+    const saved = ['pending', 'unknown'].includes(record.status)
+      ? this.pauseOutbox.settle(scope, record.key, { kind: 'confirmed' })
+      : this.pauseOutbox.dismissReviewed(scope, record.key);
+    if (!saved) {
+      this.storageWarning = true;
+      return false;
+    }
+    this.absence.confirmed();
+    return true;
   }
   private async flushAbsencePause(): Promise<void> {
-    const operation = this.pausePending;
+    const scope = this.pauseScope(),
+      epoch = this.api.epoch;
     if (
-      !operation ||
+      !scope ||
       this.pauseFlight ||
-      operation.epoch !== this.api.epoch ||
-      this.state.connection !== 'online'
+      this.state.connection !== 'online' ||
+      this.configEpoch !== epoch ||
+      this.timerEpoch !== epoch ||
+      !this.state.timerReady ||
+      !this.state.timerControl ||
+      !Number.isFinite(this.serverTime())
     )
       return;
-    this.pauseFlight = true;
-    const revision = this.timerRevision;
-    try {
-      const result = await this.api.timerPause(operation.expected, operation.at, operation.key);
-      if (operation !== this.pausePending || operation.epoch !== this.api.epoch) return;
-      if (result.ok) {
-        this.pausePending = undefined;
-        const observed = this.state.timer;
-        const sameExpected = matchesTimer(observed ?? null, operation.expected);
-        const sameResult = Boolean(
-          observed &&
-          result.data &&
-          observed.timerId === result.data.timerId &&
-          observed.version === result.data.version &&
-          observed.state === result.data.state &&
-          observed.task.id === result.data.task.id &&
-          JSON.stringify(observed.segments) === JSON.stringify(result.data.segments),
-        );
-        if (
-          this.state.timerReady &&
-          ((revision === this.timerRevision && sameExpected) || sameResult)
-        ) {
-          this.absence.confirmed();
-          if (!sameResult) {
-            this.timerRevision++;
-            this.acceptTimer(result.data);
-          }
-          this.publish();
-        }
-        this.scheduleRefresh();
-      } else if (!['network', 'timeout', 'timer_busy'].includes(result.code)) {
-        this.pausePending = undefined;
-        this.scheduleRefresh();
-      }
-    } finally {
-      this.pauseFlight = false;
+    const records = this.pauseOutbox.list(scope);
+    if (!this.o.settings.get().timer.pauseOnLock) {
+      for (const record of records)
+        if (['pending', 'unknown'].includes(record.status))
+          this.pauseOutbox.settle(scope, record.key, { kind: 'review' });
+      this.showPauseReturn();
+      this.publish();
+      return;
     }
+    for (const record of records) {
+      if (
+        !['candidate', 'cancelled'].includes(record.status) &&
+        record.reviewReason !== 'unconfirmed-query' &&
+        this.matchesCapturedPause(this.state.timer, record)
+      )
+        this.confirmCapturedPause(scope, record, this.state.timer);
+    }
+    const commands = this.pauseOutbox.replay(scope, {
+      authenticated: true,
+      configFresh: true,
+      casChecked: true,
+      timerControl2: true,
+    });
+    for (const command of commands) {
+      if (!matchesTimer(this.state.timer ?? null, command.expected)) {
+        this.pauseOutbox.markStale(scope, command.key);
+        continue;
+      }
+      const attempts = this.pauseAttempts.get(command.key);
+      if (attempts && this.serverTime() < attempts.nextAt) continue;
+      if (attempts && attempts.count >= 5) {
+        this.pauseOutbox.settle(scope, command.key, { kind: 'review' });
+        continue;
+      }
+      this.pauseFlight = true;
+      const revision = this.timerRevision;
+      try {
+        const result = await this.api.timerPause(command.expected, command.at, command.key);
+        if (this.destroyed) return;
+        // Auth loss may advance the epoch before returning the verified HTTP rejection.
+        // Persist its terminal outcome only against the original immutable scope/key.
+        if (!result.ok && ['unauthenticated', 'password_change_required'].includes(result.code))
+          this.pauseOutbox.settle(scope, command.key, {
+            kind: 'http-failure',
+            status: result.code === 'unauthenticated' ? 401 : 403,
+          });
+        if (epoch !== this.api.epoch || this.destroyed) return;
+        if (result.ok) {
+          if (result.data && this.matchesCapturedPause(result.data, command)) {
+            const observed = this.state.timer;
+            const sameResult = this.matchesCapturedPause(observed, command);
+            if (
+              (revision === this.timerRevision &&
+                matchesTimer(observed ?? null, command.expected)) ||
+              sameResult
+            ) {
+              if (!sameResult) {
+                this.timerRevision++;
+                this.acceptTimer(result.data);
+              }
+              this.confirmCapturedPause(scope, command, result.data);
+            } else this.pauseOutbox.markStale(scope, command.key);
+          } else this.pauseOutbox.settle(scope, command.key, { kind: 'review' });
+        } else if (result.code === 'timer_busy') {
+          this.pauseAttempts.set(command.key, {
+            count: attempts?.count ?? 0,
+            nextAt: this.serverTime() + 1000,
+          });
+        } else if (['network', 'timeout'].includes(result.code)) {
+          const count = (attempts?.count ?? 0) + 1;
+          this.pauseOutbox.settle(scope, command.key, { kind: 'unknown' });
+          this.pauseAttempts.set(command.key, {
+            count,
+            nextAt: this.serverTime() + Math.min(300000, 30000 * 2 ** (count - 1)),
+          });
+        } else if (result.code === 'server_error')
+          this.pauseOutbox.settle(scope, command.key, { kind: 'http-failure', status: 500 });
+        else if (
+          [
+            'validation',
+            'forbidden',
+            'csrf',
+            'stale_timer',
+            'stale_timer_segment',
+            'precondition_required',
+            'invalid_event_time',
+            'idempotency_conflict',
+          ].includes(result.code)
+        )
+          this.pauseOutbox.settle(scope, command.key, { kind: 'http-failure', status: 400 });
+        else this.pauseOutbox.settle(scope, command.key, { kind: 'review' });
+      } finally {
+        this.pauseFlight = false;
+      }
+      this.publish();
+      this.scheduleRefresh();
+      break;
+    }
+    this.showPauseReturn();
+  }
+  private showPauseReturn(): void {
+    const scope = this.pauseScope();
+    if (
+      !scope ||
+      this.locked ||
+      this.suspended ||
+      !this.o.settings.get().timer.askOnUnlock ||
+      !this.pauseReturns.healthy ||
+      this.pauseOutbox.health.blocked
+    )
+      return;
+    let record = this.pauseReturns
+      .list(scope)
+      .find((r) => r.delivery === 'pending' && matchesTimer(this.state.timer ?? null, r.expected));
+    if (!record || this.recoveryNotices.has(record.key)) return;
+    if (record.returnedAt === null) {
+      const returned = this.returnedAt ?? new Date(this.serverTime()).toISOString();
+      if (
+        !this.pauseReturns.returned(
+          scope,
+          record.key,
+          returned,
+          this.returnedAt ? (this.returnedKind ?? 'connection') : 'connection',
+        )
+      ) {
+        this.storageWarning = true;
+        this.publish();
+        return;
+      }
+      record = this.pauseReturns.list(scope).find((item) => item.key === record?.key);
+      if (!record) return;
+    }
+    const notice: Notice = {
+      epoch: this.api.epoch,
+      owner: scope.ownerId,
+      chatId: null,
+      mention: false,
+      ordinary: true,
+      recovery: record,
+    };
+    if (!this.current(notice)) return;
+    const spec: ToastSpec = {
+      id: 'pause-return:' + record.key,
+      key: record.key,
+      groupId: 'pause-return',
+      title: 'Таймер на паузе',
+      body:
+        this.o.settings.get().notifications.preview && this.state.timer
+          ? `${record.returnKind === 'unlock' ? 'Не учтено: ' : 'Пауза с '}${new Date(record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${record.returnKind === 'unlock' ? ' — ' : record.returnKind === 'wake' ? '. Система возобновила работу ' : '. Снова подключились '}${new Date(record.returnedAt ?? record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.\n${[this.state.timer.task.mark, this.state.timer.task.title].filter(Boolean).join(' · ').slice(0, 100)} · ${timerClock(elapsedAt(this.state.timer, this.state.timerObservedAt ?? Date.now()))}`
+          : 'Пауза подтверждена сервером. Продолжите таймер или проверьте трудозатраты.',
+      hasReply: false,
+      buttons: ['Продолжить', 'Закончить и проверить'],
+      delayMs: 0,
+    };
+    this.recoveryNotices.add(record.key);
+    this.notices.set(spec, notice);
+    if (this.toasts.show(spec) === false) this.recoveryNotices.delete(record.key);
+  }
+  private recordReturnTime(kind: 'unlock' | 'wake'): void {
+    if (!Number.isFinite(this.serverTime())) return;
+    if (kind === 'unlock') {
+      this.returnedAt = new Date(this.serverTime()).toISOString();
+      this.returnedKind = 'unlock';
+    }
+    if (this.locked || this.suspended) return;
+    if (this.returnedKind !== 'unlock') {
+      this.returnedAt = new Date(this.serverTime()).toISOString();
+      this.returnedKind = kind;
+    }
+    const scope = this.pauseScope();
+    if (!scope || !this.returnedAt || !this.returnedKind) return;
+    for (const record of this.pauseReturns.list(scope))
+      if (!this.pauseReturns.returned(scope, record.key, this.returnedAt, this.returnedKind))
+        this.storageWarning = true;
+  }
+  private async resumePauseReturn(notice: Notice): Promise<void> {
+    const record = notice.recovery;
+    if (!record || !this.current(notice)) return;
+    const epoch = this.api.epoch,
+      revision = ++this.timerRevision;
+    const result = await this.api.timerResume(record.expected);
+    if (epoch !== this.api.epoch || this.destroyed) return;
+    if (result.ok) {
+      if (revision === this.timerRevision) this.acceptTimer(result.data);
+      const scope = this.pauseScope();
+      if (scope && !this.pauseReturns.dismiss(scope, record.key)) this.storageWarning = true;
+    } else this.state.timerError = result.error;
+    this.publish();
+    this.scheduleRefresh();
+  }
+  private absenceRecordId(key: string): number {
+    return Number.parseInt(createHash('sha256').update(key).digest('hex').slice(0, 12), 16) + 1;
+  }
+  private durableAbsenceWarning(): ClientSnapshot['timerAbsence'] {
+    const scope = this.pauseScope();
+    if (!scope) return null;
+    const now = Number.isFinite(this.serverTime()) ? this.serverTime() : Date.now();
+    if (this.storageWarning || this.pauseOutbox.health.blocked || !this.pauseReturns.healthy)
+      return {
+        id: this.absenceRecordId('storage'),
+        from: now,
+        to: now,
+        durable: true,
+        message:
+          'Не удалось надёжно сохранить команду паузы или подтверждение её показа. Автопауза не считается завершённой. Проверьте время вручную; запись очереди не сбрасывается.',
+      };
+    const record = this.pauseOutbox.list(scope)[0];
+    if (record)
+      return {
+        id: this.absenceRecordId(record.key),
+        from: Date.parse(record.at),
+        to: now,
+        durable: true,
+        message:
+          record.status === 'candidate' ||
+          record.reviewReason === 'unconfirmed-query' ||
+          record.status === 'cancelled'
+            ? 'Завершение Windows не подтверждено. По этому запросу пауза автоматически не отправляется; проверьте время вручную.'
+            : record.status === 'pending' || record.status === 'unknown'
+              ? 'Подтверждение паузы пока не получено. Сохраняется исходная команда; после восстановления связи возможен повтор. Если время проверено вручную, отмените дальнейший повтор ниже.'
+              : 'Пауза не подтверждена или исходный таймер изменился. Автоматический повтор остановлен. Проверьте интервалы вручную.',
+      };
+    const returned = this.pauseReturns.list(scope)[0];
+    return returned
+      ? {
+          id: this.absenceRecordId(returned.key),
+          from: Date.parse(returned.at),
+          to: now,
+          durable: true,
+          message: matchesTimer(this.state.timer ?? null, returned.expected)
+            ? 'Пауза после отсутствия подтверждена сервером. Продолжение выполняется только по вашей команде.'
+            : 'Таймер после отсутствия уже изменился. Проверьте сохранённый период перед подтверждением.',
+        }
+      : null;
+  }
+  private acknowledgeAbsence(id: number): void {
+    const scope = this.pauseScope();
+    if (!scope) return;
+    for (const record of this.pauseOutbox.list(scope))
+      if (this.absenceRecordId(record.key) === id) {
+        if (['pending', 'unknown'].includes(record.status))
+          this.pauseOutbox.settle(scope, record.key, { kind: 'review' });
+        if (record.status === 'candidate') this.pauseOutbox.cancelQuery(scope, record.key);
+        if (!this.pauseOutbox.dismissReviewed(scope, record.key)) this.storageWarning = true;
+      }
+    for (const record of this.pauseReturns.list(scope))
+      if (this.absenceRecordId(record.key) === id && !this.pauseReturns.dismiss(scope, record.key))
+        this.storageWarning = true;
+    if (!this.pauseOutbox.health.blocked && this.pauseReturns.healthy) this.storageWarning = false;
   }
   private async checkTimerPending(): Promise<void> {
     if (!this.state.timerControl || this.state.connection !== 'online') return;
@@ -792,8 +1201,11 @@ export class ClientHost {
     const result = await this.api.timer();
     if (epoch !== this.api.epoch) return failure('stale_session');
     if (revision === this.timerRevision) {
-      if (result.ok) this.acceptTimer(result.data);
-      else {
+      if (result.ok) {
+        this.timerEpoch = epoch;
+        this.observeServerTime(this.api.timerServerNow ?? result.data?.serverNow);
+        this.acceptTimer(result.data);
+      } else {
         this.state.timerReady = false;
         this.state.timerError = result.error;
       }
@@ -807,6 +1219,7 @@ export class ClientHost {
       this.timerRevision++;
       try {
         this.acceptTimer(this.state.timerControl ? controlledTimer(data) : workTimer(data));
+        if (this.state.timerControl) this.observeServerTime(parse.object(data).serverNow);
       } catch {
         this.state.timerReady = false;
         this.state.timerError = 'Не удалось прочитать состояние таймера.';
@@ -1025,9 +1438,41 @@ export class ClientHost {
   private owned(n: Notice): boolean {
     return n.owner === this.api.owner && n.epoch === this.api.epoch;
   }
+  private currentRecovery(record: PauseReturn): boolean {
+    if (
+      !this.o.settings.get().timer.askOnUnlock ||
+      !this.pauseReturns.healthy ||
+      this.pauseOutbox.health.blocked ||
+      this.state.timerReady !== true ||
+      this.state.timerControl !== true ||
+      this.timerEpoch !== this.api.epoch ||
+      this.configEpoch !== this.api.epoch
+    )
+      return false;
+    const scope = this.pauseScope();
+    if (
+      !scope ||
+      record.serverScopeHash !== scope.serverScopeHash ||
+      record.ownerId !== scope.ownerId
+    )
+      return false;
+    const stored = this.pauseReturns.list(scope).find((item) => item.key === record.key);
+    return Boolean(
+      stored &&
+      stored.at === record.at &&
+      stored.returnedAt === record.returnedAt &&
+      stored.returnKind === record.returnKind &&
+      stored.expected.timerId === record.expected.timerId &&
+      stored.expected.revision === record.expected.revision &&
+      stored.expected.currentSegmentFrom === record.expected.currentSegmentFrom &&
+      matchesTimer(this.state.timer ?? null, stored.expected),
+    );
+    // Delivery is deliberately not compared: onShow changes pending -> shown before legitimate actions.
+  }
   private current(n: Notice): boolean {
     return (
       this.owned(n) &&
+      (!n.recovery || this.currentRecovery(n.recovery)) &&
       !(
         n.chatId &&
         n.messageId &&
@@ -1087,9 +1532,14 @@ export class ClientHost {
     this.trayWindow?.hide();
     this.publish();
   }
-  private openTimer(mode: 'pick' | 'finish', taskId?: number): void {
+  private openTimer(
+    mode: 'pick' | 'finish',
+    taskId?: number,
+    prepareExpected?: import('../shared/time').TimerExpected,
+  ): void {
     this.state.navigateTimer = {
       mode,
+      ...(prepareExpected && { prepareExpected }),
       ...(taskId && { taskId }),
       nonce: (this.state.navigateTimer?.nonce ?? 0) + 1,
     };
@@ -1337,7 +1787,12 @@ export class ClientHost {
         if (!isReminderTime(r.reminderTime)) return failure('validation');
         try {
           this.o.settings.update({
-            timer: { ...this.o.settings.get().timer, reminderTime: r.reminderTime },
+            timer: {
+              ...this.o.settings.get().timer,
+              reminderTime: r.reminderTime,
+              ...(r.pauseOnLock !== undefined && { pauseOnLock: r.pauseOnLock }),
+              ...(r.askOnUnlock !== undefined && { askOnUnlock: r.askOnUnlock }),
+            },
           });
         } catch {
           return {
@@ -1353,6 +1808,7 @@ export class ClientHost {
         this.checkReminder();
         return ok(null);
       case 'timer.absenceDismiss':
+        this.acknowledgeAbsence(r.id);
         if (this.absence.warning?.id === r.id) this.absence.dismiss();
         this.publish();
         return ok(null);
@@ -1516,12 +1972,13 @@ export class ClientHost {
     this.state.setupRequired = !this.o.settings.get().onboardingComplete;
     this.state.preferences = this.preferences();
     this.state.timerReminderTime = this.o.settings.get().timer.reminderTime;
+    this.state.timerAskOnUnlock = this.o.settings.get().timer.askOnUnlock;
     this.state.timerPauseOnLock = this.o.settings.get().timer.pauseOnLock;
     this.absence.observe(this.state);
     const warning = this.absence.warning;
-    this.state.timerAbsence = warning
-      ? { id: warning.id, from: warning.from, to: warning.to }
-      : null;
+    this.state.timerAbsence =
+      this.durableAbsenceWarning() ??
+      (warning ? { id: warning.id, from: warning.from, to: warning.to } : null);
     if (this.destroyed) return;
     if (this.loggedConnection !== this.state.connection) {
       this.loggedConnection = this.state.connection;
@@ -1697,6 +2154,9 @@ export class ClientHost {
     powerMonitor.removeListener('unlock-screen', this.unlock);
     powerMonitor.removeListener('suspend', this.sleep);
     powerMonitor.removeListener('resume', this.wake);
+    this.o.main.win.removeListener('query-session-end', this.sessionQuery);
+    this.o.main.win.removeListener('session-end', this.sessionEnded);
+    this.o.main.win.removeListener('focus', this.mainActive);
   }
   prepareServerSwitch(): void {
     this.loggingOut = true;

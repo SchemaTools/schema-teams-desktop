@@ -114,6 +114,10 @@ export class TeamsApi {
   private readonly pending = new Set<AbortController>();
   private authFlight?: Promise<ApiResult<SafeUser>>;
   private timerFlight?: { epoch: number };
+  private timerNow: string | null = null;
+  get timerServerNow(): string | null {
+    return this.timerNow;
+  }
   private config: DesktopConfig | null = null;
   get desktopConfiguration(): DesktopConfig | null {
     return this.config ? structuredClone(this.config) : null;
@@ -140,6 +144,7 @@ export class TeamsApi {
   clear(): void {
     this.generation++;
     this.config = null;
+    this.timerNow = null;
     this.prepared.clear();
     this.user = null;
     this.csrf = null;
@@ -206,11 +211,13 @@ export class TeamsApi {
     return this.request('/api/chats', 'GET', parse.list);
   }
   timer(): Promise<ApiResult<WorkTimer | null>> {
-    return this.request(
-      '/api/time/timer',
-      'GET',
-      this.timerControl ? time.controlledTimer : time.workTimer,
-    );
+    return this.request('/api/time/timer', 'GET', (raw) => {
+      const timer = this.timerControl ? time.controlledTimer(raw) : time.workTimer(raw);
+      this.timerNow = this.timerControl
+        ? String(parse.object(raw).serverNow)
+        : (timer?.serverNow ?? null);
+      return timer;
+    });
   }
   async timeOptions(q = ''): Promise<ApiResult<TimeOptions>> {
     if (typeof q !== 'string' || q.length > 200) return failure('validation');

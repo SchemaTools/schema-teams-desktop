@@ -122,9 +122,11 @@ describe('TimerReminders: local calendar, one shown reminder, bounded retry', ()
   it('preferences IPC excludes arbitrary local/server fields', () => {
     const v = { kind: 'timer.preferences', epoch: 1, reminderTime: '19:00' };
     expect(requestValid(v)).toBe(true);
+    expect(requestValid({ ...v, pauseOnLock: false, askOnUnlock: true })).toBe(true);
     for (const patch of [
       { serverUrl: 'https://example.test' },
-      { pauseOnLock: true },
+      { pauseOnLock: 'true' },
+      { askOnUnlock: 'false' },
       { epoch: -1 },
       { reminderTime: '18:30\n' },
     ])

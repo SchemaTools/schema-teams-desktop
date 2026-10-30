@@ -268,7 +268,11 @@ test('своё окно настроек сохраняет время с шаг
   await p.getByRole('button', { name: 'Сохранить время напоминания' }).click();
   await expect(p).toContainText('Время напоминания сохранено на этом компьютере.');
   await expect(p.locator('.timer-settings dd')).toHaveText('18:00');
-  await expect(p.getByRole('checkbox', { name: 'Пауза при блокировке компьютера' })).toBeDisabled();
+  await expect(p.getByRole('checkbox', { name: 'Пауза при блокировке компьютера' })).toBeEnabled();
+  await p.getByRole('checkbox', { name: 'Спросить «Продолжить?» после разблокировки' }).uncheck();
+  await expect(
+    p.getByRole('checkbox', { name: 'Спросить «Продолжить?» после разблокировки' }),
+  ).not.toBeChecked();
   await page.screenshot({ path: test.info().outputPath('timer-settings-light.png') });
   await page.evaluate(() => window.teams.request({ kind: 'theme', mode: 'dark' }));
   await page.screenshot({ path: test.info().outputPath('timer-settings-dark.png') });

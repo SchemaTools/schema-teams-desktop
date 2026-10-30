@@ -1,3 +1,5 @@
+import { PauseOutbox, type PauseOutboxStorage } from '../../src/main/timer/pauseOutbox';
+import { PauseReturns } from '../../src/main/timer/pauseReturns';
 import { EventEmitter } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IpcMainInvokeEvent, Tray } from 'electron';
@@ -236,7 +238,10 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
-function fixture(patch: Partial<Settings> = {}) {
+function fixture(
+  patch: Partial<Settings> = {},
+  persistence?: { outbox: PauseOutbox; returns: PauseReturns },
+) {
   let settings = normalizeSettings(patch);
   const settingsUpdate = vi.fn((change: Partial<Settings>) => {
     settings = normalizeSettings({ ...settings, ...change });
@@ -258,7 +263,23 @@ function fixture(patch: Partial<Settings> = {}) {
     setOverlayIcon: h.setOverlayIcon,
   });
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-  const host = new ClientHost({
+  const memory = (): PauseOutboxStorage => {
+    let text: string | null = null;
+    return {
+      read: () => text,
+      replace: (next) => {
+        text = next;
+      },
+    };
+  };
+  const host: ClientHost = new ClientHost({
+    pausePersistence: persistence ?? {
+      outbox: new PauseOutbox('fixture-outbox', {
+        storage: memory(),
+        now: () => (host as unknown as { serverTime: () => number }).serverTime(),
+      }),
+      returns: new PauseReturns('fixture-returns', memory()),
+    },
     main: { win, show: vi.fn() } as unknown as MainWindow,
     server: new globalThis.URL('https://example.test/'),
     settings: { get: () => settings, update: settingsUpdate } as unknown as SettingsStore,
@@ -280,6 +301,8 @@ function fixture(patch: Partial<Settings> = {}) {
   owned.state.timerControl = true;
   owned.state.timerReady = true;
   owned.state.epoch = h.api.epoch;
+  (host as unknown as { configEpoch: number; timerEpoch: number }).configEpoch = h.api.epoch;
+  (host as unknown as { configEpoch: number; timerEpoch: number }).timerEpoch = h.api.epoch;
   owned.authCookie = 'cookie-A';
   const event = { sender: wc, senderFrame: frame } as unknown as IpcMainInvokeEvent;
   const invoke = async (request: DesktopRequest) => {
@@ -1051,7 +1074,7 @@ describe('Server midnight notices and safe absence pause', () => {
     required(h.toastOptions).onShow(spec);
     expect(h.timerNoticeAck).not.toHaveBeenCalled();
   });
-  it('offline departure replays the captured A envelope after B appears and never resumes', async () => {
+  it('offline departure preserves A for review when fresh B is already known and never resumes', async () => {
     const f = fixture();
     f.owned.state.timer = timerFixture();
     f.owned.state.timerObservedAt = Date.now();
@@ -1071,11 +1094,7 @@ describe('Server midnight notices and safe absence pause', () => {
       retryable: false,
     });
     await host.flushAbsencePause();
-    expect(h.timerPause).toHaveBeenCalledWith(
-      { timerId: 71, revision: 1, currentSegmentFrom: timerFixture().startedAt },
-      timerFixture().serverNow,
-      expect.any(String),
-    );
+    expect(h.timerPause).not.toHaveBeenCalled();
     expect(h.timerResume).not.toHaveBeenCalled();
     expect(f.owned.state.timer.timerId).toBe(99);
   });
@@ -1123,7 +1142,10 @@ describe('Absence and popup regression guards', () => {
     h.listChats.mockResolvedValue({ ok: true, data: { items: [], unreadTotal: 0 } });
     h.notifications.mockResolvedValue({ ok: true, data: { items: [], unread: 0 } });
     h.focus.mockResolvedValue({ ok: true, data: { until: null, startedAt: null } });
-    h.timer.mockResolvedValue({ ok: true, data: timerFixture() });
+    h.timer.mockResolvedValue({
+      ok: true,
+      data: { ...timerFixture(), serverNow: '2026-10-29T04:40:02.000Z' },
+    });
     h.timerPending.mockResolvedValue({ ok: true, data: null });
     await host.refresh();
     await Promise.resolve();
@@ -1182,7 +1204,7 @@ it('replay cached pause A cannot replace B already observed before the retry sta
   await host.flushAbsencePause();
   expect(f.owned.state.timer?.timerId).toBe(99);
   expect(f.owned.state.timer?.version).toBe(10);
-  expect(h.timerPause.mock.calls[1]).toEqual(h.timerPause.mock.calls[0]);
+  expect(h.timerPause).toHaveBeenCalledTimes(1);
 });
 
 it('the matching own pause socket event confirms absence without replacing its fresh observation', async () => {
@@ -1206,11 +1228,582 @@ it('the matching own pause socket event confirms absence without replacing its f
   f.owned.state.connection = 'online';
   h.timerPause.mockReturnValueOnce(response.promise);
   const pause = host.flushAbsencePause();
-  host.event('time:timer', timerPushFixture(timerFixture('pause')));
+  const ownPause = {
+    ...timerFixture('pause'),
+    pauseReason: 'lock' as const,
+    segments: [{ from: timerFixture().startedAt, to: String(h.timerPause.mock.calls[0]?.[1]) }],
+  };
+  host.event('time:timer', timerPushFixture(ownPause));
   host.absence.return('unlock', f.owned.state);
   expect(host.absence.warning).not.toBeNull();
-  response.resolve({ ok: true, data: timerFixture('pause') });
+  response.resolve({ ok: true, data: ownPause });
   await pause;
   expect(host.absence.warning).toBeNull();
   expect(f.owned.state.timer?.state).toBe('pause');
+});
+
+describe('0.7.1 durable Windows absence integration (synthetic events only)', () => {
+  const memory = () => {
+    let text: string | null = null;
+    return {
+      read: () => text,
+      replace: (next: string) => {
+        text = next;
+      },
+    };
+  };
+  const persistent = () => {
+    const outboxStorage = memory(),
+      returnStorage = memory(),
+      clock = { now: Date.parse(timerFixture().serverNow) };
+    return {
+      clock,
+      outboxStorage,
+      returnStorage,
+      open: () => ({
+        outbox: new PauseOutbox('memory-outbox', { storage: outboxStorage, now: () => clock.now }),
+        returns: new PauseReturns('memory-returns', returnStorage),
+      }),
+    };
+  };
+  type Control = {
+    pauseForAbsence: (kind?: 'lock' | 'suspend') => void;
+    flushAbsencePause: () => Promise<void>;
+    pauseScope: () => import('../../src/main/timer/pauseOutbox').PauseScope | null;
+    acceptTimer: (timer: ReturnType<typeof timerFixture>) => void;
+    observeServerTime: (time: string) => void;
+    publish: () => void;
+    timerEpoch: number;
+    configEpoch: number;
+  };
+  const control = (host: ClientHost) => host as unknown as Control;
+  const fresh = async (f: ReturnType<typeof fixture>, timer = timerFixture()) => {
+    h.timer.mockResolvedValueOnce({ ok: true, data: timer });
+    await f.invoke({ kind: 'timer.read', epoch: h.api.epoch });
+  };
+  const captured = (
+    f: ReturnType<typeof fixture>,
+    store: ReturnType<ReturnType<typeof persistent>['open']>,
+  ) => {
+    f.owned.state.timer = timerFixture();
+    f.owned.state.connection = 'offline';
+    control(f.host).pauseForAbsence();
+    return required(store.outbox.list(required(control(f.host).pauseScope()))[0]);
+  };
+  const paused = (record: import('../../src/main/timer/pauseOutbox').PauseEnvelope) => ({
+    ...timerFixture('pause'),
+    pauseReason: 'lock' as const,
+    segments: [{ from: record.expected.currentSegmentFrom ?? '', to: record.at }],
+  });
+  it('persists before API, restores with new process epoch only after fresh context, and reuses exact envelope', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores),
+      record = captured(f, stores);
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(disk.outboxStorage.read()).not.toMatch(/cookie|csrf|https|epoch/);
+    f.host.destroy();
+    h.api.owner = 1;
+    h.api.epoch = 100;
+    const restored = disk.open(),
+      next = fixture({}, restored),
+      host = control(next.host);
+    host.configEpoch = -1;
+    host.timerEpoch = -1;
+    next.owned.state.timer = timerFixture();
+    await host.flushAbsencePause();
+    expect(h.timerPause).not.toHaveBeenCalled();
+    host.configEpoch = 100;
+    await fresh(next);
+    h.timerPause.mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await host.flushAbsencePause();
+    expect(h.timerPause).toHaveBeenCalledExactlyOnceWith(record.expected, record.at, record.key);
+    expect(restored.outbox.list(required(host.pauseScope()))).toEqual([]);
+    expect(restored.returns.list(required(host.pauseScope()))[0]).toMatchObject({
+      key: record.key,
+      delivery: 'pending',
+    });
+  });
+  it('query/session-end bind once, never send or block shutdown; unconfirmed query is review after restart', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores);
+    f.owned.state.timer = timerFixture();
+    const event = { preventDefault: vi.fn() };
+    expect(f.win.listenerCount('query-session-end')).toBe(1);
+    f.win.emit('query-session-end', event);
+    const scope = required(control(f.host).pauseScope());
+    expect(stores.outbox.list(scope)[0]?.status).toBe('candidate');
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    f.host.destroy();
+    expect(f.win.listenerCount('query-session-end')).toBe(0);
+    expect(f.win.listenerCount('session-end')).toBe(0);
+    expect(disk.open().outbox.list(scope)[0]).toMatchObject({
+      status: 'review',
+      reviewReason: 'unconfirmed-query',
+    });
+  });
+  it('confirmed session-end promotes original query time/key with no network in either callback', () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores);
+    f.owned.state.timer = timerFixture();
+    f.win.emit('query-session-end');
+    const scope = required(control(f.host).pauseScope()),
+      record = required(stores.outbox.list(scope)[0]);
+    f.win.emit('session-end');
+    expect(stores.outbox.list(scope)[0]).toEqual({ ...record, status: 'pending' });
+    expect(h.timerPause).not.toHaveBeenCalled();
+  });
+  it('live cancelled query does not backdate or suppress a later real lock', () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores);
+    f.owned.state.timer = timerFixture();
+    f.owned.state.connection = 'offline';
+    f.win.emit('query-session-end');
+    const scope = required(control(f.host).pauseScope()),
+      query = required(stores.outbox.list(scope)[0]);
+    f.win.emit('focus');
+    disk.clock.now += 60000;
+    control(f.host).observeServerTime(new Date(disk.clock.now).toISOString());
+    control(f.host).pauseForAbsence('suspend');
+    const records = stores.outbox.list(scope);
+    expect(records[0]?.status).toBe('cancelled');
+    expect(records[1]?.eventKind).toBe('suspend');
+    expect(records[1]?.key).not.toBe(query.key);
+    expect(Date.parse(records[1]?.at ?? '')).toBeGreaterThan(Date.parse(query.at));
+    expect(h.timerPause).not.toHaveBeenCalled();
+  });
+  it('crash between Return-write and outbox removal reconciles by key; actual show survives restart without duplicate', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores),
+      record = captured(f, stores),
+      scope = required(control(f.host).pauseScope()),
+      timer = paused(record);
+    stores.returns.put({
+      ...scope,
+      key: record.key,
+      at: record.at,
+      returnedAt: null,
+      returnKind: null,
+      expected: {
+        timerId: record.expected.timerId,
+        revision: record.expected.revision + 1,
+        currentSegmentFrom: null,
+      },
+      delivery: 'pending',
+    });
+    f.host.destroy();
+    h.api.owner = 1;
+    const restored = disk.open(),
+      next = fixture({}, restored);
+    await fresh(next, timer);
+    await control(next.host).flushAbsencePause();
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(restored.outbox.list(scope)).toEqual([]);
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    h.policyAllows.mockResolvedValueOnce(false);
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(false);
+    required(h.toastOptions).onClose(spec);
+    expect(restored.returns.list(scope)[0]?.delivery).toBe('pending');
+    await control(next.host).flushAbsencePause();
+    const shown = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    expect(await required(h.toastOptions).beforeShow(shown)).toBe(true);
+    required(h.toastOptions).onShow(shown);
+    expect(restored.returns.list(scope)[0]?.delivery).toBe('shown');
+    const count = h.toastShow.mock.calls.length;
+    next.host.destroy();
+    h.api.owner = 1;
+    const third = fixture({}, disk.open());
+    await fresh(third, timer);
+    await control(third.host).flushAbsencePause();
+    expect(h.toastShow).toHaveBeenCalledTimes(count);
+    expect(h.timerResume).not.toHaveBeenCalled();
+  });
+  it('Return-write failure retains durable outbox and visible warning without claiming delivered pause', async () => {
+    const disk = persistent(),
+      stores = disk.open();
+    stores.returns = new PauseReturns('failed', {
+      read: () => null,
+      replace: () => {
+        throw Error('disk full');
+      },
+    });
+    const f = fixture({}, stores),
+      record = captured(f, stores);
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await control(f.host).flushAbsencePause();
+    expect(stores.outbox.list(required(control(f.host).pauseScope()))).toHaveLength(1);
+    expect(f.owned.state.timerAbsence?.message).toContain('Не удалось надёжно сохранить');
+    expect(h.toastShow).not.toHaveBeenCalled();
+  });
+  it('outbox storage failure sends nothing; foreign owner sees no old timer or prompt', async () => {
+    const stores = {
+        outbox: new PauseOutbox('failed', {
+          storage: {
+            read: () => null,
+            replace: () => {
+              throw Error('full');
+            },
+          },
+        }),
+        returns: new PauseReturns('returns', memory()),
+      },
+      f = fixture({}, stores);
+    f.owned.state.timer = timerFixture();
+    control(f.host).pauseForAbsence();
+    await control(f.host).flushAbsencePause();
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(f.owned.state.timerAbsence?.message).toContain('Не удалось надёжно сохранить');
+  });
+  it('server 5xx remains review with no automatic retry; transport unknown retries after server-clock backoff', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores),
+      record = captured(f, stores),
+      host = control(f.host),
+      scope = required(host.pauseScope());
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValueOnce({
+      ok: false,
+      code: 'network',
+      error: 'unknown',
+      retryable: true,
+    });
+    await host.flushAbsencePause();
+    await host.flushAbsencePause();
+    expect(h.timerPause).toHaveBeenCalledTimes(1);
+    expect(stores.outbox.list(scope)[0]?.status).toBe('unknown');
+    disk.clock.now += 60000;
+    host.observeServerTime(new Date(disk.clock.now).toISOString());
+    h.timerPause.mockResolvedValueOnce({
+      ok: false,
+      code: 'server_error',
+      error: 'unknown',
+      retryable: true,
+      uncertain: true,
+    });
+    await host.flushAbsencePause();
+    expect(h.timerPause.mock.calls[1]).toEqual([record.expected, record.at, record.key]);
+    expect(stores.outbox.list(scope)[0]).toMatchObject({
+      status: 'review',
+      reviewReason: 'server-error',
+    });
+    disk.clock.now += 60000;
+    host.observeServerTime(new Date(disk.clock.now).toISOString());
+    await host.flushAbsencePause();
+    expect(h.timerPause).toHaveBeenCalledTimes(2);
+  });
+  it('24-hour expiry uses fresh server time despite a backwards local Windows wall clock', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores),
+      record = captured(f, stores);
+    f.host.destroy();
+    disk.clock.now += 24 * 60 * 60000;
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    h.api.owner = 1;
+    const restored = disk.open(),
+      next = fixture({}, restored);
+    await fresh(next, { ...timerFixture(), serverNow: new Date(disk.clock.now).toISOString() });
+    await control(next.host).flushAbsencePause();
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(restored.outbox.list(required(control(next.host).pauseScope()))[0]).toMatchObject({
+      key: record.key,
+      status: 'review',
+      reviewReason: 'expired',
+    });
+  });
+
+  it('only a shown return button can resume its bound paused timer; a later B cannot use it', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores),
+      record = captured(f, stores);
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await control(f.host).flushAbsencePause();
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    required(h.toastOptions).onButton(spec, 0);
+    expect(h.timerResume).not.toHaveBeenCalled();
+    required(h.toastOptions).onShow(spec);
+    const resumed = {
+      ...timerFixture(),
+      version: 3,
+      segments: [...paused(record).segments, { from: '2026-10-29T04:50:00.000Z', to: null }],
+    };
+    h.timerResume.mockResolvedValueOnce({ ok: true, data: resumed });
+    required(h.toastOptions).onButton(spec, 0);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(h.timerResume).toHaveBeenCalledExactlyOnceWith({
+      timerId: record.expected.timerId,
+      revision: 2,
+      currentSegmentFrom: null,
+    });
+    expect(stores.returns.list(required(control(f.host).pauseScope()))).toEqual([]);
+    f.owned.state.timer = { ...timerFixture(), timerId: 99, version: 5 };
+    required(h.toastOptions).onButton(spec, 0);
+    expect(h.timerResume).toHaveBeenCalledTimes(1);
+  });
+  it('a different authenticated owner cannot restore or display the prior owner pause', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores);
+    captured(f, stores);
+    f.host.destroy();
+    h.api.owner = 2;
+    const restored = disk.open(),
+      next = fixture({}, restored);
+    next.owned.state.user = { id: 2, shortName: 'Другой вход', mustChangePassword: false };
+    await fresh(next, timerFixture());
+    await control(next.host).flushAbsencePause();
+    control(next.host).publish();
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(h.toastShow).not.toHaveBeenCalled();
+    expect(next.owned.state.timerAbsence).toBeNull();
+  });
+  it('post-show delivery persistence failure keeps pending intent and warns instead of claiming durable once-only display', async () => {
+    const disk = persistent(),
+      stores = disk.open();
+    let fail = false;
+    stores.returns = new PauseReturns('returns', {
+      read: () => null,
+      replace: (next) => {
+        if (fail) throw Error('full');
+        disk.returnStorage.replace(next);
+      },
+    });
+    const f = fixture({}, stores),
+      record = captured(f, stores);
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await control(f.host).flushAbsencePause();
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    fail = true;
+    required(h.toastOptions).onShow(spec);
+    expect(f.owned.state.timerAbsence?.message).toContain('Не удалось надёжно сохранить');
+    expect(stores.returns.list(required(control(f.host).pauseScope()))[0]?.delivery).toBe(
+      'pending',
+    );
+    required(h.toastOptions).onButton(spec, 0);
+    expect(h.timerResume).not.toHaveBeenCalled();
+  });
+  it('scheduled wake while locked waits for actual unlock and preserves that end through a later policy delay', () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores),
+      record = captured(f, stores),
+      scope = required(control(f.host).pauseScope());
+    stores.returns.put({
+      ...scope,
+      key: record.key,
+      expected: {
+        timerId: record.expected.timerId,
+        revision: record.expected.revision + 1,
+        currentSegmentFrom: null,
+      },
+      at: record.at,
+      returnedAt: null,
+      returnKind: null,
+      delivery: 'pending',
+    });
+    const host = f.host as unknown as {
+      locked: boolean;
+      suspended: boolean;
+      wake: () => void;
+      unlock: () => void;
+      observeServerTime: (value: string) => void;
+    };
+    host.locked = true;
+    host.suspended = true;
+    host.wake();
+    expect(stores.returns.list(scope)[0]?.returnedAt).toBeNull();
+    disk.clock.now += 60000;
+    host.observeServerTime(new Date(disk.clock.now).toISOString());
+    host.unlock();
+    const first = stores.returns.list(scope)[0];
+    expect(first?.returnKind).toBe('unlock');
+    disk.clock.now += 300000;
+    host.observeServerTime(new Date(disk.clock.now).toISOString());
+    host.unlock();
+    expect(stores.returns.list(scope)[0]?.returnedAt).toBe(first?.returnedAt);
+  });
+  it('capacity-warning acknowledgement exposes preserved reviews without silently pruning them', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores),
+      scope = required(control(f.host).pauseScope());
+    for (let index = 0; index < 64; index++) {
+      const item = required(
+        stores.outbox.capture(
+          scope,
+          { timerId: 1000 + index, revision: 1, currentSegmentFrom: timerFixture().startedAt },
+          timerFixture().serverNow,
+          'lock',
+        ),
+      );
+      stores.outbox.markStale(scope, item.key);
+    }
+    f.owned.state.timer = timerFixture();
+    f.owned.state.connection = 'offline';
+    control(f.host).pauseForAbsence();
+    expect(f.owned.state.timerAbsence?.message).toContain('Не удалось надёжно сохранить');
+    await f.invoke({
+      kind: 'timer.absenceDismiss',
+      epoch: h.api.epoch,
+      id: required(f.owned.state.timerAbsence).id,
+    });
+    expect(stores.outbox.list(scope)).toHaveLength(64);
+    expect(f.owned.state.timerAbsence?.message).not.toContain('Не удалось надёжно сохранить');
+    expect(f.owned.state.timerAbsence?.message).toContain('Автоматический повтор остановлен');
+    expect(h.timerPause).not.toHaveBeenCalled();
+  });
+  it('verified 401 remains terminal for its original scope even when auth loss advances the epoch', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture({}, stores),
+      record = captured(f, stores),
+      scope = required(control(f.host).pauseScope());
+    f.owned.state.connection = 'online';
+    h.timerPause.mockImplementationOnce(async () => {
+      h.api.epoch++;
+      h.api.owner = null;
+      f.owned.state.user = null;
+      return { ok: false, code: 'unauthenticated', error: 'login', retryable: false };
+    });
+    await control(f.host).flushAbsencePause();
+    expect(stores.outbox.list(scope)[0]).toMatchObject({
+      key: record.key,
+      status: 'review',
+      reviewReason: 'terminal-http',
+    });
+    expect(h.timerResume).not.toHaveBeenCalled();
+  });
+  it.each([
+    'preference',
+    'acknowledged',
+    'timestamp',
+    'return-health',
+    'outbox-health',
+    'expected',
+  ] as const)('delayed recovery policy cannot show or act on invalidated %s', async (change) => {
+    const disk = persistent(),
+      stores = disk.open();
+    let failReturnWrite = false;
+    stores.returns = new PauseReturns('returns', {
+      read: disk.returnStorage.read,
+      replace: (next) => {
+        if (failReturnWrite) throw Error('full');
+        disk.returnStorage.replace(next);
+      },
+    });
+    const f = fixture({}, stores),
+      record = captured(f, stores),
+      scope = required(control(f.host).pauseScope());
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await control(f.host).flushAbsencePause();
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec,
+      policy = deferred<boolean>(),
+      entered = deferred<boolean>();
+    h.policyAllows.mockImplementationOnce(() => {
+      entered.resolve(true);
+      return policy.promise;
+    });
+    const presentation = required(h.toastOptions).beforeShow(spec);
+    await entered.promise;
+    if (change === 'preference')
+      f.settingsUpdate({ timer: { ...f.getSettings().timer, askOnUnlock: false } });
+    if (change === 'acknowledged')
+      await f.invoke({
+        kind: 'timer.absenceDismiss',
+        epoch: h.api.epoch,
+        id: required(f.owned.state.timerAbsence).id,
+      });
+    if (change === 'timestamp')
+      stores.returns.returned(scope, record.key, '2026-10-29T05:00:00.000Z', 'unlock');
+    if (change === 'return-health') {
+      failReturnWrite = true;
+      expect(stores.returns.shown(scope, record.key)).toBe(false);
+    }
+    if (change === 'outbox-health') {
+      disk.outboxStorage.replace = () => {
+        throw Error('full');
+      };
+      stores.outbox.capture(
+        scope,
+        { timerId: 999, revision: 1, currentSegmentFrom: timerFixture().startedAt },
+        record.at,
+        'lock',
+      );
+    }
+    if (change === 'expected') {
+      const old = required(stores.returns.list(scope)[0]);
+      stores.returns.dismiss(scope, record.key);
+      stores.returns.put({ ...old, expected: { ...old.expected, revision: 99 } });
+    }
+    policy.resolve(true);
+    expect(await presentation).toBe(false);
+    required(h.toastOptions).onShow(spec);
+    required(h.toastOptions).onButton(spec, 0);
+    expect(h.timerResume).not.toHaveBeenCalled();
+    if (change === 'timestamp') {
+      required(h.toastOptions).onClose(spec);
+      await control(f.host).flushAbsencePause();
+      const next = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+      expect(next).not.toBe(spec);
+      expect(next.body).toContain('Не учтено:');
+      expect(await required(h.toastOptions).beforeShow(next)).toBe(true);
+      required(h.toastOptions).onShow(next);
+      expect(stores.returns.list(scope)[0]?.delivery).toBe('shown');
+    }
+  });
+  it('a destroyed old host cannot settle late 401 over the newer single-writer store containing B', async () => {
+    const disk = persistent(),
+      oldStores = disk.open(),
+      first = fixture({}, oldStores),
+      oldRecord = captured(first, oldStores),
+      response = deferred<ApiResult<ReturnType<typeof timerFixture>>>();
+    first.owned.state.connection = 'online';
+    h.timerPause.mockReturnValueOnce(response.promise);
+    const oldFlight = control(first.host).flushAbsencePause();
+    first.host.destroy();
+    h.api.owner = 2;
+    const nextStores = disk.open(),
+      next = fixture({}, nextStores);
+    next.owned.state.user = { id: 2, shortName: 'Новый вход', mustChangePassword: false };
+    next.owned.state.timer = { ...timerFixture(), timerId: 99 };
+    next.owned.state.connection = 'offline';
+    control(next.host).pauseForAbsence();
+    const scopeB = required(control(next.host).pauseScope()),
+      newRecord = required(nextStores.outbox.list(scopeB)[0]),
+      before = disk.outboxStorage.read();
+    expect(newRecord.key).not.toBe(oldRecord.key);
+    response.resolve({ ok: false, code: 'unauthenticated', error: 'expired', retryable: false });
+    await oldFlight;
+    expect(disk.outboxStorage.read()).toBe(before);
+    expect(disk.open().outbox.list(scopeB)).toEqual([newRecord]);
+  });
+  it('askOnUnlock=false and a newer timer B suppress the old confirmed return prompt', async () => {
+    const disk = persistent(),
+      stores = disk.open(),
+      f = fixture(
+        { timer: { pauseOnLock: true, askOnUnlock: false, reminderTime: '18:30' } },
+        stores,
+      ),
+      record = captured(f, stores);
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await control(f.host).flushAbsencePause();
+    expect(h.toastShow).not.toHaveBeenCalled();
+    f.owned.state.timer = { ...timerFixture(), timerId: 99, version: 20 };
+    await control(f.host).flushAbsencePause();
+    expect(h.timerResume).not.toHaveBeenCalled();
+    expect(stores.returns.list(required(control(f.host).pauseScope()))).toHaveLength(1);
+  });
 });

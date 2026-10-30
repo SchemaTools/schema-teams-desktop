@@ -6,7 +6,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startClientStub, type ClientStub } from './clientStub';
@@ -398,4 +398,104 @@ test('явное добавление 15 минут меняет начало т
     new Date(Date.parse(original) - 15 * 60000).toISOString(),
   );
   expect(writes().map((c) => c.path)).toEqual(['/api/time/timer/extend']);
+});
+
+async function allowReturnPopup() {
+  if (!app) throw Error('App unavailable');
+  await app.evaluate(({ app, powerMonitor }) => {
+    const { createRequire } = process.getBuiltinModule('module'),
+      load = createRequire(app.getAppPath() + '/package.json'),
+      main = load('./dist/main/index.js') as {
+        client: { policy: { allows: () => Promise<boolean> } };
+      };
+    main.client.policy.allows = async () => true;
+    powerMonitor.getSystemIdleState = () => 'active';
+  });
+}
+const returnState = () =>
+  existsSync(join(profile, 'timer-pause-returns.json'))
+    ? (JSON.parse(readFileSync(join(profile, 'timer-pause-returns.json'), 'utf8')) as {
+        delivery: string;
+        key: string;
+        returnKind?: string;
+      }[])
+    : [];
+test('синтетические lock/unlock показывают только подтверждённую паузу; явная кнопка продолжает с CAS', async () => {
+  stub.state.timers[1] = liveTimer();
+  const page = await launch();
+  await allowReturnPopup();
+  if (!app) throw Error('App unavailable');
+  const next = app.waitForEvent('window');
+  await app.evaluate(({ powerMonitor }) => {
+    powerMonitor.emit('lock-screen');
+    powerMonitor.emit('unlock-screen');
+  });
+  const toast = await next;
+  await expect(toast.getByRole('button', { name: 'Продолжить', exact: true })).toBeVisible();
+  await expect.poll(() => returnState()[0]?.delivery).toBe('shown');
+  expect(returnState()[0]?.returnKind).toBe('unlock');
+  await expect(toast.locator('.body')).toContainText('Не учтено:');
+  await toast.screenshot({ path: test.info().outputPath('return-popup-unlock.png') });
+  expect(writes().filter((call) => call.path.endsWith('/resume'))).toHaveLength(0);
+  await toast.getByRole('button', { name: 'Продолжить', exact: true }).click();
+  await expect(dialog(page).locator('.timer-state')).toHaveText('Идёт работа');
+  expect(writes().filter((call) => call.path.endsWith('/resume'))).toHaveLength(1);
+  expect(writes().find((call) => call.path.endsWith('/resume'))?.body).toMatchObject({
+    expected: { timerId: 71, revision: 2, currentSegmentFrom: null },
+  });
+  await expect.poll(() => returnState().length).toBe(0);
+});
+test('кнопка закончить после возврата открывает связанную подготовку без resume/hidden pause', async () => {
+  stub.state.timers[1] = liveTimer();
+  const page = await launch();
+  await allowReturnPopup();
+  if (!app) throw Error('App unavailable');
+  const next = app.waitForEvent('window');
+  await app.evaluate(({ powerMonitor }) => {
+    powerMonitor.emit('lock-screen');
+    powerMonitor.emit('unlock-screen');
+  });
+  const toast = await next;
+  await expect.poll(() => returnState()[0]?.delivery).toBe('shown');
+  await toast.getByRole('button', { name: 'Закончить и проверить', exact: true }).click();
+  await expect(dialog(page).getByRole('region', { name: 'Запись трудозатрат' })).toBeVisible();
+  expect(writes().filter((call) => call.path.endsWith('/pause'))).toHaveLength(1);
+  expect(writes().filter((call) => call.path.endsWith('/resume'))).toHaveLength(0);
+  expect(writes().filter((call) => call.path.endsWith('/prepare-finish'))).toHaveLength(1);
+  expect(stub.state.timerWrites).toHaveLength(0);
+});
+test('synthetic query/session-end сохраняет исходный envelope без API; после рестарта fresh-context безопасно восстанавливает', async () => {
+  stub.state.timers[1] = liveTimer();
+  await launch();
+  if (!app) throw Error('App unavailable');
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find((win) =>
+      win.webContents.getURL().startsWith('file:'),
+    );
+    win?.emit('query-session-end', {
+      preventDefault: () => {
+        throw Error('Must not block shutdown');
+      },
+    });
+    win?.emit('session-end');
+  });
+  const queued = JSON.parse(readFileSync(join(profile, 'timer-pause-outbox.json'), 'utf8')) as {
+    records: { key: string; at: string; expected: unknown; status: string }[];
+  };
+  expect(queued.records[0]?.status).toBe('pending');
+  expect(writes()).toHaveLength(0);
+  await app.close();
+  app = undefined;
+  app = await electron.launch({
+    args: [ROOT],
+    env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
+  });
+  const page = await app.firstWindow();
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'online');
+  await expect.poll(() => writes().filter((call) => call.path.endsWith('/pause')).length).toBe(1);
+  expect(writes()[0]).toMatchObject({
+    requestId: queued.records[0]?.key,
+    body: { expected: queued.records[0]?.expected, at: queued.records[0]?.at, reason: 'lock' },
+  });
+  // Event emission is synthetic; this test does not establish actual Windows shutdown delivery.
 });

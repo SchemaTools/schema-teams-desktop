@@ -911,6 +911,7 @@ export function App() {
             snapshot={snapshot}
             mode={timerView.mode}
             taskId={timerView.taskId}
+            prepareExpected={timerView.prepareExpected}
             onClose={() => setTimerView(null)}
           />
         </div>

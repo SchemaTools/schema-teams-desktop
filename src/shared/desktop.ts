@@ -67,10 +67,22 @@ export interface ClientSnapshot {
   timerError?: string | null;
   timerObservedAt?: number;
   recentTimeTaskIds?: number[];
-  timerAbsence?: { id: number; from: number; to: number } | null;
+  timerAbsence?: {
+    id: number;
+    from: number;
+    to: number;
+    message?: string;
+    durable?: boolean;
+  } | null;
   timerReminderTime?: string;
+  timerAskOnUnlock?: boolean;
   timerPauseOnLock?: boolean;
-  navigateTimer?: { mode: 'pick' | 'finish'; taskId?: number; nonce: number } | null;
+  navigateTimer?: {
+    mode: 'pick' | 'finish';
+    taskId?: number;
+    nonce: number;
+    prepareExpected?: TimerExpected;
+  } | null;
   preferences?: LocalPreferences;
   navigateSettings?: { tab: PreferencesTab; nonce: number } | null;
   updates?: UpdateState;
@@ -102,7 +114,12 @@ export type DesktopRequest =
       | { kind: 'timer.options'; q?: string }
       | { kind: 'timer.open'; mode: 'pick' | 'finish'; taskId?: number }
       | { kind: 'timer.absenceDismiss'; id: number }
-      | { kind: 'timer.preferences'; reminderTime: string }
+      | {
+          kind: 'timer.preferences';
+          reminderTime: string;
+          pauseOnLock?: boolean;
+          askOnUnlock?: boolean;
+        }
       | { kind: 'timer.start'; taskId: number; expected: TimerExpected | null }
       | { kind: 'timer.pause'; expected: TimerExpected }
       | { kind: 'timer.resume'; expected: TimerExpected }

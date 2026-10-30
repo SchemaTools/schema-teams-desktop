@@ -22,6 +22,7 @@ import {
   type TimerPrepared,
   type TimerRow,
   type TimerRowsCheck,
+  type TimerExpected,
   type WorkTimer,
 } from '../shared/time';
 import { request } from './bridge';
@@ -93,7 +94,8 @@ export function TimerCard({
       )}
       {snapshot.timerAbsence && (
         <p className="timer-warning">
-          После блокировки или сна проверьте время: автоматическая пауза не подтверждена.
+          {snapshot.timerAbsence.message ??
+            'После блокировки или сна проверьте время: автоматическая пауза не подтверждена.'}
         </p>
       )}
       <div className="timer-actions">
@@ -110,11 +112,13 @@ export function TimerPanel({
   snapshot,
   mode,
   taskId,
+  prepareExpected,
   onClose,
 }: {
   snapshot: ClientSnapshot;
   mode: 'pick' | 'finish';
   taskId?: number;
+  prepareExpected?: TimerExpected;
   onClose: () => void;
 }) {
   const [options, setOptions] = useState<TimeOptions | null>(null),
@@ -256,6 +260,14 @@ export function TimerPanel({
   useEffect(() => {
     void refresh();
   }, []); // One mount is bound to one owner/navigation request.
+  const preparedOnOpen = useRef(false);
+  useEffect(() => {
+    if (!prepareExpected || preparedOnOpen.current || !valid || busy.current) return;
+    preparedOnOpen.current = true;
+    if (!matchesTimer(timer, prepareExpected))
+      setError('Таймер изменился после возвращения. Обновите состояние и проверьте задачу.');
+    else void prepare();
+  }, [prepareExpected, valid]);
   async function prepare(next: TimeTask | null = null) {
     const current = latest.current.timer;
     if (!current || !latest.current.timerReady || latest.current.connection !== 'online') return;
@@ -439,10 +451,14 @@ export function TimerPanel({
             <div className="timer-warning" role="status">
               <b>Проверьте время после возвращения</b>
               <p>
-                Компьютер был заблокирован или спал:{' '}
-                {new Date(snapshot.timerAbsence.from).toLocaleString('ru-RU')} —{' '}
-                {new Date(snapshot.timerAbsence.to).toLocaleString('ru-RU')}. Автоматическая пауза
-                не подтверждена. При записи исключите время отсутствия вручную.
+                {snapshot.timerAbsence.message ?? (
+                  <>
+                    Компьютер был заблокирован или спал:{' '}
+                    {new Date(snapshot.timerAbsence.from).toLocaleString('ru-RU')} —{' '}
+                    {new Date(snapshot.timerAbsence.to).toLocaleString('ru-RU')}. Автоматическая
+                    пауза не подтверждена. При записи исключите время отсутствия вручную.
+                  </>
+                )}
               </p>
               <button
                 disabled={pending}
@@ -454,7 +470,9 @@ export function TimerPanel({
                   })
                 }
               >
-                Предупреждение прочитано
+                {snapshot.timerAbsence.durable
+                  ? 'Проверено, отменить повтор'
+                  : 'Предупреждение прочитано'}
               </button>
             </div>
           )}
