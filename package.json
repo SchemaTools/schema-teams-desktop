@@ -1,7 +1,7 @@
 {
   "name": "schema-teams-desktop",
   "productName": "Schema Teams",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "description": "Настольное приложение Schema Teams для Windows",
   "private": true,
   "license": "UNLICENSED",
@@ -29,6 +29,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "18.3.28",
     "@types/react-dom": "18.3.7",
+    "axe-core": "4.14.0",
     "electron": "44.9.1",
     "electron-builder": "^26.15.3",
     "esbuild": "0.28.2",

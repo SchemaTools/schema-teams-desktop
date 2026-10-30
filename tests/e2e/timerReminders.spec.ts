@@ -130,13 +130,17 @@ test('«Ещё работаю» закрывает напоминание, де�
   await expect.poll(() => toast.isClosed()).toBe(true);
   expect(writes()).toHaveLength(0);
   if (!app) throw Error('App unavailable');
-  await app.close();
+  await test.step('Завершить первый процесс после закрытия карточки', async () => {
+    if (!app) throw Error('App unavailable');
+    await app.close();
+  });
   app = undefined;
   existingProfile(profile);
-  app = await electron.launch({
-    args: [ROOT],
-    env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
-  });
+  app = await test.step('Запустить второй процесс с тем же профилем', () =>
+    electron.launch({
+      args: [ROOT],
+      env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
+    }));
   const reopened = await app.firstWindow();
   await expect(reopened.locator('.app-shell')).toHaveAttribute('data-connection', 'online');
   await expect.poll(async () => (await snapshot(reopened)).timerReady).toBe(true);

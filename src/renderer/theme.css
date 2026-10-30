@@ -16,7 +16,7 @@
   --line: #e4e7eb;
   --ink: #000;
   --body: #20242b;
-  --muted: #707579;
+  --muted: #555d64;
   --rail: #2f3a46;
   --rail-text: #bbc4cf;
   --incoming: #fff;
@@ -124,6 +124,11 @@ select {
 }
 button {
   color: inherit;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
 }
 button svg {
   flex: none;
@@ -717,7 +722,7 @@ button svg {
   justify-content: space-between;
   gap: 12px;
   padding: 0 20px 8px;
-  color: var(--body);
+  color: var(--ink);
   font-size: 11px;
 }
 .compose-meta.error-copy {
