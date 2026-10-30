@@ -13,8 +13,8 @@ interface PendingAbsence {
   from: number;
 }
 
-// Наблюдает отсутствие сотрудника. Команды таймера здесь намеренно отсутствуют:
-// протокол 1.1 не позволяет безопасно повторить паузу после смены сегмента.
+// Наблюдает отсутствие сотрудника и хранит предупреждение до подтверждения.
+// CAS-команда и её неизменяемый снимок принадлежат ClientHost, не этому наблюдателю.
 export class TimerAbsence {
   private locked = false;
   private suspended = false;
@@ -69,6 +69,10 @@ export class TimerAbsence {
   }
 
   dismiss(): void {
+    this.currentWarning = null;
+  }
+  confirmed(): void {
+    this.pending = null;
     this.currentWarning = null;
   }
 }

@@ -75,11 +75,19 @@ export function TimerSettings({
         <dl>
           <dt>Конец рабочего дня бюро</dt>
           <dd>
-            {workdayEnd === undefined ? 'Не удалось получить с сервера' : minuteClock(workdayEnd)}
+            {snapshot.bureau?.workEnd ??
+              (workdayEnd === undefined
+                ? 'Не удалось получить с сервера'
+                : minuteClock(workdayEnd))}
           </dd>
         </dl>
         <label className="timer-unsupported">
-          <input type="checkbox" checked={false} disabled readOnly />
+          <input
+            type="checkbox"
+            checked={snapshot.timerControl === true && snapshot.timerPauseOnLock !== false}
+            disabled
+            readOnly
+          />
           Пауза при блокировке компьютера
         </label>
         <label className="timer-unsupported">
@@ -87,8 +95,9 @@ export function TimerSettings({
           Спросить «Продолжить?» после разблокировки
         </label>
         <p>
-          Эти два действия станут доступны после обновления сервера. Сейчас приложение показывает
-          предупреждение о времени отсутствия.
+          {snapshot.timerControl
+            ? 'При блокировке и сне приложение отправляет безопасную паузу по снимку таймера и времени сервера. Автоматического продолжения нет. Если пауза не подтверждена, проверьте время отсутствия.'
+            : 'Без подтверждённого договора сервера приложение показывает предупреждение о времени отсутствия.'}
         </p>
       </div>
     </details>

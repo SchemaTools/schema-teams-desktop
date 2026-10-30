@@ -206,6 +206,7 @@ function Attachment({
       previewFlight.current = job;
       setPreviewLoading(identity);
       setPreviewError(undefined);
+      setFeedback(undefined);
       const relevant = () =>
         mounted.current &&
         rasterCurrent.current &&
@@ -232,6 +233,11 @@ function Attachment({
             if (job.zoom) setEnlarged({ identity, url: result.data.url });
           } else {
             setPreviewError(identity);
+            setFeedback({
+              identity,
+              text: result.ok ? 'Не удалось открыть проверенное изображение.' : result.error,
+              error: true,
+            });
           }
         },
       });
@@ -284,7 +290,14 @@ function Attachment({
             className="attachment-preview"
             src={visiblePreview}
             alt={file.fileName}
-            onError={() => setPreviewError(identity)}
+            onError={() => {
+              setPreviewError(identity);
+              setFeedback({
+                identity,
+                text: 'Изображение не удалось декодировать. Файл повреждён или его формат не поддерживается.',
+                error: true,
+              });
+            }}
           />
         </button>
       )}

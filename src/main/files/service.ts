@@ -174,9 +174,28 @@ export class AttachmentService {
     );
     const file = message?.files.find((f) => f.fileId === t.fileId);
     if (!file) return failure('not_found');
-    if (!attachmentName(file.fileName) || file.size > FILE_LIMIT) return failure('invalid_file');
+    if (!attachmentName(file.fileName))
+      return {
+        ok: false,
+        code: 'invalid_file',
+        retryable: false,
+        error: 'Имя вложения не прошло проверку. Повторите загрузку из актуального сообщения.',
+      };
+    if (file.size > FILE_LIMIT)
+      return {
+        ok: false,
+        code: 'invalid_file',
+        retryable: false,
+        error: 'Размер вложения превышает допустимый предел.',
+      };
     const data = await this.o.api.download(file.fileId, file.size);
     if (!this.current(t)) return failure('stale_session');
+    if (!data.ok && ['invalid_file', 'payload_too_large'].includes(data.code))
+      return {
+        ...data,
+        error:
+          'Размер полученного файла не совпал со сведениями сообщения. Повторите загрузку из актуального сообщения.',
+      };
     return data.ok ? { ok: true, data: { file, ...data.data } } : data;
   }
   async preview(t: FileTarget): Promise<ApiResult<{ url: string }>> {
@@ -186,7 +205,14 @@ export class AttachmentService {
       const data = await this.load(t);
       if (!data.ok) return data;
       const mime = rasterMime(data.data.bytes);
-      if (!mime || !data.data.file.isImage) return failure('invalid_file');
+      if (!mime || !data.data.file.isImage)
+        return {
+          ok: false,
+          code: 'invalid_file',
+          retryable: false,
+          error:
+            'Формат изображения не прошёл проверку. Файл повреждён или его тип не поддерживается.',
+        };
       const token = randomUUID();
       // Bound memory even when a long conversation contains many photographs.
       for (const [id, p] of this.previews)

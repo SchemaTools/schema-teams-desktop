@@ -62,7 +62,16 @@ async function login(page: Page) {
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
   await (await pending).locator('#sign-in').click();
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'online');
+  // Viewing/acknowledging history requires an actually focused native window.
+  await activeApp().evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows().find((win) =>
+      win.webContents.getURL().startsWith('file:'),
+    );
+    win?.show();
+    win?.focus();
+  });
 }
+
 async function settings(page: Page) {
   await page.getByRole('button', { name: 'Меню', exact: true }).click();
   await page.getByRole('button', { name: 'Настройки', exact: true }).click();

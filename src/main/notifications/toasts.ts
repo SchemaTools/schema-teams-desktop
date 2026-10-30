@@ -45,12 +45,12 @@ export class CustomToasts {
     screen.on('display-removed', this.reposition);
   }
 
-  show(spec: ToastSpec): void {
+  show(spec: ToastSpec): boolean {
     const area = screen.getPrimaryDisplay().workArea;
     const height = Math.min(spec.hasReply ? 258 : 194, area.height - GAP * 2);
     const previous = this.entries.get(spec.id);
     // Не заменяем уведомление, пока сотрудник пишет ответ.
-    if (previous?.draft || previous?.sent) return;
+    if (previous?.draft || previous?.sent) return false;
     if (previous) {
       this.entries.delete(spec.id);
       previous.win.close();
@@ -64,7 +64,7 @@ export class CustomToasts {
       const oldest = [...this.entries.values()].find(
         (entry) => !entry.draft && !entry.hover && !entry.sent,
       );
-      if (!oldest) return;
+      if (!oldest) return false;
       this.entries.delete(oldest.spec.id);
       oldest.win.close();
     }
@@ -122,6 +122,7 @@ export class CustomToasts {
     void win.loadURL(url).catch(() => {
       if (!win.isDestroyed()) win.close();
     });
+    return true;
   }
 
   private async present(entry: Entry): Promise<void> {
@@ -157,6 +158,7 @@ export class CustomToasts {
 
   dismiss(id: string): void {
     const entry = this.entries.get(id);
+    this.entries.delete(id);
     if (entry && !entry.win.isDestroyed()) entry.win.close();
   }
 

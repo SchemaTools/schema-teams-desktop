@@ -22,7 +22,11 @@ export class UpdateChecker {
     this.value = initialUpdateState(o.enabled);
   }
   get state(): UpdateState {
-    return { ...this.value, available: this.value.available ? { ...this.value.available } : null };
+    return {
+      ...this.value,
+      available: this.value.available ? { ...this.value.available } : null,
+      published: this.value.published ? { ...this.value.published } : null,
+    };
   }
   start(): void {
     if (this.destroyed || this.timer || !this.o.enabled) return;
@@ -60,6 +64,7 @@ export class UpdateChecker {
           ...this.value,
           status: 'unpublished',
           available: null,
+          published: null,
           checkedAt: Date.now(),
           error: null,
         };
@@ -75,6 +80,11 @@ export class UpdateChecker {
           this.value = {
             ...this.value,
             status: comparison > 0 ? 'available' : 'current',
+            published: {
+              version: result.data.version,
+              notes: result.data.notes,
+              size: result.data.size,
+            },
             available:
               comparison > 0
                 ? { version: result.data.version, notes: result.data.notes, size: result.data.size }

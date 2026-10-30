@@ -81,17 +81,22 @@ test('обработчики ошибок и путь пишут только б
   expect(JSON.stringify(preview)).not.toMatch(/dummy-|private|forged|https?:|127\.0\.0\.1/);
   expect(stub.state.calls.filter((c) => c.method !== 'GET')).toHaveLength(0);
 });
-test('таймер журналирует подтверждение, неизвестный исход и отказ preflight без повторов или содержимого задачи', async () => {
+test('таймер журналирует подтверждение, неизвестный исход и отказ CAS без повторов или содержимого задачи', async () => {
   const page = await launch(true);
   stub.state.timerFinishLostAck = true;
   const result = await page.evaluate(async () => {
     const init = await window.teams.request({ kind: 'init' });
     if (!init.ok) throw Error('No state');
     const epoch = init.data.epoch;
-    const expected = (timer: { version: number; task: { id: number }; startedAt: string }) => ({
-      version: timer.version,
-      taskId: timer.task.id,
-      startedAt: timer.startedAt,
+    const expected = (timer: {
+      timerId?: number;
+      version: number;
+      state: string;
+      segments: { from: string; to: string | null }[];
+    }) => ({
+      timerId: timer.timerId ?? 0,
+      revision: timer.version,
+      currentSegmentFrom: timer.state === 'run' ? (timer.segments.at(-1)?.from ?? null) : null,
     });
     const start = await window.teams.request({
       kind: 'timer.start',
@@ -112,18 +117,34 @@ test('таймер журналирует подтверждение, неизв
       expected: expected(pause.data),
     });
     if (!resume.ok || !resume.data) throw Error('Resume failed');
+    const preparation = await window.teams.request({
+      kind: 'timer.proposal',
+      epoch,
+      expected: expected(resume.data),
+    });
+    if (!preparation.ok) throw Error('Preparation failed');
+    const rows = [{ taskId: 21, date: '2026-10-29', from: 540, to: 570 }];
+    await window.teams.request({
+      kind: 'timer.validateRows',
+      epoch,
+      preparedRequestId: preparation.data.requestId,
+      rows,
+    });
     const finish = await window.teams.request({
       kind: 'timer.finish',
       epoch,
       expected: expected(resume.data),
       rows: [{ taskId: 21, date: '2026-10-29', from: 540, to: 570 }],
       note: 'dummy-private-note',
+      preparedRequestId: preparation.data.requestId,
     });
+    await window.teams.request({ kind: 'timer.read', epoch });
     const reset = await window.teams.request({
       kind: 'timer.reset',
       epoch,
       expected: expected(resume.data),
     });
+    await window.teams.request({ kind: 'timer.read', epoch });
     const another = await window.teams.request({
       kind: 'timer.start',
       epoch,
@@ -139,7 +160,7 @@ test('таймер журналирует подтверждение, неизв
     return { finish, reset, confirmedReset };
   });
   expect(result.finish).toMatchObject({ ok: false, uncertain: true });
-  expect(result.reset).toMatchObject({ ok: false, code: 'timer_changed' });
+  expect(result.reset).toMatchObject({ ok: false, code: 'stale_timer' });
   expect(result.confirmedReset.ok).toBe(true);
   expect(stub.state.timerWrites).toHaveLength(1);
   const lines = log()
@@ -156,7 +177,7 @@ test('таймер журналирует подтверждение, неизв
     command: 'reset',
     phase: 'result',
     outcome: 'rejected',
-    code: 'timer_changed',
+    code: 'stale_timer',
   });
   expect(records).toContainEqual({ command: 'reset', phase: 'result', outcome: 'ok' });
   expect(log()).toContain('"state":"online"');

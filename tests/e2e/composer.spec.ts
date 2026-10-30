@@ -188,6 +188,38 @@ test('картинка из буфера готовится главным пр�
   await expect(input).toHaveValue('');
   expect(sends()).toHaveLength(1);
   expect(sends()[0]?.body).toEqual({ text: 'Картинка с подписью', fileIds: [fileId] });
+  const photo = page.locator('.attachment-card[data-file-id="' + fileId + '"]');
+  await photo.scrollIntoViewIfNeeded();
+  await expect
+    .poll(() =>
+      photo
+        .locator('img.attachment-preview')
+        .evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBe(1);
+  await photo.locator('.attachment-preview-button').click();
+  await expect(page.getByRole('button', { name: 'Закрыть просмотр', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Закрыть просмотр', exact: true }).click();
+  await photo.locator('.attachment-preview-button').click();
+  await expect(page.getByRole('button', { name: 'Закрыть просмотр', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Закрыть просмотр', exact: true }).click();
+  const uploaded = stub.files.get(fileId);
+  if (!uploaded) throw Error('No uploaded PNG');
+  const original = Buffer.from(uploaded.bytes);
+  stub.files.set(fileId, { ...uploaded, bytes: original.subarray(0, original.length - 4) });
+  await photo.locator('.attachment-preview-button').click();
+  await expect(photo).toContainText('Размер полученного файла не совпал');
+  await photo.getByRole('button', { name: 'Повторить загрузку фото', exact: true }).click();
+  await expect(photo).toContainText('Размер полученного файла не совпал');
+  stub.files.set(fileId, { ...uploaded, bytes: original });
+  await photo.getByRole('button', { name: 'Повторить загрузку фото', exact: true }).click();
+  await expect
+    .poll(() =>
+      photo
+        .locator('img.attachment-preview')
+        .evaluate((image: HTMLImageElement) => image.naturalWidth),
+    )
+    .toBe(1);
 });
 
 test('неподтверждённая отправка файла сохраняет IDs и повторяет тот же ключ без дубля', async () => {

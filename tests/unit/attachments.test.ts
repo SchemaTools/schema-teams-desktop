@@ -432,3 +432,30 @@ describe('AttachmentService: private preview capabilities', () => {
     expect(h.service.response(new Request(second.data.url)).status).toBe(200);
   });
 });
+
+describe('Safe static attachment failure stages', () => {
+  it('distinguishes unsafe name, byte-count mismatch, and unsupported raster without raw names', async () => {
+    const h = await harness({ fileName: 'Фото.png', bytes: png, mime: 'image/png', isImage: true });
+    h.file.fileName = '../private.png';
+    let result = await h.service.preview(h.target);
+    expect(result).toMatchObject({
+      code: 'invalid_file',
+      error: expect.stringContaining('Имя вложения'),
+    });
+    expect(JSON.stringify(result)).not.toContain('private');
+    h.file.fileName = 'Фото.png';
+    h.file.size = png.length + 1;
+    result = await h.service.preview(h.target);
+    expect(result).toMatchObject({
+      code: 'invalid_file',
+      error: expect.stringContaining('Размер полученного файла'),
+    });
+    h.file.size = 3;
+    h.state.getFile.mockResolvedValue(binary(new Uint8Array([1, 2, 3]), 'image/png'));
+    result = await h.service.preview(h.target);
+    expect(result).toMatchObject({
+      code: 'invalid_file',
+      error: expect.stringContaining('Формат изображения'),
+    });
+  });
+});

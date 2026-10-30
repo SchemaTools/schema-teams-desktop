@@ -7,6 +7,7 @@ import { isoDay } from '../shared/time';
 import { serverPartitionValid } from '../shared/serverConfiguration';
 
 export interface Settings {
+  deviceId?: string;
   /** Адрес сервера; пусто — адрес из сборки */
   serverUrl?: string;
   /** New isolated authentication storage after an explicit server change. */
@@ -55,6 +56,11 @@ export function normalizeSettings(raw: unknown): Settings {
   };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
+  if (
+    typeof r.deviceId === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(r.deviceId)
+  )
+    s.deviceId = r.deviceId;
   if (typeof r.onboardingComplete === 'boolean') s.onboardingComplete = r.onboardingComplete;
   if (
     typeof r.timerReminderSeen === 'object' &&

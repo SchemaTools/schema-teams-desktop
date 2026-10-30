@@ -11,6 +11,7 @@ export interface DesktopRelease extends ReleaseInfo {
 export interface UpdateState {
   status: 'idle' | 'checking' | 'available' | 'current' | 'unpublished' | 'error' | 'unconfigured';
   available: ReleaseInfo | null;
+  published?: ReleaseInfo | null;
   checkedAt: number | null;
   error: string | null;
   dismissedVersion: string | null;
@@ -30,6 +31,7 @@ export function compareVersions(a: string, b: string): number | null {
 export const initialUpdateState = (enabled = true): UpdateState => ({
   status: enabled ? 'idle' : 'unconfigured',
   available: null,
+  published: null,
   checkedAt: null,
   error: null,
   dismissedVersion: null,

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type {
   ApiResult,
   ChatDetail,
@@ -10,6 +11,7 @@ import type {
   Health,
   MessagePage,
   NotificationPage,
+  NotificationItem,
   NotificationSettings,
   SafeUser,
   ObjectInfo,
@@ -17,10 +19,13 @@ import type {
 import * as parse from './parse';
 import * as time from './time';
 import { desktopRelease } from './updates';
+import { desktopConfig } from './desktopConfig';
+import type { DesktopConfig } from '../../shared/desktopConfig';
 import type { DesktopRelease } from '../../shared/updates';
 import {
   expectedValid,
   matchesTimer,
+  type TimerRowsCheck,
   positiveId,
   timerRowsValid,
   type WorkTimer,
@@ -37,7 +42,7 @@ export interface TeamsApiOptions {
   onTimerAudit?: (audit: TimerAudit) => void;
 }
 export interface TimerAudit {
-  command: 'start' | 'pause' | 'resume' | 'reset' | 'finish';
+  command: 'start' | 'pause' | 'resume' | 'extend' | 'reset' | 'finish';
   phase: 'requested' | 'result';
   outcome?: 'ok' | 'rejected' | 'uncertain';
   code?: string;
@@ -79,6 +84,12 @@ const ERROR_TEXT: Record<string, string> = {
   timer_running: 'Сначала завершите текущую задачу.',
   timer_changed: 'Таймер изменился в другом окне. Обновите состояние и проверьте задачу.',
   timer_busy: 'Дождитесь завершения действия с таймером.',
+  timer_day_start: 'Нельзя добавить 15 минут раньше начала дня бюро.',
+  precondition_required: 'Сервер не подтвердил безопасное управление таймером. Обновите состояние.',
+  stale_timer: 'Таймер изменился на другом устройстве. Обновите состояние.',
+  stale_timer_segment: 'Интервал таймера изменился. Обновите состояние.',
+  invalid_event_time: 'Сервер отклонил время события. Проверьте интервалы.',
+  prepared_expired: 'Срок проверки истёк. Закройте проверку и подготовьте её заново.',
 };
 export function failure<T = never>(code: string, uncertain = false): ApiResult<T> {
   return {
@@ -103,6 +114,22 @@ export class TeamsApi {
   private readonly pending = new Set<AbortController>();
   private authFlight?: Promise<ApiResult<SafeUser>>;
   private timerFlight?: { epoch: number };
+  private config: DesktopConfig | null = null;
+  get desktopConfiguration(): DesktopConfig | null {
+    return this.config ? structuredClone(this.config) : null;
+  }
+  get timerControl(): boolean {
+    return (this.config?.capabilities.timerControl ?? 0) >= 2;
+  }
+  async readDesktopConfig(): Promise<ApiResult<DesktopConfig>> {
+    const epoch = this.epoch,
+      owner = this.owner;
+    this.config = null;
+    const result = await this.request('/api/desktop/config', 'GET', desktopConfig);
+    if (epoch !== this.epoch || owner !== this.owner) return failure('stale_session');
+    if (result.ok) this.config = result.data;
+    return result;
+  }
   constructor(private readonly o: TeamsApiOptions) {}
   get epoch(): number {
     return this.generation;
@@ -112,6 +139,8 @@ export class TeamsApi {
   }
   clear(): void {
     this.generation++;
+    this.config = null;
+    this.prepared.clear();
     this.user = null;
     this.csrf = null;
     this.authFlight = undefined;
@@ -177,100 +206,173 @@ export class TeamsApi {
     return this.request('/api/chats', 'GET', parse.list);
   }
   timer(): Promise<ApiResult<WorkTimer | null>> {
-    return this.request('/api/time/timer', 'GET', time.workTimer);
+    return this.request(
+      '/api/time/timer',
+      'GET',
+      this.timerControl ? time.controlledTimer : time.workTimer,
+    );
   }
-  timeOptions(): Promise<ApiResult<TimeOptions>> {
-    return this.request('/api/time/options', 'GET', time.timeOptions);
+  async timeOptions(q = ''): Promise<ApiResult<TimeOptions>> {
+    if (typeof q !== 'string' || q.length > 200) return failure('validation');
+    const epoch = this.epoch;
+    const options = await this.request('/api/time/options', 'GET', time.timeOptions);
+    if (!options.ok || !this.timerControl) return options;
+    const list = await this.request(
+      `/api/time/timer/pick-list${q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ''}`,
+      'GET',
+      (raw) => {
+        const x = parse.object(raw);
+        if (
+          !Array.isArray(x.tasks) ||
+          x.tasks.length > 10000 ||
+          !Array.isArray(x.recent) ||
+          x.recent.length > 3
+        )
+          throw new parse.InvalidData();
+        return { tasks: x.tasks.map(time.timeTask), recent: x.recent.map(time.timeTask) };
+      },
+    );
+    if (epoch !== this.epoch) return failure('stale_session');
+    return list.ok
+      ? {
+          ok: true,
+          data: {
+            ...options.data,
+            tasks: [
+              ...new Map(
+                [...list.data.recent, ...list.data.tasks].map((task) => [task.id, task]),
+              ).values(),
+            ],
+            recentTaskIds: list.data.recent.map((t) => t.id),
+          },
+        }
+      : list;
   }
-  private async timerBound(expected: TimerExpected | null): Promise<ApiResult<WorkTimer | null>> {
-    const epoch = this.epoch,
-      owner = this.owner;
-    const current = await this.timer();
-    if (epoch !== this.epoch || owner !== this.owner) return failure('stale_session');
-    if (!current.ok) return current;
-    return matchesTimer(current.data, expected) ? current : failure('timer_changed');
+  timerPending(deviceId: string): Promise<ApiResult<NotificationItem | null>> {
+    return this.request(
+      `/api/desktop/timer-notices/pending?deviceId=${encodeURIComponent(deviceId)}`,
+      'GET',
+      (raw) => {
+        const x = parse.object(raw);
+        if (x.item === null) return null;
+        const item = parse.notification(x.item);
+        if (item.event !== 'timer_stopped') throw new parse.InvalidData();
+        return item;
+      },
+    );
   }
-  /** Preflight reduces stale-window mistakes. Server CAS is still required for atomic safety. */
-  private async timerWrite(
-    action: TimerAudit['command'],
-    expected: TimerExpected | null,
-    body?: object,
-  ): Promise<ApiResult<WorkTimer | null>> {
-    const audit = (value: TimerAudit) => {
-      try {
-        this.o.onTimerAudit?.(value);
-      } catch {
-        /* Diagnostics never changes a command outcome. */
-      }
-    };
-    audit({ command: action, phase: 'requested' });
-    let result: ApiResult<WorkTimer | null>;
-    try {
-      result = await this.timerWriteNow(action, expected, body);
-    } catch {
-      result = failure('server_error', true);
-    }
-    audit({
-      command: action,
-      phase: 'result',
-      outcome: result.ok ? 'ok' : result.uncertain ? 'uncertain' : 'rejected',
-      ...(!result.ok && { code: result.code }),
+  timerNoticeAck(deviceId: string, notificationId: number): Promise<ApiResult<null>> {
+    return this.request('/api/desktop/timer-notices/ack', 'POST', parse.acknowledged, {
+      deviceId,
+      notificationId,
     });
-    return result;
   }
-  private async timerWriteNow(
-    action: TimerAudit['command'],
-    expected: TimerExpected | null,
-    body?: object,
-  ): Promise<ApiResult<WorkTimer | null>> {
-    if (expected !== null && !expectedValid(expected)) return failure('validation');
+  private prepared = new Map<string, { epoch: number; value: TimerPrepared; validated?: string }>();
+  private async timerCommand<T>(
+    action: TimerAudit['command'] | 'prepare-finish' | 'validate-rows',
+    body: object,
+    decode: (raw: unknown) => T,
+    operationKey: string = randomUUID(),
+  ): Promise<ApiResult<T>> {
+    if (!this.timerControl) return failure('precondition_required');
     if (this.timerFlight?.epoch === this.epoch) return failure('timer_busy');
-    const flight = { epoch: this.epoch };
+    const flight = { epoch: this.epoch },
+      key = operationKey;
     this.timerFlight = flight;
+    const path = '/api/time/timer' + (action === 'reset' ? '' : '/' + action);
+    const method = action === 'reset' ? 'DELETE' : 'POST';
+    const envelope = structuredClone(body);
     try {
-      const current = await this.timerBound(expected);
-      if (!current.ok) return current;
-      if (flight.epoch !== this.epoch) return failure('stale_session');
-      return await this.request(
-        `/api/time/timer${action === 'reset' ? '' : `/${action}`}`,
-        action === 'reset' ? 'DELETE' : 'POST',
-        (raw) => {
-          const timer = time.workTimer(raw);
-          if (action === 'finish' || action === 'reset' ? timer !== null : timer === null)
-            throw new parse.InvalidData();
-          if (timer && body && 'taskId' in body && timer.task.id !== body.taskId)
-            throw new parse.InvalidData();
-          if (
-            timer &&
-            expected &&
-            (timer.task.id !== expected.taskId || timer.startedAt !== expected.startedAt)
-          )
-            throw new parse.InvalidData();
-          if (
-            timer &&
-            ((action === 'pause' && timer.state !== 'pause') ||
-              ((action === 'start' || action === 'resume') && timer.state !== 'run'))
-          )
-            throw new parse.InvalidData();
-          return timer;
-        },
-        body,
-      );
+      const boundDecode = (raw: unknown) => {
+        if (action === 'prepare-finish' && parse.object(raw).requestId !== key)
+          throw new parse.InvalidData();
+        return decode(raw);
+      };
+      let result = await this.request(path, method, boundDecode, envelope, true, [200], key);
+      // Only unknown transport outcomes may replay the exact same operation envelope.
+      if (!result.ok && ['network', 'timeout'].includes(result.code) && flight.epoch === this.epoch)
+        result = await this.request(path, method, boundDecode, envelope, true, [200], key);
+      if (
+        !result.ok &&
+        ['network', 'timeout'].includes(result.code) &&
+        action === 'prepare-finish' &&
+        flight.epoch === this.epoch
+      )
+        result = await this.request(
+          `/api/time/timer/prepared/${encodeURIComponent(key)}`,
+          'GET',
+          boundDecode,
+        );
+      return result;
     } finally {
       if (this.timerFlight === flight) this.timerFlight = undefined;
     }
   }
+  private timerWrite(
+    action: TimerAudit['command'],
+    expected: TimerExpected | null,
+    body: object = {},
+    operationKey?: string,
+  ): Promise<ApiResult<WorkTimer | null>> {
+    if (expected !== null && !expectedValid(expected))
+      return Promise.resolve(failure('validation'));
+    const audit = (value: TimerAudit) => {
+      try {
+        this.o.onTimerAudit?.(value);
+      } catch {
+        /* diagnostics cannot change commands */
+      }
+    };
+    audit({ command: action, phase: 'requested' });
+    return this.timerCommand(
+      action,
+      { ...body, expected },
+      (raw) => {
+        const timer = time.controlledTimer(raw);
+        if (action === 'reset' || action === 'finish' ? timer !== null : timer === null)
+          throw new parse.InvalidData();
+        if (
+          timer &&
+          ((action === 'pause' && timer.state !== 'pause') ||
+            ((action === 'start' || action === 'resume') && timer.state !== 'run') ||
+            (action !== 'start' && expected && timer.timerId !== expected.timerId) ||
+            ('taskId' in body && timer.task.id !== body.taskId))
+        )
+          throw new parse.InvalidData();
+        return timer;
+      },
+      operationKey,
+    ).then((result) => {
+      audit({
+        command: action,
+        phase: 'result',
+        outcome: result.ok ? 'ok' : result.uncertain ? 'uncertain' : 'rejected',
+        ...(!result.ok && { code: result.code }),
+      });
+      return result;
+    });
+  }
   timerStart(taskId: number, expected: TimerExpected | null): Promise<ApiResult<WorkTimer | null>> {
     if (!positiveId(taskId)) return Promise.resolve(failure('validation'));
-    if (expected !== null && expected.taskId !== taskId)
-      return Promise.resolve(failure('timer_running'));
     return this.timerWrite('start', expected, { taskId });
   }
-  timerPause(expected: TimerExpected): Promise<ApiResult<WorkTimer | null>> {
-    return this.timerWrite('pause', expected, { reason: 'manual' });
+  timerPause(
+    expected: TimerExpected,
+    at?: string,
+    operationKey?: string,
+  ): Promise<ApiResult<WorkTimer | null>> {
+    return this.timerWrite(
+      'pause',
+      expected,
+      at ? { reason: 'lock', at } : { reason: 'manual' },
+      operationKey,
+    );
   }
   timerResume(expected: TimerExpected): Promise<ApiResult<WorkTimer | null>> {
     return this.timerWrite('resume', expected);
+  }
+  timerExtend(expected: TimerExpected): Promise<ApiResult<WorkTimer | null>> {
+    return this.timerWrite('extend', expected);
   }
   timerReset(expected: TimerExpected): Promise<ApiResult<WorkTimer | null>> {
     return this.timerWrite('reset', expected);
@@ -279,31 +381,66 @@ export class TeamsApi {
     expected: TimerExpected,
     rows: TimerRow[],
     note: string,
+    preparedRequestId?: string,
   ): Promise<ApiResult<WorkTimer | null>> {
+    const preparation = preparedRequestId ? this.prepared.get(preparedRequestId) : undefined;
     if (
       !expectedValid(expected) ||
       !timerRowsValid(rows) ||
-      rows.some((row) => row.taskId !== expected.taskId) ||
       typeof note !== 'string' ||
-      note.length > 500
+      note.length > 500 ||
+      !preparation ||
+      preparation.epoch !== this.epoch ||
+      JSON.stringify(preparation.value.expected) !== JSON.stringify(expected) ||
+      preparation.validated !== JSON.stringify(rows)
     )
       return Promise.resolve(failure('validation'));
-    return this.timerWrite('finish', expected, { rows, note: note.trim() || null });
+    return this.timerWrite('finish', expected, {
+      rows,
+      note: note.trim() || null,
+      preparedRequestId,
+    });
   }
   async timerProposal(expected: TimerExpected): Promise<ApiResult<TimerPrepared>> {
     if (!expectedValid(expected)) return failure('validation');
-    const current = await this.timerBound(expected);
+    const current = await this.timer();
     if (!current.ok) return current;
-    if (current.data === null) return failure('no_timer');
-    const epoch = this.epoch,
-      owner = this.owner;
-    const proposal = await this.request('/api/time/timer/proposal', 'GET', time.timerProposal);
-    if (epoch !== this.epoch || owner !== this.owner) return failure('stale_session');
-    if (!proposal.ok) return proposal;
-    if (proposal.data.task.id !== expected.taskId) return failure('timer_changed');
-    const after = await this.timerBound(expected);
-    if (!after.ok) return after;
-    return { ok: true, data: { current: current.data, proposal: proposal.data } };
+    if (!current.data || !matchesTimer(current.data, expected)) return failure('timer_changed');
+    const timer = current.data;
+    const result = await this.timerCommand('prepare-finish', { expected }, (raw) =>
+      time.preparedTimer(raw, timer),
+    );
+    if (result.ok) {
+      if (
+        JSON.stringify(result.data.expected) !== JSON.stringify(expected) ||
+        result.data.proposal.task.id !== timer.task.id
+      )
+        return failure('invalid_data');
+      this.prepared.set(result.data.requestId, { epoch: this.epoch, value: result.data });
+      if (this.prepared.size > 100) {
+        const oldest = this.prepared.keys().next().value;
+        if (oldest) this.prepared.delete(oldest);
+      }
+    }
+    return result;
+  }
+  async timerValidateRows(
+    preparedRequestId: string,
+    rows: TimerRow[],
+  ): Promise<ApiResult<TimerRowsCheck>> {
+    const prepared = this.prepared.get(preparedRequestId);
+    if (!prepared || prepared.epoch !== this.epoch || !timerRowsValid(rows))
+      return failure('validation');
+    prepared.validated = undefined;
+    const snapshot = structuredClone(rows);
+    const result = await this.timerCommand(
+      'validate-rows',
+      { preparedRequestId, rows: snapshot },
+      time.rowsCheck,
+    );
+    if (result.ok && result.data.ok && prepared.epoch === this.epoch)
+      prepared.validated = JSON.stringify(snapshot);
+    return result;
   }
   detail(chatId: number): Promise<ApiResult<ChatDetail>> {
     return this.validId(chatId)
@@ -674,7 +811,13 @@ export class TeamsApi {
         this.authLost(epoch);
         return raw.status === 401 ? failure('unauthenticated') : error;
       }
-      if (protectedRoute && raw.status === 403 && error.code === 'csrf' && attempt === 0) {
+      if (
+        protectedRoute &&
+        !path.startsWith('/api/time/timer') &&
+        raw.status === 403 &&
+        error.code === 'csrf' &&
+        attempt === 0
+      ) {
         const refreshed = await this.authenticate();
         if (epoch !== this.generation || owner !== this.owner) return failure('stale_session');
         if (!refreshed.ok) return refreshed;

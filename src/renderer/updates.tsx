@@ -53,6 +53,17 @@ export function UpdatePreferences({ snapshot }: { snapshot: ClientSnapshot }) {
   return (
     <section className="update-info" aria-label="Обновление программы">
       <h4>Обновление программы</h4>
+      <p>
+        Установлена на этом компьютере: <b>{snapshot.appVersion}</b>
+      </p>
+      {state.published && (
+        <p>
+          {state.status === 'error' || state.status === 'checking'
+            ? 'Опубликована при последней успешной проверке'
+            : 'Опубликована на сервере'}
+          : <b>{state.published.version}</b>
+        </p>
+      )}
       <p role="status">{text}</p>
       {(state.error || error) && (
         <p className="preferences-error" role="alert">

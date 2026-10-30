@@ -10,7 +10,14 @@ import {
 } from '../../src/shared/time';
 import { requestValid } from '../../src/shared/requests';
 import { normalizeSettings } from '../../src/main/settings';
-import { optionsFixture, timerFixture, proposalFixture, timeTasks } from '../fixtures/time';
+import {
+  optionsFixture,
+  timerFixture,
+  proposalFixture,
+  timeTasks,
+  timerPushFixture,
+  configFixture,
+} from '../fixtures/time';
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const me = (id = 1) => ({
@@ -28,12 +35,17 @@ async function setup(onTimerAudit?: TeamsApiOptions['onTimerAudit']) {
   const fetch = vi.fn<TeamsApiOptions['fetch']>().mockResolvedValueOnce(json(me()));
   const api = new TeamsApi({ fetch, onTimerAudit });
   await api.authenticate();
+  fetch.mockResolvedValueOnce(json(configFixture()));
+  await api.readDesktopConfig();
+  fetch.mockClear();
   return { api, fetch };
 }
 describe('Native timer: server DTOs and display', () => {
   it('projects only timer fields and accepts idle', () => {
     expect(workTimer({ timer: null })).toBeNull();
-    expect(workTimer({ timer: { ...timerFixture(), secret: 'discard' } })).toEqual(timerFixture());
+    expect(workTimer({ timer: { ...timerFixture(), secret: 'discard' } })).toEqual(
+      expect.objectContaining({ version: 1, state: 'run' }),
+    );
     expect(timeOptions({ ...optionsFixture(), token: 'discard' })).toEqual(optionsFixture());
     expect(timerProposal(proposalFixture())).toEqual(proposalFixture());
   });
@@ -78,15 +90,16 @@ describe('Native timer: server DTOs and display', () => {
       expected,
       rows: proposalFixture().rows,
       note: 'Комментарий',
+      preparedRequestId: 'prepared-test',
     };
     expect(requestValid(request)).toBe(true);
     for (const patch of [
       { url: 'https://example.test' },
-      { expected: { ...expected, revision: 1 } },
+      { expected: { ...expected, revision: 0 } },
       { rows: [] },
       { note: 'x'.repeat(501) },
       { epoch: -1 },
-      { rows: [{ taskId: 22, date: '2026-10-29', from: 540, to: 570 }] },
+      { preparedRequestId: undefined },
     ])
       expect(requestValid({ ...request, ...patch })).toBe(false);
     expect(timerRowsValid([{ taskId: 21, date: '2026-10-29', from: 1410, to: 1440 }])).toBe(true);
@@ -100,234 +113,250 @@ describe('Native timer: server DTOs and display', () => {
     expect(normalizeSettings(s).recentTimeTaskIds).toEqual(s.recentTimeTaskIds);
   });
 });
-describe('TeamsApi: timer operations only with a fresh owner-bound preflight', () => {
-  it('audits requested and confirmed results without task IDs, rows, notes or credentials', async () => {
+
+describe('TeamsApi 0.12.1 CAS and operation envelopes', () => {
+  it('sends expected and idempotency key atomically without a racy preflight', async () => {
     const audit = vi.fn(),
-      h = await setup(audit);
+      h = await setup(audit),
+      expected = timerExpected(timerFixture());
+    h.fetch.mockResolvedValueOnce(json(timerPushFixture(timerFixture('pause'))));
+    expect((await h.api.timerPause(expected)).ok).toBe(true);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    const [path, init] = required(h.fetch.mock.calls[0]);
+    expect(path).toBe('/api/time/timer/pause');
+    expect(JSON.parse(String(init?.body))).toEqual({ expected, reason: 'manual' });
+    expect(new Headers(init?.headers).get('idempotency-key')).toMatch(/^[a-f0-9-]{36}$/);
+    expect(audit.mock.calls.map((c) => c[0].phase)).toEqual(['requested', 'result']);
+    expect(JSON.stringify(audit.mock.calls)).not.toMatch(/taskId|timerId|csrf|rows|note/);
+  });
+  it('retries unknown transport outcome with identical method/key/body, never a new operation', async () => {
+    const h = await setup();
     h.fetch
-      .mockResolvedValueOnce(json({ timer: timerFixture() }))
-      .mockResolvedValueOnce(json({ timer: timerFixture('pause') }));
+      .mockRejectedValueOnce(Error('private socket'))
+      .mockResolvedValueOnce(json(timerPushFixture(timerFixture('pause'))));
     expect((await h.api.timerPause(timerExpected(timerFixture()))).ok).toBe(true);
-    expect(audit.mock.calls.map((c) => c[0])).toEqual([
-      { command: 'pause', phase: 'requested' },
-      { command: 'pause', phase: 'result', outcome: 'ok' },
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    const [first, second] = h.fetch.mock.calls;
+    expect([
+      required(first)[0],
+      required(first)[1]?.method,
+      required(first)[1]?.body,
+      new Headers(required(first)[1]?.headers).get('idempotency-key'),
+    ]).toEqual([
+      required(second)[0],
+      required(second)[1]?.method,
+      required(second)[1]?.body,
+      new Headers(required(second)[1]?.headers).get('idempotency-key'),
     ]);
   });
-  it('distinguishes preflight rejection from an unconfirmed finish and never retries either', async () => {
-    const audit = vi.fn(),
-      h = await setup(audit);
-    h.fetch.mockResolvedValueOnce(json({ timer: null }));
+  it.each([
+    [409, 'stale_timer'],
+    [409, 'idempotency_conflict'],
+    [428, 'precondition_required'],
+    [400, 'invalid_event_time'],
+    [403, 'csrf'],
+    [403, 'forbidden'],
+    [500, 'server_error'],
+  ])('does not automatically retry %s %s', async (status, code) => {
+    const h = await setup();
+    h.fetch.mockResolvedValueOnce(json({ error: { code } }, Number(status)));
     expect(await h.api.timerPause(timerExpected(timerFixture()))).toMatchObject({
-      code: 'timer_changed',
-    });
-    expect(audit.mock.calls[1]?.[0]).toEqual({
-      command: 'pause',
-      phase: 'result',
-      outcome: 'rejected',
-      code: 'timer_changed',
-    });
-    h.fetch
-      .mockResolvedValueOnce(json({ timer: timerFixture('pause') }))
-      .mockResolvedValueOnce(
-        json({ error: { code: 'internal', message: 'private response' } }, 500),
-      );
-    expect(
-      await h.api.timerFinish(
-        timerExpected(timerFixture('pause')),
-        proposalFixture().rows,
-        'private note',
-      ),
-    ).toMatchObject({ uncertain: true });
-    expect(audit.mock.calls[3]?.[0]).toEqual({
-      command: 'finish',
-      phase: 'result',
-      outcome: 'uncertain',
-      code: 'server_error',
-    });
-    expect(JSON.stringify(audit.mock.calls)).not.toMatch(/private|taskId|rows|csrf|cookie/);
-    expect(h.fetch).toHaveBeenCalledTimes(4);
-  });
-  it('a failed audit callback never changes a successful command', async () => {
-    const h = await setup(() => {
-      throw Error('private audit failure');
-    });
-    h.fetch
-      .mockResolvedValueOnce(json({ timer: timerFixture() }))
-      .mockResolvedValueOnce(json({ timer: timerFixture('pause') }));
-    expect((await h.api.timerPause(timerExpected(timerFixture()))).ok).toBe(true);
-    expect(h.fetch).toHaveBeenCalledTimes(3);
-  });
-  it('unexpected command failure is conservatively unconfirmed and does not expose the exception', async () => {
-    const audit = vi.fn(),
-      h = await setup(audit);
-    vi.spyOn(h.api, 'timer').mockRejectedValueOnce(new Error('private details'));
-    const result = await h.api.timerPause(timerExpected(timerFixture()));
-    expect(result).toMatchObject({ ok: false, code: 'server_error', uncertain: true });
-    expect(JSON.stringify(result)).not.toContain('private');
-    expect(audit.mock.calls[1]?.[0]).toEqual({
-      command: 'pause',
-      phase: 'result',
-      outcome: 'uncertain',
-      code: 'server_error',
+      ok: false,
+      code,
     });
     expect(h.fetch).toHaveBeenCalledTimes(1);
   });
-  it('reads timer/options without mutation', async () => {
-    const h = await setup();
-    h.fetch
-      .mockResolvedValueOnce(json({ timer: timerFixture() }))
-      .mockResolvedValueOnce(json(optionsFixture()));
-    expect(await h.api.timer()).toEqual({ ok: true, data: timerFixture() });
-    expect(await h.api.timeOptions()).toEqual({ ok: true, data: optionsFixture() });
-  });
-  it('starts once after idle preflight, exact CSRF/body and result task', async () => {
-    const h = await setup();
-    h.fetch
-      .mockResolvedValueOnce(json({ timer: null }))
-      .mockResolvedValueOnce(json({ timer: timerFixture() }));
-    expect(await h.api.timerStart(21, null)).toEqual({ ok: true, data: timerFixture() });
-    expect(h.fetch.mock.calls.slice(1).map((c) => [c[0], c[1]?.method])).toEqual([
-      ['/api/time/timer', 'GET'],
-      ['/api/time/timer/start', 'POST'],
-    ]);
-    expect(h.fetch.mock.calls[2]?.[1]).toMatchObject({
-      body: JSON.stringify({ taskId: 21 }),
-      headers: { 'x-csrf-token': 'fixture-csrf' },
-    });
-  });
-  it.each(['timerPause', 'timerResume', 'timerReset'] as const)(
-    'rejects changed timer before %s mutation',
-    async (method) => {
-      const h = await setup();
-      h.fetch.mockResolvedValueOnce(json({ timer: { ...timerFixture(), version: 9 } }));
-      expect(await h.api[method](timerExpected(timerFixture()))).toMatchObject({
-        ok: false,
-        code: 'timer_changed',
-      });
-      expect(h.fetch).toHaveBeenCalledTimes(2);
-    },
-  );
-  it('does not start another task over an active timer', async () => {
-    const h = await setup();
-    expect(await h.api.timerStart(22, timerExpected(timerFixture()))).toMatchObject({
-      code: 'timer_running',
-    });
-    expect(h.fetch).toHaveBeenCalledTimes(1);
-  });
-  it('serializes commands, rejects a duplicate while preflight is pending', async () => {
+  it('an old pause for A remains bound to A after B exists on the server', async () => {
     const h = await setup(),
-      wait = deferred<Response>();
-    h.fetch
-      .mockReturnValueOnce(wait.promise)
-      .mockResolvedValueOnce(json({ timer: timerFixture('pause') }));
+      expected = timerExpected(timerFixture());
+    h.fetch.mockResolvedValueOnce(json({ error: { code: 'stale_timer' } }, 409));
+    expect(
+      await h.api.timerPause(expected, '2026-10-29T04:30:00.000Z', 'absence-operation-1'),
+    ).toMatchObject({ code: 'stale_timer' });
+    expect(JSON.parse(String(required(h.fetch.mock.calls[0])[1]?.body))).toEqual({
+      expected,
+      reason: 'lock',
+      at: '2026-10-29T04:30:00.000Z',
+    });
+    expect(new Headers(required(h.fetch.mock.calls[0])[1]?.headers).get('idempotency-key')).toBe(
+      'absence-operation-1',
+    );
+  });
+  it('serializes parallel mutations and rejects late responses after logout', async () => {
+    const h = await setup(),
+      pending = deferred<Response>();
+    h.fetch.mockReturnValueOnce(pending.promise);
     const first = h.api.timerPause(timerExpected(timerFixture()));
-    expect(await h.api.timerPause(timerExpected(timerFixture()))).toMatchObject({
+    expect(await h.api.timerReset(timerExpected(timerFixture()))).toMatchObject({
       code: 'timer_busy',
     });
-    wait.resolve(json({ timer: timerFixture() }));
-    expect(await first).toMatchObject({ ok: true });
-    expect(h.fetch).toHaveBeenCalledTimes(3);
-  });
-  it('does not mutate for an old owner after preflight', async () => {
-    const h = await setup(),
-      wait = deferred<Response>();
-    h.fetch.mockReturnValueOnce(wait.promise);
-    const first = h.api.timerPause(timerExpected(timerFixture()));
     h.api.clear();
-    wait.resolve(json({ timer: timerFixture() }));
+    pending.resolve(json(timerPushFixture(timerFixture('pause'))));
     expect(await first).toMatchObject({ code: 'stale_session' });
-    expect(h.fetch).toHaveBeenCalledTimes(2);
+    expect(h.api.timerControl).toBe(false);
   });
-  it('old command completion does not release the new owner mutex', async () => {
-    const h = await setup(),
-      old = deferred<Response>(),
-      fresh = deferred<Response>();
-    h.fetch.mockReturnValueOnce(old.promise);
-    const first = h.api.timerStart(21, null);
-    h.api.clear();
-    h.fetch.mockResolvedValueOnce(json(me(2)));
-    await h.api.authenticate();
-    h.fetch
-      .mockReturnValueOnce(fresh.promise)
-      .mockResolvedValueOnce(json({ timer: timerFixture() }));
-    const second = h.api.timerStart(21, null);
-    old.resolve(json({ timer: null }));
-    await first;
-    expect(await h.api.timerStart(21, null)).toMatchObject({ code: 'timer_busy' });
-    fresh.resolve(json({ timer: null }));
-    expect(await second).toMatchObject({ ok: true });
-  });
-  it('prepares server proposal only if state is unchanged before and after GET', async () => {
-    const h = await setup(),
-      timer = timerFixture('pause');
-    h.fetch
-      .mockResolvedValueOnce(json({ timer }))
-      .mockResolvedValueOnce(json(proposalFixture()))
-      .mockResolvedValueOnce(json({ timer }));
-    expect(await h.api.timerProposal(timerExpected(timer))).toEqual({
-      ok: true,
-      data: { current: timer, proposal: proposalFixture() },
-    });
-    h.fetch
-      .mockResolvedValueOnce(json({ timer }))
-      .mockResolvedValueOnce(json(proposalFixture()))
-      .mockResolvedValueOnce(json({ timer: null }));
-    expect(await h.api.timerProposal(timerExpected(timer))).toMatchObject({
-      code: 'timer_changed',
-    });
-  });
-  it('finishes with exact rows/note, no unsupported expected fields sent to legacy server', async () => {
-    const h = await setup(),
-      timer = timerFixture('pause');
-    h.fetch.mockResolvedValueOnce(json({ timer })).mockResolvedValueOnce(json({ timer: null }));
-    expect(
-      await h.api.timerFinish(timerExpected(timer), proposalFixture().rows, '  запись  '),
-    ).toEqual({ ok: true, data: null });
-    expect(JSON.parse(String(h.fetch.mock.calls[2]?.[1]?.body))).toEqual({
-      rows: proposalFixture().rows,
-      note: 'запись',
-    });
-  });
-  it('exposes safe row validation only on finish, never server message', async () => {
-    const h = await setup(),
-      timer = timerFixture('pause');
-    h.fetch.mockResolvedValueOnce(json({ timer })).mockResolvedValueOnce(
-      json(
-        {
-          error: {
-            code: 'validation',
-            message: 'secret',
-            row: 0,
-            field: 'from',
-            internal: 'secret',
-          },
-        },
-        400,
-      ),
-    );
-    const result = await h.api.timerFinish(timerExpected(timer), proposalFixture().rows, '');
-    expect(result).toMatchObject({ ok: false, code: 'validation', row: 0, field: 'from' });
-    expect(JSON.stringify(result)).not.toContain('secret');
-  });
-  it('unconfirmed finish is uncertain and never retried', async () => {
-    const h = await setup(),
-      timer = timerFixture('pause');
-    h.fetch
-      .mockResolvedValueOnce(json({ timer }))
-      .mockResolvedValueOnce(json({ error: { code: 'internal' } }, 500));
-    expect(await h.api.timerFinish(timerExpected(timer), proposalFixture().rows, '')).toMatchObject(
-      { ok: false, uncertain: true },
-    );
-    expect(h.fetch).toHaveBeenCalledTimes(3);
-  });
-  it('rejects impossible mutation responses as uncertain', async () => {
+  it('malformed CAS snapshots cannot enable writes', async () => {
     const h = await setup();
+    h.fetch.mockResolvedValueOnce(json({ timer: timerFixture() }));
+    expect(await h.api.timer()).toMatchObject({ code: 'invalid_data' });
+    h.fetch.mockResolvedValueOnce(json({ ...timerPushFixture(timerFixture()), revision: 99 }));
+    expect(await h.api.timer()).toMatchObject({ code: 'invalid_data' });
+  });
+  it('prepares without pause, validates exact rows and finishes with a new operation key', async () => {
+    const h = await setup(),
+      timer = timerFixture(),
+      expected = timerExpected(timer);
     h.fetch
-      .mockResolvedValueOnce(json({ timer: timerFixture() }))
-      .mockResolvedValueOnce(json({ timer: timerFixture() }));
-    expect(await h.api.timerPause(timerExpected(timerFixture()))).toMatchObject({
-      code: 'invalid_data',
-      uncertain: true,
+      .mockResolvedValueOnce(json(timerPushFixture(timer)))
+      .mockImplementationOnce(async (_path, init) =>
+        json({
+          ...proposalFixture(),
+          requestId: new Headers(init?.headers).get('idempotency-key'),
+          expected,
+          cutoffAt: timer.serverNow,
+          expiresAt: '2026-10-29T05:00:00.000Z',
+          serverNow: timer.serverNow,
+          problems: [],
+        }),
+      );
+    const preparation = await h.api.timerProposal(expected);
+    expect(preparation.ok).toBe(true);
+    if (!preparation.ok) throw Error('preparation failed');
+    const preparedId = preparation.data.requestId;
+    const rows = proposalFixture().rows;
+    expect(await h.api.timerFinish(expected, rows, '', preparedId)).toMatchObject({
+      code: 'validation',
     });
+    h.fetch.mockResolvedValueOnce(json({ ok: true, problems: [], hours: 0.5 }));
+    expect(await h.api.timerValidateRows(preparedId, rows)).toMatchObject({
+      ok: true,
+      data: { ok: true },
+    });
+    expect(
+      await h.api.timerFinish(expected, [{ ...required(rows[0]), to: 600 }], '', preparedId),
+    ).toMatchObject({ code: 'validation' });
+    h.fetch.mockResolvedValueOnce(json(timerPushFixture(null)));
+    expect((await h.api.timerFinish(expected, rows, 'note', preparedId)).ok).toBe(true);
+    expect(h.fetch.mock.calls.map((c) => c[0])).toEqual([
+      '/api/time/timer',
+      '/api/time/timer/prepare-finish',
+      '/api/time/timer/validate-rows',
+      '/api/time/timer/finish',
+    ]);
+    const keys = h.fetch.mock.calls
+      .slice(1)
+      .map((c) => new Headers(c[1]?.headers).get('idempotency-key'));
+    expect(new Set(keys).size).toBe(3);
+    expect(JSON.parse(String(required(h.fetch.mock.calls.at(-1))[1]?.body))).toMatchObject({
+      expected,
+      preparedRequestId: preparedId,
+      rows,
+    });
+  });
+  it('failed row validation and prepared expiry remain explicit and cannot write', async () => {
+    const h = await setup(),
+      timer = timerFixture(),
+      expected = timerExpected(timer);
+    h.fetch
+      .mockResolvedValueOnce(json(timerPushFixture(timer)))
+      .mockImplementationOnce(async (_path, init) =>
+        json({
+          ...proposalFixture(),
+          requestId: new Headers(init?.headers).get('idempotency-key'),
+          expected,
+          cutoffAt: timer.serverNow,
+          expiresAt: '2026-10-29T05:00:00.000Z',
+          serverNow: timer.serverNow,
+          problems: [],
+        }),
+      );
+    const preparation = await h.api.timerProposal(expected);
+    if (!preparation.ok) throw Error('preparation failed');
+    const preparedId = preparation.data.requestId;
+    h.fetch.mockResolvedValueOnce(
+      json({ ok: false, problems: [{ row: 0, field: 'from', message: 'private' }], hours: 0.5 }),
+    );
+    const check = await h.api.timerValidateRows(preparedId, proposalFixture().rows);
+    expect(check).toMatchObject({
+      ok: true,
+      data: { ok: false, problems: [{ row: 0, field: 'from' }] },
+    });
+    expect(JSON.stringify(check)).not.toContain('private');
+    expect(await h.api.timerFinish(expected, proposalFixture().rows, '', preparedId)).toMatchObject(
+      { code: 'validation' },
+    );
+    h.fetch.mockResolvedValueOnce(json({ error: { code: 'prepared_expired' } }, 409));
+    expect(await h.api.timerValidateRows(preparedId, proposalFixture().rows)).toMatchObject({
+      code: 'prepared_expired',
+    });
+  });
+});
+
+describe('prepare recovery', () => {
+  it.each([false, true])('recovers the same preparation via GET, expired=%s', async (expired) => {
+    const h = await setup(),
+      timer = timerFixture(),
+      expected = timerExpected(timer);
+    h.fetch
+      .mockResolvedValueOnce(json(timerPushFixture(timer)))
+      .mockRejectedValueOnce(Error('lost'))
+      .mockRejectedValueOnce(Error('lost'))
+      .mockImplementationOnce(async (path) =>
+        expired
+          ? json({ error: { code: 'prepared_expired' } }, 404)
+          : json({
+              ...proposalFixture(),
+              requestId: path.split('/').at(-1),
+              expected,
+              cutoffAt: timer.serverNow,
+              expiresAt: '2026-10-29T05:00:00.000Z',
+              serverNow: timer.serverNow,
+              problems: [],
+            }),
+      );
+    const result = await h.api.timerProposal(expected);
+    expect(result).toMatchObject(expired ? { code: 'prepared_expired' } : { ok: true });
+    const prepare = required(h.fetch.mock.calls[1]),
+      retry = required(h.fetch.mock.calls[2]),
+      recovery = required(h.fetch.mock.calls[3]);
+    const key = new Headers(prepare[1]?.headers).get('idempotency-key');
+    expect(new Headers(retry[1]?.headers).get('idempotency-key')).toBe(key);
+    expect(recovery[0]).toBe('/api/time/timer/prepared/' + key);
+    expect(recovery[1]?.method).toBe('GET');
+  });
+});
+
+function required<T>(value: T | null | undefined): T {
+  if (value == null) throw Error('Missing fixture value');
+  return value;
+}
+
+describe('extend uses CAS and preserves pause', () => {
+  it('retries the same +15 operation and never turns a pause into an automatic resume', async () => {
+    const h = await setup(),
+      timer = timerFixture('pause');
+    const extended = {
+      ...timer,
+      version: 3,
+      startedAt: '2026-10-29T03:45:00.000Z',
+      segments: [{ from: '2026-10-29T03:45:00.000Z', to: timer.segments[0]?.to ?? null }],
+    };
+    h.fetch
+      .mockRejectedValueOnce(Error('lost'))
+      .mockResolvedValueOnce(json(timerPushFixture(extended)));
+    expect(await h.api.timerExtend(timerExpected(timer))).toMatchObject({
+      ok: true,
+      data: { state: 'pause', version: 3 },
+    });
+    const first = required(h.fetch.mock.calls[0]),
+      second = required(h.fetch.mock.calls[1]);
+    expect(first[0]).toBe('/api/time/timer/extend');
+    expect(first[1]?.body).toBe(second[1]?.body);
+    expect(new Headers(first[1]?.headers).get('idempotency-key')).toBe(
+      new Headers(second[1]?.headers).get('idempotency-key'),
+    );
+    h.fetch.mockResolvedValueOnce(json({ error: { code: 'stale_timer' } }, 409));
+    expect(await h.api.timerExtend(timerExpected(timer))).toMatchObject({ code: 'stale_timer' });
+    expect(h.fetch).toHaveBeenCalledTimes(3);
   });
 });

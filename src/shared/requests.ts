@@ -93,8 +93,9 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     case 'settings.patch':
       return only('patch') && preferencesPatchValid(r.patch);
     case 'timer.read':
-    case 'timer.options':
       return only();
+    case 'timer.options':
+      return only('q') && (r.q === undefined || text(r.q, 200));
     case 'timer.open':
       return (
         only('mode', 'taskId') &&
@@ -118,18 +119,25 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       );
     case 'timer.pause':
     case 'timer.resume':
+    case 'timer.extend':
     case 'timer.reset':
     case 'timer.proposal':
       return only('expected') && expectedValid(r.expected);
     case 'timer.finish':
       return (
-        only('expected', 'rows', 'note') &&
+        only('expected', 'rows', 'note', 'preparedRequestId') &&
         expectedValid(r.expected) &&
         timerRowsValid(r.rows) &&
         text(r.note, 500) &&
-        (r.rows as { taskId: number }[]).every(
-          (row) => row.taskId === (r.expected as { taskId: number }).taskId,
-        )
+        typeof r.preparedRequestId === 'string' &&
+        /^[A-Za-z0-9._:-]{8,100}$/.test(r.preparedRequestId)
+      );
+    case 'timer.validateRows':
+      return (
+        only('preparedRequestId', 'rows') &&
+        typeof r.preparedRequestId === 'string' &&
+        /^[A-Za-z0-9._:-]{8,100}$/.test(r.preparedRequestId) &&
+        timerRowsValid(r.rows)
       );
     case 'init':
     case 'login':

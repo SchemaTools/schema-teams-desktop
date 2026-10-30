@@ -21,6 +21,7 @@ import {
   type TimeTask,
   type TimerPrepared,
   type TimerRow,
+  type TimerRowsCheck,
   type WorkTimer,
 } from '../shared/time';
 import { request } from './bridge';
@@ -124,23 +125,92 @@ export function TimerPanel({
     [rows, setRows] = useState<TimerRow[]>([]),
     [note, setNote] = useState(''),
     [resetConfirm, setResetConfirm] = useState(false),
+    [extendConfirm, setExtendConfirm] = useState(false),
     [nextTask, setNextTask] = useState<TimeTask | null>(null),
     [feedback, setFeedback] = useState(''),
     [uncertain, setUncertain] = useState(false),
     [reviewRequired, setReviewRequired] = useState(false),
     [showPicker, setShowPicker] = useState(mode === 'pick'),
     [rowError, setRowError] = useState<number | null>(null);
+  const [rowCheck, setRowCheck] = useState<{ signature: string; value: TimerRowsCheck } | null>(
+    null,
+  );
+  const validationGeneration = useRef(0);
+  const [validationAttempt, setValidationAttempt] = useState(0);
+  const [validationError, setValidationError] = useState('');
   const latest = useRef(snapshot),
     alive = useRef(true),
     busy = useRef(false),
     close = useRef<HTMLButtonElement>(null);
   latest.current = snapshot;
+  const latestQuery = useRef(query);
+  latestQuery.current = query;
   const epoch = snapshot.epoch,
     online = snapshot.connection === 'online',
     timer = snapshot.timer ?? null;
-  const valid = online && snapshot.timerReady && !pending && !uncertain;
+  const valid =
+    online && snapshot.timerReady && snapshot.timerControl === true && !pending && !uncertain;
+  const [clock, setClock] = useState(Date.now());
+  useEffect(() => {
+    const tick = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, []);
+  const preparedAt = useRef(0);
+  const expired =
+    prepared !== null &&
+    Date.parse(prepared.serverNow) + Math.max(0, clock - preparedAt.current) >=
+      Date.parse(prepared.expiresAt);
   const stale =
-    reviewRequired || (prepared !== null && !matchesTimer(timer, timerExpected(prepared.current)));
+    expired ||
+    reviewRequired ||
+    (prepared !== null && !matchesTimer(timer, timerExpected(prepared.current)));
+  const rowsSignature = JSON.stringify(rows);
+  const rowsValidated = rowCheck?.signature === rowsSignature && rowCheck.value.ok;
+  useEffect(() => {
+    const generation = ++validationGeneration.current;
+    setRowCheck(null);
+    setValidationError('');
+    if (!prepared || stale || !online || !timerRowsValid(rows)) return;
+    const requestId = prepared.requestId;
+    const checkedRows = structuredClone(rows);
+    const validation = setTimeout(() => {
+      void request({
+        kind: 'timer.validateRows',
+        epoch,
+        preparedRequestId: requestId,
+        rows: checkedRows,
+      }).then((result) => {
+        if (
+          !alive.current ||
+          latest.current.epoch !== epoch ||
+          generation !== validationGeneration.current
+        )
+          return;
+        if (result.ok) {
+          setRowCheck({ signature: rowsSignature, value: result.data });
+          setRowError(result.data.problems[0]?.row ?? null);
+        } else setValidationError(result.error);
+      });
+    }, 300);
+    return () => {
+      clearTimeout(validation);
+      validationGeneration.current++;
+    };
+  }, [prepared, rowsSignature, epoch, stale, online, validationAttempt]);
+  useEffect(() => {
+    const search = setTimeout(() => {
+      void request({ kind: 'timer.options', epoch, q: query }).then((result) => {
+        if (
+          alive.current &&
+          latest.current.epoch === epoch &&
+          latestQuery.current === query &&
+          result.ok
+        )
+          setOptions(result.data);
+      });
+    }, 250);
+    return () => clearTimeout(search);
+  }, [query, epoch]);
   useEffect(() => {
     alive.current = true;
     const previous = document.activeElement as HTMLElement | null;
@@ -179,6 +249,7 @@ export function TimerPanel({
       if (!state.ok) return state;
       if (!list.ok) return list;
       setUncertain(false);
+      setValidationAttempt((value) => value + 1);
       return { ok: true, data: null };
     });
   }
@@ -188,27 +259,11 @@ export function TimerPanel({
   async function prepare(next: TimeTask | null = null) {
     const current = latest.current.timer;
     if (!current || !latest.current.timerReady || latest.current.connection !== 'online') return;
-    const result = await run(async () => {
-      let stopped = current;
-      if (current.state === 'run') {
-        const paused = await request({
-          kind: 'timer.pause',
-          epoch,
-          expected: timerExpected(current),
-        });
-        if (!paused.ok) return paused;
-        if (!paused.data)
-          return {
-            ok: false,
-            code: 'no_timer',
-            error: 'Таймер уже завершён. Обновите состояние.',
-            retryable: false,
-          } as const;
-        stopped = paused.data;
-      }
-      return request({ kind: 'timer.proposal', epoch, expected: timerExpected(stopped) });
-    });
+    const result = await run(() =>
+      request({ kind: 'timer.proposal', epoch, expected: timerExpected(current) }),
+    );
     if (result?.ok) {
+      preparedAt.current = Date.now();
       setPrepared(result.data);
       setReviewRequired(false);
       setRows(result.data.proposal.rows);
@@ -220,7 +275,7 @@ export function TimerPanel({
   const tasks = useMemo(() => {
     const list = options?.tasks ?? [],
       q = query.trim().toLocaleLowerCase('ru');
-    const recent = snapshot.recentTimeTaskIds ?? [];
+    const recent = options?.recentTaskIds ?? snapshot.recentTimeTaskIds ?? [];
     const filtered = list.filter((t) =>
       [t.mark, t.title, t.place].join(' ').toLocaleLowerCase('ru').includes(q),
     );
@@ -255,32 +310,51 @@ export function TimerPanel({
       setNextTask(null);
     }
   }
-  async function control(kind: 'timer.pause' | 'timer.resume' | 'timer.reset') {
+  async function control(kind: 'timer.pause' | 'timer.resume' | 'timer.reset' | 'timer.extend') {
     if (!timer || !valid) return;
     const result = await run(() => request({ kind, epoch, expected: timerExpected(timer) }));
     if (result?.ok) {
       setPrepared(null);
       setResetConfirm(false);
+      setExtendConfirm(false);
       setFeedback(
         kind === 'timer.reset'
           ? 'Таймер сброшен без записи.'
           : kind === 'timer.pause'
             ? 'Таймер на паузе.'
-            : 'Работа продолжена.',
+            : kind === 'timer.extend'
+              ? 'К началу работы добавлено 15 минут.'
+              : 'Работа продолжена.',
       );
     }
   }
   async function finish() {
-    if (!prepared || !valid || stale || !timerRowsValid(rows)) return;
-    const saved = await run(() =>
-      request({
+    if (!prepared || !valid || stale || !timerRowsValid(rows) || !rowsValidated) return;
+    const saved = await run(async () => {
+      const checked = await request({
+        kind: 'timer.validateRows',
+        epoch,
+        preparedRequestId: prepared.requestId,
+        rows,
+      });
+      if (!checked.ok) return checked;
+      if (!checked.data.ok)
+        return {
+          ok: false,
+          code: 'validation',
+          error: 'Проверьте строки и пересечения интервалов.',
+          row: checked.data.problems[0]?.row,
+          retryable: false,
+        } as const;
+      return request({
         kind: 'timer.finish',
         epoch,
-        expected: timerExpected(prepared.current),
+        expected: prepared.expected,
+        preparedRequestId: prepared.requestId,
         rows,
         note,
-      }),
-    );
+      });
+    });
     if (!saved?.ok) return;
     setPrepared(null);
     setRows([]);
@@ -423,11 +497,20 @@ export function TimerPanel({
                   <Trash size={17} />
                   Сбросить
                 </button>
+                <button
+                  disabled={!valid || Boolean(prepared)}
+                  onClick={() => setExtendConfirm(true)}
+                >
+                  Добавить 15 минут
+                </button>
                 <button disabled={pending} onClick={() => setShowPicker((value) => !value)}>
                   Выбрать другую задачу
                 </button>
               </div>
             </div>
+          )}
+          {snapshot.timerControl !== true && (
+            <p className="timer-warning">Сервер не подтвердил безопасное управление таймером.</p>
           )}
           {!snapshot.timerReady && (
             <p className="timer-error" role="status">
@@ -479,6 +562,23 @@ export function TimerPanel({
               </div>
             </div>
           )}
+          {extendConfirm && (
+            <div className="timer-warning" role="alert">
+              <b>Добавить 15 минут перед началом работы?</b>
+              <p>
+                Начало первого интервала сдвинется на 15 минут назад, отработанное время увеличится
+                на 15 минут. Это не перенос напоминания или конца рабочего дня.
+              </p>
+              <div className="timer-actions">
+                <button disabled={!valid} onClick={() => void control('timer.extend')}>
+                  Да, добавить 15 минут
+                </button>
+                <button disabled={pending} onClick={() => setExtendConfirm(false)}>
+                  Отмена добавления
+                </button>
+              </div>
+            </div>
+          )}
           {prepared ? (
             <section className="timer-finish" aria-label="Запись трудозатрат">
               <h3>Записать в трудозатраты</h3>
@@ -489,6 +589,43 @@ export function TimerPanel({
                 Фактически: {timerClock(prepared.proposal.elapsedSec)} · округление предложено
                 сервером до получаса.
               </p>
+              <p>
+                Окончание работы зафиксировано:{' '}
+                {new Date(prepared.cutoffAt).toLocaleString(
+                  'ru-RU',
+                  snapshot.bureau ? { timeZone: snapshot.bureau.timeZone } : undefined,
+                )}
+                {snapshot.bureau ? ` (${snapshot.bureau.timeZone})` : ''}. Подготовка не меняет
+                состояние таймера.
+              </p>
+              {prepared.problems.length > 0 && (
+                <div className="timer-warning" role="status">
+                  Предупреждения предложения сервера:{' '}
+                  {prepared.problems
+                    .map((problem) => `Строка ${problem.row + 1}: ${problem.message}`)
+                    .join(' ')}
+                </div>
+              )}
+              {!stale && timerRowsValid(rows) && !rowCheck && !validationError && (
+                <p role="status">Проверяем изменённые строки на сервере…</p>
+              )}
+              {validationError && (
+                <div className="timer-error" role="alert">
+                  <p>{validationError}</p>
+                  <button
+                    disabled={!online || pending || stale}
+                    onClick={() => setValidationAttempt((value) => value + 1)}
+                  >
+                    Повторить проверку строк
+                  </button>
+                </div>
+              )}
+              {rowCheck?.signature === rowsSignature &&
+                rowCheck.value.problems.map((problem, index) => (
+                  <p key={index} className="timer-error" role="alert">
+                    Строка {problem.row + 1}: {problem.message}
+                  </p>
+                ))}
               <details>
                 <summary>Фактические интервалы (часовой пояс компьютера)</summary>
                 <ul>
@@ -500,7 +637,12 @@ export function TimerPanel({
                   ))}
                 </ul>
               </details>
-              {stale && (
+              {expired && (
+                <p className="timer-warning" role="alert">
+                  Срок проверки истёк. Закройте проверку и подготовьте её заново.
+                </p>
+              )}
+              {stale && !expired && (
                 <p className="timer-warning" role="alert">
                   Таймер изменился. Эти интервалы больше нельзя отправить. Закройте проверку и
                   откройте её заново.
@@ -581,7 +723,7 @@ export function TimerPanel({
               <div className="timer-actions">
                 <button
                   className="timer-primary"
-                  disabled={!valid || stale || !timerRowsValid(rows)}
+                  disabled={!valid || stale || !timerRowsValid(rows) || !rowsValidated}
                   onClick={() => void finish()}
                 >
                   {nextTask ? 'Записать и начать новую' : 'Записать'}
@@ -618,11 +760,17 @@ export function TimerPanel({
               ) : (
                 <div className="timer-task-list">
                   {tasks.map((task, index) => {
-                    const recent = (snapshot.recentTimeTaskIds ?? []).includes(task.id),
+                    const recent = (
+                        options?.recentTaskIds ??
+                        snapshot.recentTimeTaskIds ??
+                        []
+                      ).includes(task.id),
                       previous = tasks[index - 1],
                       group = recent ? 'Недавние' : task.place || 'Личные задачи',
                       previousGroup = previous
-                        ? (snapshot.recentTimeTaskIds ?? []).includes(previous.id)
+                        ? (options?.recentTaskIds ?? snapshot.recentTimeTaskIds ?? []).includes(
+                            previous.id,
+                          )
                           ? 'Недавние'
                           : previous.place || 'Личные задачи'
                         : null;
@@ -650,8 +798,8 @@ export function TimerPanel({
           ) : null}
           <TimerSettings snapshot={snapshot} workdayEnd={options?.workday.end} />
           <p className="timer-footnote">
-            Автопауза при блокировке и отложенные команды станут доступны после обновления сервера.
-            Сейчас таймер управляется вручную.
+            Управление подтверждается сервером. Проверка интервалов не ставит таймер на паузу;
+            запись завершает работу на момент подготовки.
           </p>
           <button
             className="timer-site"

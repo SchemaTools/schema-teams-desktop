@@ -13,9 +13,17 @@ import type {
   SafeUser,
   ObjectInfo,
 } from './client';
-import type { TimeOptions, WorkTimer, TimerExpected, TimerPrepared, TimerRow } from './time';
+import type {
+  TimeOptions,
+  WorkTimer,
+  TimerExpected,
+  TimerPrepared,
+  TimerRow,
+  TimerRowsCheck,
+} from './time';
 import type { LocalPreferences, PreferencesPatch, PreferencesTab } from './preferences';
 import type { UpdateState } from './updates';
+import type { DesktopConfig } from './desktopConfig';
 import type { ServerConfiguration, ServerCheck } from './serverConfiguration';
 import type { RevitInventory } from './setup';
 import type {
@@ -38,6 +46,8 @@ export interface ClientSnapshot {
   user: SafeUser | null;
   serverVersion: string;
   appVersion: string;
+  bureau?: DesktopConfig['bureau'] | null;
+  timerControl?: boolean;
   epoch: number;
   revision: number;
   historyRevision?: number;
@@ -59,6 +69,7 @@ export interface ClientSnapshot {
   recentTimeTaskIds?: number[];
   timerAbsence?: { id: number; from: number; to: number } | null;
   timerReminderTime?: string;
+  timerPauseOnLock?: boolean;
   navigateTimer?: { mode: 'pick' | 'finish'; taskId?: number; nonce: number } | null;
   preferences?: LocalPreferences;
   navigateSettings?: { tab: PreferencesTab; nonce: number } | null;
@@ -87,16 +98,25 @@ export type DesktopRequest =
   | ({ epoch: number } & (
       | { kind: 'logout' }
       | { kind: 'setup.finish'; autostart: boolean }
-      | { kind: 'timer.read' | 'timer.options' }
+      | { kind: 'timer.read' }
+      | { kind: 'timer.options'; q?: string }
       | { kind: 'timer.open'; mode: 'pick' | 'finish'; taskId?: number }
       | { kind: 'timer.absenceDismiss'; id: number }
       | { kind: 'timer.preferences'; reminderTime: string }
       | { kind: 'timer.start'; taskId: number; expected: TimerExpected | null }
       | { kind: 'timer.pause'; expected: TimerExpected }
       | { kind: 'timer.resume'; expected: TimerExpected }
+      | { kind: 'timer.extend'; expected: TimerExpected }
       | { kind: 'timer.reset'; expected: TimerExpected }
       | { kind: 'timer.proposal'; expected: TimerExpected }
-      | { kind: 'timer.finish'; expected: TimerExpected; rows: TimerRow[]; note: string }
+      | { kind: 'timer.validateRows'; preparedRequestId: string; rows: TimerRow[] }
+      | {
+          kind: 'timer.finish';
+          expected: TimerExpected;
+          rows: TimerRow[];
+          note: string;
+          preparedRequestId?: string;
+        }
       | { kind: 'window.show'; target?: 'events'; chatId?: number; messageId?: number }
       | { kind: 'chat.list' }
       | { kind: 'chat.detail'; chatId: number }
@@ -154,9 +174,11 @@ export interface DesktopResponseMap {
   'timer.start': WorkTimer | null;
   'timer.pause': WorkTimer | null;
   'timer.resume': WorkTimer | null;
+  'timer.extend': WorkTimer | null;
   'timer.reset': WorkTimer | null;
   'timer.proposal': TimerPrepared;
   'timer.finish': WorkTimer | null;
+  'timer.validateRows': TimerRowsCheck;
   theme: null;
   'settings.read': LocalPreferences;
   'settings.open': null;

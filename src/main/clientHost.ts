@@ -21,11 +21,11 @@ import type { ClientSnapshot, DesktopRequest } from '../shared/desktop';
 import { requestValid } from '../shared/requests';
 import { TeamsApi, failure } from './api/client';
 import * as parse from './api/parse';
-import { workTimer } from './api/time';
+import { workTimer, controlledTimer } from './api/time';
 import type { WorkTimer } from '../shared/time';
 import { TimerAbsence } from './timer/absence';
 import { TimerReminders, isReminderTime, type ReminderTicket } from './timer/reminders';
-import { elapsedAt, timerClock } from '../shared/time';
+import { elapsedAt, timerClock, matchesTimer } from '../shared/time';
 import { notificationAllowed } from './api/notificationPrefs';
 import { RealtimeClient, type RealtimeEvent } from './realtime/connection';
 import { CLIENT_FILE, CLIENT_URL, PARTITION, guardLocal, type MainWindow } from './mainWindow';
@@ -78,6 +78,7 @@ interface Notice {
   chatId: number | null;
   messageId?: number;
   notificationId?: number;
+  pendingDeviceId?: string;
   link?: string | null;
   mention: boolean;
   ordinary: boolean;
@@ -101,7 +102,11 @@ export class ClientHost {
   private readonly policy = new WindowsNotificationPolicy();
   private readonly toasts: CustomToasts;
   private readonly notices = new WeakMap<ToastSpec, Notice>();
-  private readonly counts = new Map<number, { at: number; count: number }>();
+  private readonly counts = new Map<
+    number,
+    { at: number; messages: Set<number>; last: ChatMessage }
+  >();
+  private readonly readThrough = new Map<number, number>();
   private trayWindow?: BrowserWindow;
   private readonly peers = new Map<number, string>();
   private readonly pending = new Map<number, number>();
@@ -133,8 +138,17 @@ export class ClientHost {
   private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
+  private pausePending?: {
+    epoch: number;
+    expected: import('../shared/time').TimerExpected;
+    at: string;
+    key: string;
+  };
+  private pauseFlight = false;
+  private noticePending = new Set<number>();
   private readonly themeChanged = () => this.publish();
   private readonly lock = () => {
+    this.pauseForAbsence();
     this.absence.depart('lock', this.state);
     this.locked = true;
     this.toasts.clear();
@@ -146,6 +160,7 @@ export class ClientHost {
     this.scheduleRefresh();
   };
   private readonly sleep = () => {
+    this.pauseForAbsence();
     this.absence.depart('suspend', this.state);
     this.suspended = true;
     this.toasts.clear();
@@ -297,8 +312,7 @@ export class ClientHost {
           return;
         }
         if (index === 0) this.openNotice(n);
-        else if (n.chatId && n.messageId)
-          void this.api.read(n.chatId, n.messageId).then(() => this.scheduleRefresh());
+        else if (n.chatId && n.messageId) void this.readChat(n.chatId, n.messageId);
         else if (n.notificationId)
           void this.api.readNotification(n.notificationId).then(() => this.scheduleRefresh());
       },
@@ -309,6 +323,12 @@ export class ClientHost {
       onShow: (spec) => {
         const n = this.notices.get(spec);
         if (n && this.current(n)) {
+          if (n.pendingDeviceId && n.notificationId) {
+            const id = n.notificationId;
+            void this.api.timerNoticeAck(n.pendingDeviceId, id).then((result) => {
+              if (!result.ok && this.owned(n)) this.noticePending.delete(id);
+            });
+          }
           if (n.reminder) {
             this.reminders.shown(n.reminder);
             try {
@@ -325,7 +345,10 @@ export class ClientHost {
           if (o.settings.get().notifications.sound) shell.beep();
         }
       },
-      onClose: () => {},
+      onClose: (spec) => {
+        const n = this.notices.get(spec);
+        if (n?.pendingDeviceId && n.notificationId) this.noticePending.delete(n.notificationId);
+      },
     });
     if (o.server) {
       const origin = o.server.origin;
@@ -353,6 +376,7 @@ export class ClientHost {
           this.state.connection = online ? 'online' : 'offline';
           this.publish();
           if (online) this.scheduleRefresh();
+          if (online) void this.flushAbsencePause();
         },
       });
     }
@@ -390,6 +414,8 @@ export class ClientHost {
     void this.bootstrap();
   }
   private invalidate(): void {
+    this.pausePending = undefined;
+    this.noticePending.clear();
     this.report.clear();
     this.reminders.reset();
     this.reminderId = null;
@@ -405,6 +431,7 @@ export class ClientHost {
     this.uploads.reset();
     this.toasts.clear();
     this.counts.clear();
+    this.readThrough.clear();
     this.activeChat = null;
     this.state = {
       ...this.state,
@@ -418,6 +445,8 @@ export class ClientHost {
       connection: 'connecting',
       navigateChat: null,
       timer: null,
+      bureau: null,
+      timerControl: false,
       timerReady: false,
       timerError: null,
       timerObservedAt: undefined,
@@ -428,6 +457,10 @@ export class ClientHost {
     this.publish();
   }
   private signedOut(): void {
+    this.pausePending = undefined;
+    this.noticePending.clear();
+    this.counts.clear();
+    this.readThrough.clear();
     this.report.clear();
     this.reminders.reset();
     this.reminderId = null;
@@ -453,6 +486,8 @@ export class ClientHost {
       connection: 'signedOut',
       navigateChat: null,
       timer: null,
+      bureau: null,
+      timerControl: false,
       timerReady: false,
       timerError: null,
       timerObservedAt: undefined,
@@ -530,6 +565,7 @@ export class ClientHost {
       this.files.reset();
       this.uploads.reset();
       this.counts.clear();
+      this.readThrough.clear();
     }
     this.state.user = user.data;
     this.state.recentTimeTaskIds =
@@ -542,6 +578,10 @@ export class ClientHost {
       return;
     }
     this.login?.close();
+    const config = await this.api.readDesktopConfig();
+    if (this.destroyed || boot !== this.boot) return;
+    this.state.bureau = config.ok ? config.data.bureau : null;
+    this.state.timerControl = config.ok && (config.data.capabilities.timerControl ?? 0) >= 2;
     this.retry = 0;
     this.state.connection = this.socketOnline ? 'online' : 'connecting';
     this.publish();
@@ -595,6 +635,8 @@ export class ClientHost {
       this.state.historyRevision = (this.state.historyRevision ?? 0) + 1;
       this.publish();
       if (focus.ok) this.checkReminder();
+      await this.checkTimerPending();
+      void this.flushAbsencePause();
     } finally {
       this.refreshing = false;
       if (this.again) {
@@ -610,6 +652,103 @@ export class ClientHost {
     this.state.timerObservedAt = Date.now();
     // Refresh also reads Focus. Wait for it before considering a popup.
     if (!this.refreshing) this.checkReminder();
+  }
+  private pauseForAbsence(): void {
+    const timer = this.state.timer;
+    if (
+      this.pausePending ||
+      !timer ||
+      timer.state !== 'run' ||
+      !timer.timerId ||
+      !this.state.timerReady ||
+      !this.state.timerControl ||
+      !this.o.settings.get().timer.pauseOnLock
+    )
+      return;
+    this.pausePending = {
+      epoch: this.api.epoch,
+      expected: {
+        timerId: timer.timerId,
+        revision: timer.version,
+        currentSegmentFrom: timer.segments.at(-1)?.from ?? null,
+      },
+      at: new Date(
+        Date.parse(timer.serverNow) +
+          Math.max(0, Date.now() - (this.state.timerObservedAt ?? Date.now())),
+      ).toISOString(),
+      key: randomUUID(),
+    };
+    void this.flushAbsencePause();
+  }
+  private async flushAbsencePause(): Promise<void> {
+    const operation = this.pausePending;
+    if (
+      !operation ||
+      this.pauseFlight ||
+      operation.epoch !== this.api.epoch ||
+      this.state.connection !== 'online'
+    )
+      return;
+    this.pauseFlight = true;
+    const revision = this.timerRevision;
+    try {
+      const result = await this.api.timerPause(operation.expected, operation.at, operation.key);
+      if (operation !== this.pausePending || operation.epoch !== this.api.epoch) return;
+      if (result.ok) {
+        this.pausePending = undefined;
+        const observed = this.state.timer;
+        const sameExpected = matchesTimer(observed ?? null, operation.expected);
+        const sameResult = Boolean(
+          observed &&
+          result.data &&
+          observed.timerId === result.data.timerId &&
+          observed.version === result.data.version &&
+          observed.state === result.data.state &&
+          observed.task.id === result.data.task.id &&
+          JSON.stringify(observed.segments) === JSON.stringify(result.data.segments),
+        );
+        if (
+          this.state.timerReady &&
+          ((revision === this.timerRevision && sameExpected) || sameResult)
+        ) {
+          this.absence.confirmed();
+          if (!sameResult) {
+            this.timerRevision++;
+            this.acceptTimer(result.data);
+          }
+          this.publish();
+        }
+        this.scheduleRefresh();
+      } else if (!['network', 'timeout', 'timer_busy'].includes(result.code)) {
+        this.pausePending = undefined;
+        this.scheduleRefresh();
+      }
+    } finally {
+      this.pauseFlight = false;
+    }
+  }
+  private async checkTimerPending(): Promise<void> {
+    if (!this.state.timerControl || this.state.connection !== 'online') return;
+    let deviceId = this.o.settings.get().deviceId;
+    if (!deviceId) {
+      deviceId = randomUUID();
+      try {
+        this.o.settings.update({ deviceId });
+      } catch {
+        return;
+      }
+    }
+    const epoch = this.api.epoch;
+    const result = await this.api.timerPending(deviceId);
+    if (
+      epoch !== this.api.epoch ||
+      !result.ok ||
+      !result.data ||
+      this.noticePending.has(result.data.id)
+    )
+      return;
+    this.noticePending.add(result.data.id);
+    this.bellNotice(result.data, deviceId);
   }
   private checkReminder(): void {
     if (this.destroyed) return;
@@ -667,7 +806,7 @@ export class ClientHost {
     if (name === 'time:timer') {
       this.timerRevision++;
       try {
-        this.acceptTimer(workTimer(data));
+        this.acceptTimer(this.state.timerControl ? controlledTimer(data) : workTimer(data));
       } catch {
         this.state.timerReady = false;
         this.state.timerError = 'Не удалось прочитать состояние таймера.';
@@ -708,6 +847,23 @@ export class ClientHost {
       return;
     }
     if (name === 'chat:presence') return;
+    if (name === 'chat:read') {
+      try {
+        const read = parse.object(data);
+        if (
+          read.userId === this.api.owner &&
+          typeof read.chatId === 'number' &&
+          Number.isSafeInteger(read.chatId) &&
+          read.chatId > 0 &&
+          typeof read.upTo === 'number' &&
+          Number.isSafeInteger(read.upTo) &&
+          read.upTo > 0
+        )
+          this.acceptRead(read.chatId, read.upTo);
+      } catch {
+        /* malformed read receipts cannot clear counters */
+      }
+    }
     if (name === 'session') {
       this.invalidate();
       void this.bootstrap();
@@ -761,9 +917,19 @@ export class ClientHost {
       message.mentions.includes(owner)
     )
       return;
+    if (message.id <= (this.readThrough.get(message.chatId) ?? 0)) return;
     const previous = this.counts.get(message.chatId);
-    const count = previous && Date.now() - previous.at < 60000 ? previous.count + 1 : 1;
-    this.counts.set(message.chatId, { at: Date.now(), count });
+    const messages =
+      previous && Date.now() - previous.at < 60000 ? previous.messages : new Set<number>();
+    if (messages.has(message.id)) return;
+    messages.add(message.id);
+    const count = messages.size;
+    this.counts.set(message.chatId, { at: Date.now(), messages, last: message });
+    this.displayMessageNotice(message, count);
+  }
+  private displayMessageNotice(message: ChatMessage, count: number): void {
+    const owner = this.api.owner;
+    if (!owner) return;
     const title =
       this.state.chats.find((c) => c.id === message.chatId)?.title ??
       message.author?.shortName ??
@@ -782,7 +948,30 @@ export class ClientHost {
       },
     );
   }
-  private bellNotice(item: NotificationItem): void {
+  private async readChat(chatId: number, upTo: number): Promise<ApiResult<null>> {
+    const epoch = this.api.epoch;
+    const result = await this.api.read(chatId, upTo);
+    if (epoch !== this.api.epoch) return failure('stale_session');
+    if (result.ok) {
+      this.acceptRead(chatId, upTo);
+      this.scheduleRefresh();
+    }
+    return result;
+  }
+  private acceptRead(chatId: number, upTo: number): void {
+    this.readThrough.set(chatId, Math.max(upTo, this.readThrough.get(chatId) ?? 0));
+    const current = this.counts.get(chatId);
+    if (!current) return;
+    for (const id of current.messages) if (id <= upTo) current.messages.delete(id);
+    if (!current.messages.size) {
+      this.counts.delete(chatId);
+      this.toasts.dismiss(`chat:${chatId}`);
+    } else {
+      this.toasts.dismiss(`chat:${chatId}`);
+      this.displayMessageNotice(current.last, current.messages.size);
+    }
+  }
+  private bellNotice(item: NotificationItem, pendingDeviceId?: string): void {
     const owner = this.api.owner;
     if (!owner) return;
     const chat = item.link && /^\/chat\/(\d+)(?:\?m=(\d+))?$/.exec(item.link);
@@ -799,6 +988,7 @@ export class ClientHost {
         chatId: chat ? Number(chat[1]) : null,
         ...(chat?.[2] && { messageId: Number(chat[2]) }),
         notificationId: item.id,
+        ...(pendingDeviceId && { pendingDeviceId }),
         link: item.link,
         ...(item.event === 'timer_stopped' && { timerStopped: true }),
         mention: item.event === 'chat_mention',
@@ -826,7 +1016,11 @@ export class ClientHost {
       delayMs: 0,
     };
     this.notices.set(spec, notice);
-    if (this.current(notice)) this.toasts.show(spec);
+    if (this.current(notice)) {
+      if (this.toasts.show(spec) === false && notice.pendingDeviceId && notice.notificationId)
+        this.noticePending.delete(notice.notificationId);
+    } else if (notice.pendingDeviceId && notice.notificationId)
+      this.noticePending.delete(notice.notificationId);
   }
   private owned(n: Notice): boolean {
     return n.owner === this.api.owner && n.epoch === this.api.epoch;
@@ -834,6 +1028,12 @@ export class ClientHost {
   private current(n: Notice): boolean {
     return (
       this.owned(n) &&
+      !(
+        n.chatId &&
+        n.messageId &&
+        !n.notificationId &&
+        n.messageId <= (this.readThrough.get(n.chatId) ?? 0)
+      ) &&
       (!n.reminder ||
         this.reminders.valid(n.reminder, this.state, this.o.settings.get().timer.reminderTime)) &&
       this.state.connection === 'online' &&
@@ -1101,6 +1301,20 @@ export class ClientHost {
       }
     }
     if (!this.api.owner || this.state.user?.mustChangePassword) return failure('unauthenticated');
+    if (
+      [
+        'timer.start',
+        'timer.pause',
+        'timer.resume',
+        'timer.extend',
+        'timer.reset',
+        'timer.proposal',
+        'timer.validateRows',
+        'timer.finish',
+      ].includes(r.kind) &&
+      (!this.state.timerControl || !this.state.timerReady)
+    )
+      return failure('precondition_required');
     switch (r.kind) {
       case 'setup.finish': {
         if (this.state.connection !== 'online') return failure('network');
@@ -1145,12 +1359,13 @@ export class ClientHost {
       case 'timer.read':
         return this.readTimer();
       case 'timer.options':
-        return this.api.timeOptions();
+        return this.api.timeOptions(r.q);
       case 'timer.proposal':
         return this.api.timerProposal(r.expected);
       case 'timer.start':
       case 'timer.pause':
       case 'timer.resume':
+      case 'timer.extend':
       case 'timer.reset':
       case 'timer.finish': {
         const epoch = this.api.epoch,
@@ -1162,9 +1377,11 @@ export class ClientHost {
               ? await this.api.timerPause(r.expected)
               : r.kind === 'timer.resume'
                 ? await this.api.timerResume(r.expected)
-                : r.kind === 'timer.reset'
-                  ? await this.api.timerReset(r.expected)
-                  : await this.api.timerFinish(r.expected, r.rows, r.note);
+                : r.kind === 'timer.extend'
+                  ? await this.api.timerExtend(r.expected)
+                  : r.kind === 'timer.reset'
+                    ? await this.api.timerReset(r.expected)
+                    : await this.api.timerFinish(r.expected, r.rows, r.note, r.preparedRequestId);
         if (epoch !== this.api.epoch) return failure('stale_session');
         if (result.ok && r.kind === 'timer.start' && result.data) {
           const ids = [
@@ -1190,6 +1407,8 @@ export class ClientHost {
         this.scheduleRefresh();
         return result;
       }
+      case 'timer.validateRows':
+        return this.api.timerValidateRows(r.preparedRequestId, r.rows);
       case 'chat.list':
         return this.api.listChats();
       case 'chat.detail':
@@ -1214,8 +1433,7 @@ export class ClientHost {
           return failure('validation');
         const last = this.state.chats.find((c) => c.id === r.chatId)?.last?.id;
         if (!last) return failure('not_found');
-        const result = await this.api.read(r.chatId, last);
-        if (result.ok) this.scheduleRefresh();
+        const result = await this.readChat(r.chatId, last);
         return result;
       }
       case 'chat.edit':
@@ -1244,8 +1462,7 @@ export class ClientHost {
           this.activeChat !== r.chatId
         )
           return failure('validation');
-        const result = await this.api.read(r.chatId, r.upTo);
-        if (result.ok) this.scheduleRefresh();
+        const result = await this.readChat(r.chatId, r.upTo);
         return result;
       }
       case 'chat.view':
@@ -1299,6 +1516,7 @@ export class ClientHost {
     this.state.setupRequired = !this.o.settings.get().onboardingComplete;
     this.state.preferences = this.preferences();
     this.state.timerReminderTime = this.o.settings.get().timer.reminderTime;
+    this.state.timerPauseOnLock = this.o.settings.get().timer.pauseOnLock;
     this.absence.observe(this.state);
     const warning = this.absence.warning;
     this.state.timerAbsence = warning

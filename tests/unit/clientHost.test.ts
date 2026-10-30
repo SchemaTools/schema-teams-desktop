@@ -8,7 +8,7 @@ import type { Settings, SettingsStore } from '../../src/main/settings';
 import type { ToastSpec } from '../../src/main/notifications/types';
 import type { Logger } from '../../src/main/logger';
 import { requestValid } from '../../src/shared/requests';
-import { timerFixture, proposalFixture } from '../fixtures/time';
+import { timerFixture, proposalFixture, timerPushFixture } from '../fixtures/time';
 import { releaseFixture } from '../fixtures/updates';
 
 const URL = 'file:///unit/client.html';
@@ -16,6 +16,10 @@ type Handler = (event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>;
 const h = vi.hoisted(() => ({
   handlers: new Map<string, Handler>(),
   api: { epoch: 7, owner: 1 as number | null },
+  readDesktopConfig: vi.fn(),
+  timerPending: vi.fn(),
+  timerNoticeAck: vi.fn(),
+  timerValidateRows: vi.fn(),
   health: vi.fn(),
   latestRelease: vi.fn(),
   authenticate: vi.fn(),
@@ -71,6 +75,7 @@ const h = vi.hoisted(() => ({
     | {
         beforeShow: (spec: ToastSpec) => Promise<boolean>;
         onShow: (spec: ToastSpec) => void;
+        onClose: (spec: ToastSpec) => void;
         onButton: (spec: ToastSpec, index: number) => void;
       },
   toastClear: vi.fn(),
@@ -131,6 +136,10 @@ vi.mock('../../src/main/api/client', async (original) => {
         h.api.epoch++;
         h.api.owner = null;
       }
+      readDesktopConfig = h.readDesktopConfig;
+      timerPending = h.timerPending;
+      timerNoticeAck = h.timerNoticeAck;
+      timerValidateRows = h.timerValidateRows;
       health = h.health;
       latestRelease = h.latestRelease;
       authenticate = h.authenticate;
@@ -268,6 +277,8 @@ function fixture(patch: Partial<Settings> = {}) {
   const owned = host as unknown as { state: ClientSnapshot; authCookie: string | null };
   owned.state.user = { id: 1, shortName: 'Тест', mustChangePassword: false };
   owned.state.connection = 'online';
+  owned.state.timerControl = true;
+  owned.state.timerReady = true;
   owned.state.epoch = h.api.epoch;
   owned.authCookie = 'cookie-A';
   const event = { sender: wc, senderFrame: frame } as unknown as IpcMainInvokeEvent;
@@ -396,6 +407,14 @@ describe('ClientHost: поколение входа проверяется в д
   });
   it('setup completes atomically with autostart only after a fresh compatible health read', async () => {
     const f = fixture();
+    h.readDesktopConfig.mockResolvedValue({
+      ok: true,
+      data: {
+        bureau: { timeZone: 'Asia/Yekaterinburg', workEnd: '18:00' },
+        capabilities: { timerControl: 2 },
+      },
+    });
+    h.timerPending.mockResolvedValue({ ok: true, data: null });
     h.health.mockResolvedValueOnce({
       ok: true,
       data: { status: 'ok', db: 'ok', version: '0.11.2-b' },
@@ -681,12 +700,13 @@ describe('ClientHost: поколение входа проверяется в д
       wait = deferred<ApiResult<null>>();
     h.timer.mockReturnValueOnce(wait.promise);
     const read = invoke({ kind: 'timer.read', epoch: 7 });
-    (host as unknown as { event: (name: string, data: unknown) => void }).event('time:timer', {
-      timer: timerFixture(),
-    });
+    (host as unknown as { event: (name: string, data: unknown) => void }).event(
+      'time:timer',
+      timerPushFixture(timerFixture()),
+    );
     wait.resolve({ ok: true, data: null });
     await read;
-    expect(owned.state.timer).toEqual(timerFixture());
+    expect(owned.state.timer).toMatchObject({ version: 1, state: 'run' });
     expect(owned.state.timerReady).toBe(true);
   });
   it('late timer response after logout cannot restore the previous owner state', async () => {
@@ -705,7 +725,7 @@ describe('ClientHost: поколение входа проверяется в д
     const { invoke, owned } = fixture(),
       timer = timerFixture('pause');
     h.timerPause.mockResolvedValue({ ok: true, data: timer });
-    const expected = { version: 1, taskId: 21, startedAt: timer.startedAt };
+    const expected = { timerId: 71, revision: 1, currentSegmentFrom: timer.startedAt };
     expect(await invoke({ kind: 'timer.pause', epoch: 7, expected })).toMatchObject({ ok: true });
     expect(owned.state.timer).toEqual(timer);
     expect(h.timerPause).toHaveBeenCalledWith(expected);
@@ -713,15 +733,17 @@ describe('ClientHost: поколение входа проверяется в д
     await invoke({
       kind: 'timer.finish',
       epoch: 7,
-      expected: { ...expected, version: 2 },
+      expected: { ...expected, revision: 2 },
       rows: proposalFixture().rows,
       note: 'Тест',
+      preparedRequestId: 'prepared-test',
     });
     expect(owned.state.timer).toBeNull();
     expect(h.timerFinish).toHaveBeenCalledWith(
-      { ...expected, version: 2 },
+      { ...expected, revision: 2 },
       proposalFixture().rows,
       'Тест',
+      'prepared-test',
     );
   });
   it('старые send/read/open.path отвергаются до сетевых и OS-вызовов', async () => {
@@ -895,4 +917,300 @@ describe('ClientHost: поколение входа проверяется в д
     expect(state.focus).toBe(previous);
     expect(h.published).toEqual([]);
   });
+});
+
+describe('Read receipts bound popup accumulation to unread message IDs', () => {
+  const notify = (host: ClientHost, id: number) =>
+    (
+      host as unknown as {
+        messageNotice: (message: import('../../src/shared/client').ChatMessage) => void;
+      }
+    ).messageNotice({
+      id,
+      chatId: 4,
+      text: 'Фото и сообщения',
+      deleted: false,
+      author: { id: 2, shortName: 'Тест' },
+      mentions: [],
+      at: '2026-10-29T00:00:00.000Z',
+      editedAt: null,
+      replyTo: null,
+      files: [],
+      links: [],
+      canEdit: false,
+      reactions: [],
+      cards: [],
+      sticker: null,
+      poll: null,
+    } as import('../../src/shared/client').ChatMessage);
+  it('deduplicates pushes and closes an existing toast only after successful read', async () => {
+    const f = fixture();
+    notify(f.host, 10);
+    notify(f.host, 11);
+    notify(f.host, 11);
+    expect(h.toastShow).toHaveBeenCalledTimes(2);
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).toContain('2 новых');
+    await f.invoke({ kind: 'chat.view', epoch: 7, chatId: 4 });
+    h.read.mockResolvedValueOnce({ ok: false, code: 'network', error: 'offline', retryable: true });
+    await f.invoke({ kind: 'chat.read', epoch: 7, chatId: 4, upTo: 11 });
+    expect(h.toastDismiss).not.toHaveBeenCalled();
+    await f.invoke({ kind: 'chat.read', epoch: 7, chatId: 4, upTo: 11 });
+    expect(h.toastDismiss).toHaveBeenCalledWith('chat:4');
+    await f.invoke({ kind: 'chat.view', epoch: 7, chatId: null });
+    notify(f.host, 11);
+    notify(f.host, 12);
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).not.toContain('новых сообщений');
+  });
+  it('a late read preserves newer messages and updates their already visible toast', async () => {
+    const f = fixture(),
+      pending = deferred<ApiResult<null>>();
+    notify(f.host, 10);
+    await f.invoke({ kind: 'chat.view', epoch: 7, chatId: 4 });
+    h.read.mockReturnValueOnce(pending.promise);
+    const read = f.invoke({ kind: 'chat.read', epoch: 7, chatId: 4, upTo: 10 });
+    await f.invoke({ kind: 'chat.view', epoch: 7, chatId: null });
+    notify(f.host, 11);
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).toContain('2 новых');
+    pending.resolve({ ok: true, data: null });
+    await read;
+    expect(h.toastDismiss).toHaveBeenCalledWith('chat:4');
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).not.toContain('новых сообщений');
+    notify(f.host, 12);
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).toContain('2 новых');
+  });
+  it('a successful read invalidates a popup waiting for policy permission', async () => {
+    const f = fixture(),
+      policy = deferred<boolean>();
+    notify(f.host, 10);
+    h.policyAllows.mockReturnValueOnce(policy.promise);
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    const show = required(h.toastOptions).beforeShow(spec);
+    await Promise.resolve();
+    await f.invoke({ kind: 'chat.view', epoch: 7, chatId: 4 });
+    await f.invoke({ kind: 'chat.read', epoch: 7, chatId: 4, upTo: 10 });
+    await f.invoke({ kind: 'chat.view', epoch: 7, chatId: null });
+    policy.resolve(true);
+    expect(await show).toBe(false);
+  });
+});
+
+describe('Server midnight notices and safe absence pause', () => {
+  const notice = () => ({
+    id: 91,
+    event: 'timer_stopped',
+    at: '2026-10-29T00:00:00.000Z',
+    read: false,
+    author: null,
+    task: null,
+    subject: 'Таймер',
+    reason: 'Проверьте время',
+    changes: [],
+    link: '/time',
+    batch: null,
+  });
+  const pending = (host: ClientHost) =>
+    (host as unknown as { checkTimerPending: () => Promise<void> }).checkTimerPending();
+  it('each persisted device acknowledges only an actual policy-approved display', async () => {
+    const first = fixture(),
+      second = fixture();
+    h.timerPending.mockResolvedValue({ ok: true, data: notice() });
+    h.timerNoticeAck.mockResolvedValue({ ok: true, data: null });
+    await pending(first.host);
+    const firstId = required(first.getSettings().deviceId);
+    const firstSpec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    expect(first.settingsUpdate).toHaveBeenCalledWith({ deviceId: firstId });
+    expect(h.timerPending).toHaveBeenCalledWith(firstId);
+    expect(h.timerNoticeAck).not.toHaveBeenCalled();
+    // Callbacks belong to each host; capture the second device's spec and exercise its policy.
+    await pending(second.host);
+    const secondId = required(second.getSettings().deviceId);
+    expect(secondId).not.toBe(firstId);
+    const secondSpec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    h.policyAllows.mockResolvedValueOnce(false);
+    expect(await required(h.toastOptions).beforeShow(secondSpec)).toBe(false);
+    required(h.toastOptions).onClose(secondSpec);
+    expect(h.timerNoticeAck).not.toHaveBeenCalled();
+    await pending(second.host);
+    const shown = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    expect(await required(h.toastOptions).beforeShow(shown)).toBe(true);
+    required(h.toastOptions).onShow(shown);
+    await Promise.resolve();
+    expect(h.timerNoticeAck).toHaveBeenCalledExactlyOnceWith(secondId, 91);
+    expect(firstSpec).not.toBe(secondSpec);
+  });
+  it('Focus leaves pending unconsumed and later allows it; late logout never acknowledges', async () => {
+    const f = fixture();
+    h.timerPending.mockResolvedValue({ ok: true, data: notice() });
+    f.owned.state.focus.until = new Date(Date.now() + 60000).toISOString();
+    await pending(f.host);
+    expect(h.toastShow).not.toHaveBeenCalled();
+    f.owned.state.focus.until = null;
+    await pending(f.host);
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    await f.invoke({ kind: 'logout', epoch: 7 });
+    required(h.toastOptions).onShow(spec);
+    expect(h.timerNoticeAck).not.toHaveBeenCalled();
+  });
+  it('offline departure replays the captured A envelope after B appears and never resumes', async () => {
+    const f = fixture();
+    f.owned.state.timer = timerFixture();
+    f.owned.state.timerObservedAt = Date.now();
+    f.owned.state.connection = 'offline';
+    const host = f.host as unknown as {
+      pauseForAbsence: () => void;
+      flushAbsencePause: () => Promise<void>;
+    };
+    host.pauseForAbsence();
+    expect(h.timerPause).not.toHaveBeenCalled();
+    f.owned.state.timer = { ...timerFixture(), timerId: 99, version: 9 };
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValue({
+      ok: false,
+      code: 'stale_timer',
+      error: 'changed',
+      retryable: false,
+    });
+    await host.flushAbsencePause();
+    expect(h.timerPause).toHaveBeenCalledWith(
+      { timerId: 71, revision: 1, currentSegmentFrom: timerFixture().startedAt },
+      timerFixture().serverNow,
+      expect.any(String),
+    );
+    expect(h.timerResume).not.toHaveBeenCalled();
+    expect(f.owned.state.timer.timerId).toBe(99);
+  });
+});
+
+function required<T>(value: T | null | undefined): T {
+  if (value == null) throw Error('Missing fixture value');
+  return value;
+}
+
+describe('Absence and popup regression guards', () => {
+  it('an idempotent delayed pause result cannot overwrite a newer socket timer B', async () => {
+    const f = fixture(),
+      response = deferred<ApiResult<ReturnType<typeof timerFixture>>>();
+    f.owned.state.timer = timerFixture();
+    f.owned.state.timerObservedAt = Date.now();
+    f.owned.state.connection = 'offline';
+    const host = f.host as unknown as {
+      pauseForAbsence: () => void;
+      flushAbsencePause: () => Promise<void>;
+      event: (name: string, data: unknown) => void;
+    };
+    host.pauseForAbsence();
+    f.owned.state.connection = 'online';
+    h.timerPause.mockReturnValueOnce(response.promise);
+    const pause = host.flushAbsencePause();
+    const next = { ...timerFixture(), timerId: 99, version: 10 };
+    host.event('time:timer', timerPushFixture(next));
+    response.resolve({ ok: true, data: timerFixture('pause') });
+    await pause;
+    expect(f.owned.state.timer?.timerId).toBe(99);
+    expect(f.owned.state.timer?.version).toBe(10);
+  });
+  it('timer_busy during departure retries the same envelope on regular online refresh', async () => {
+    const f = fixture();
+    f.owned.state.timer = timerFixture();
+    f.owned.state.timerObservedAt = Date.now();
+    h.timerPause
+      .mockResolvedValueOnce({ ok: false, code: 'timer_busy', error: 'busy', retryable: false })
+      .mockResolvedValueOnce({ ok: true, data: timerFixture('pause') });
+    const host = f.host as unknown as { pauseForAbsence: () => void; refresh: () => Promise<void> };
+    host.pauseForAbsence();
+    await Promise.resolve();
+    await Promise.resolve();
+    h.listChats.mockResolvedValue({ ok: true, data: { items: [], unreadTotal: 0 } });
+    h.notifications.mockResolvedValue({ ok: true, data: { items: [], unread: 0 } });
+    h.focus.mockResolvedValue({ ok: true, data: { until: null, startedAt: null } });
+    h.timer.mockResolvedValue({ ok: true, data: timerFixture() });
+    h.timerPending.mockResolvedValue({ ok: true, data: null });
+    await host.refresh();
+    await Promise.resolve();
+    expect(h.timerPause).toHaveBeenCalledTimes(2);
+    expect(h.timerPause.mock.calls[1]).toEqual(h.timerPause.mock.calls[0]);
+    expect(h.timerResume).not.toHaveBeenCalled();
+  });
+  it('a toast rejected before creation does not consume midnight pending for the session', async () => {
+    const f = fixture();
+    h.timerPending.mockResolvedValue({
+      ok: true,
+      data: {
+        id: 91,
+        event: 'timer_stopped',
+        at: '2026-10-29T00:00:00.000Z',
+        read: false,
+        author: null,
+        task: null,
+        subject: 'Таймер',
+        reason: 'Проверьте время',
+        changes: [],
+        link: '/time',
+        batch: null,
+      },
+    });
+    h.toastShow.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const host = f.host as unknown as { checkTimerPending: () => Promise<void> };
+    await host.checkTimerPending();
+    await host.checkTimerPending();
+    expect(h.toastShow).toHaveBeenCalledTimes(2);
+    expect(h.timerNoticeAck).not.toHaveBeenCalled();
+  });
+});
+
+it('replay cached pause A cannot replace B already observed before the retry started', async () => {
+  const f = fixture();
+  f.owned.state.timer = timerFixture();
+  f.owned.state.timerObservedAt = Date.now();
+  const host = f.host as unknown as {
+    pauseForAbsence: () => void;
+    flushAbsencePause: () => Promise<void>;
+    event: (name: string, data: unknown) => void;
+  };
+  h.timerPause.mockResolvedValueOnce({
+    ok: false,
+    code: 'network',
+    error: 'unknown',
+    retryable: true,
+    uncertain: true,
+  });
+  host.pauseForAbsence();
+  await Promise.resolve();
+  await Promise.resolve();
+  host.event('time:timer', timerPushFixture({ ...timerFixture(), timerId: 99, version: 10 }));
+  h.timerPause.mockResolvedValueOnce({ ok: true, data: timerFixture('pause') });
+  await host.flushAbsencePause();
+  expect(f.owned.state.timer?.timerId).toBe(99);
+  expect(f.owned.state.timer?.version).toBe(10);
+  expect(h.timerPause.mock.calls[1]).toEqual(h.timerPause.mock.calls[0]);
+});
+
+it('the matching own pause socket event confirms absence without replacing its fresh observation', async () => {
+  const f = fixture(),
+    response = deferred<ApiResult<ReturnType<typeof timerFixture>>>();
+  f.owned.state.timer = timerFixture();
+  f.owned.state.timerObservedAt = Date.now();
+  f.owned.state.connection = 'offline';
+  const host = f.host as unknown as {
+    pauseForAbsence: () => void;
+    flushAbsencePause: () => Promise<void>;
+    event: (name: string, data: unknown) => void;
+    absence: {
+      return: (kind: 'unlock', state: ClientSnapshot) => void;
+      warning: unknown;
+      depart: (kind: 'lock', state: ClientSnapshot) => void;
+    };
+  };
+  host.absence.depart('lock', f.owned.state);
+  host.pauseForAbsence();
+  f.owned.state.connection = 'online';
+  h.timerPause.mockReturnValueOnce(response.promise);
+  const pause = host.flushAbsencePause();
+  host.event('time:timer', timerPushFixture(timerFixture('pause')));
+  host.absence.return('unlock', f.owned.state);
+  expect(host.absence.warning).not.toBeNull();
+  response.resolve({ ok: true, data: timerFixture('pause') });
+  await pause;
+  expect(host.absence.warning).toBeNull();
+  expect(f.owned.state.timer?.state).toBe('pause');
 });

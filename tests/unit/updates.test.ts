@@ -231,3 +231,30 @@ describe('UpdateChecker: startup, six hours, coalescing and version-bound dismis
     disabled.checker.destroy();
   });
 });
+
+describe('Published release survives numeric comparison', () => {
+  it.each(['0.6.1', '0.1.0'])(
+    'retains verified published %s alongside installed version',
+    async (version) => {
+      const read = vi
+        .fn<() => Promise<ApiResult<DesktopRelease | null>>>()
+        .mockResolvedValueOnce({ ok: true, data: releaseFixture(version) })
+        .mockResolvedValueOnce({ ok: false, code: 'network', error: 'private', retryable: true });
+      const checker = new UpdateChecker({
+        enabled: true,
+        currentVersion: '0.6.1',
+        read,
+        onChange: () => {},
+      });
+      await checker.check();
+      expect(checker.state).toMatchObject({
+        status: 'current',
+        available: null,
+        published: { version },
+      });
+      await checker.check();
+      expect(checker.state).toMatchObject({ status: 'error', published: { version } });
+      checker.destroy();
+    },
+  );
+});

@@ -6,7 +6,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startClientStub, type ClientStub } from './clientStub';
@@ -96,11 +96,15 @@ test('выбор, поиск, запуск, пауза/продолжение и
       note: 'Проверка фасадов',
     },
   ]);
-  expect(writes().map((c) => [c.method, c.path])).toEqual([
+  expect(
+    writes()
+      .filter((c) => !c.path.endsWith('/validate-rows'))
+      .map((c) => [c.method, c.path]),
+  ).toEqual([
     ['POST', '/api/time/timer/start'],
     ['POST', '/api/time/timer/pause'],
     ['POST', '/api/time/timer/resume'],
-    ['POST', '/api/time/timer/pause'],
+    ['POST', '/api/time/timer/prepare-finish'],
     ['POST', '/api/time/timer/finish'],
   ]);
 });
@@ -111,8 +115,8 @@ test('пересечение выделяет строку, сохраняет �
     p = dialog(page);
   await prepare(page);
   await p.getByLabel('Примечание', { exact: true }).fill('Не терять ввод');
-  await p.getByRole('button', { name: 'Записать', exact: true }).click();
-  await expect(p).toContainText('Проверьте строку 1');
+  await expect(p).toContainText('Строка 1: Проверьте дату');
+  await expect(p.getByRole('button', { name: 'Записать', exact: true })).toBeDisabled();
   await expect(p.locator('.timer-row.invalid')).toHaveCount(1);
   await expect(p.getByLabel('Примечание', { exact: true })).toHaveValue('Не терять ввод');
   await expect(p).not.toContainText('private detail');
@@ -149,11 +153,11 @@ test('смена задачи сначала записывает текущую
   await p.getByRole('button', { name: 'Записать и начать новую' }).click();
   await expect(p).toContainText('Новая задача начата.');
   await expect(p.locator('.timer-current')).toContainText('Узлы фасада');
-  expect(writes().map((c) => c.path)).toEqual([
-    '/api/time/timer/pause',
-    '/api/time/timer/finish',
-    '/api/time/timer/start',
-  ]);
+  expect(
+    writes()
+      .filter((c) => !c.path.endsWith('/validate-rows'))
+      .map((c) => c.path),
+  ).toEqual(['/api/time/timer/prepare-finish', '/api/time/timer/finish', '/api/time/timer/start']);
   expect(stub.state.timerWrites).toHaveLength(1);
 });
 test('изменение таймера другим клиентом блокирует старую форму; повторной команды нет', async () => {
@@ -184,7 +188,7 @@ test('нулевое округление не создаёт запись; сб
   expect(stub.state.timerWrites).toHaveLength(0);
   expect(writes().filter((c) => c.method === 'DELETE')).toHaveLength(1);
 });
-test('открытие и блокировка компьютера не отправляют неподдержанную автопаузу; выход очищает окно', async () => {
+test('открытие не меняет таймер, блокировка безопасно ставит паузу; выход очищает окно', async () => {
   stub.state.timers[1] = liveTimer();
   const page = await launch(),
     p = dialog(page);
@@ -194,9 +198,13 @@ test('открытие и блокировка компьютера не отп�
     powerMonitor.emit('lock-screen');
     powerMonitor.emit('unlock-screen');
   });
-  await expect(p).toContainText('Проверьте время после возвращения');
-  await expect(p).toContainText('Автоматическая пауза не подтверждена.');
-  expect(writes()).toHaveLength(0);
+  await expect(p.locator('.timer-state')).toHaveText('На паузе');
+  expect(writes()).toHaveLength(1);
+  expect(writes()[0]?.body).toMatchObject({
+    reason: 'lock',
+    expected: { timerId: 71, revision: 1 },
+  });
+  expect(writes()[0]?.body?.at).toEqual(expect.any(String));
   await page.evaluate(async () => {
     const state = await window.teams.request({ kind: 'init' });
     if (state.ok) await window.teams.request({ kind: 'logout', epoch: state.data.epoch });
@@ -219,14 +227,14 @@ test('окно в обеих темах: интервалы не выходят 
   await expect(p).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Таймер', exact: true })).toBeFocused();
 });
-test('три недавние задачи сохраняются для владельца после перезапуска и не показываются другому входу', async () => {
+test('серверные недавние задачи сохраняются после записи и не показываются другому входу', async () => {
   const page = await launch(),
     p = dialog(page);
   await p.locator('.timer-task').filter({ hasText: 'Обучение' }).click();
   await expect(p.locator('.timer-current')).toContainText('Обучение');
-  await p.getByRole('button', { name: 'Сбросить', exact: true }).click();
-  await p.getByRole('button', { name: 'Да, сбросить' }).click();
-  await expect(p).toContainText('Таймер сброшен без записи.');
+  await prepare(page);
+  await p.getByRole('button', { name: 'Записать', exact: true }).click();
+  await expect(p).toContainText('Трудозатраты записаны.');
   if (!app) throw new Error('App unavailable');
   await app.close();
   app = undefined;
@@ -302,4 +310,92 @@ test('таймер в настоящей карточке трея открыв�
   await expect(dialog(page)).toBeVisible();
   await expect(dialog(page).locator('.timer-current')).toContainText('План первого этажа');
   expect(writes()).toHaveLength(0);
+});
+
+test('идентификатор устройства сохраняется до первого pending и переживает перезапуск', async () => {
+  await launch();
+  const pendingCalls = () =>
+    stub.state.calls.filter((c) =>
+      c.path.startsWith('/api/desktop/timer-notices/pending?deviceId='),
+    );
+  await expect.poll(() => pendingCalls().length).toBeGreaterThan(0);
+  const settings = JSON.parse(readFileSync(join(profile, 'settings.json'), 'utf8')) as {
+    deviceId: string;
+  };
+  expect(settings.deviceId).toMatch(/^[a-f0-9-]{36}$/);
+  expect(pendingCalls()[0]?.path).toBe(
+    '/api/desktop/timer-notices/pending?deviceId=' + settings.deviceId,
+  );
+  await required(app).close();
+  app = undefined;
+  const count = pendingCalls().length;
+  app = await electron.launch({
+    args: [ROOT],
+    env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
+  });
+  const page = await app.firstWindow();
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'online');
+  await expect.poll(() => pendingCalls().length).toBeGreaterThan(count);
+  expect(pendingCalls().at(-1)?.path).toBe(
+    '/api/desktop/timer-notices/pending?deviceId=' + settings.deviceId,
+  );
+});
+
+function required<T>(value: T | null | undefined): T {
+  if (value == null) throw Error('Missing fixture value');
+  return value;
+}
+
+test('запоздалая проверка прежних строк не разрешает запись изменённых строк; срок виден явно', async () => {
+  stub.state.timers[1] = liveTimer();
+  const page = await launch(),
+    p = dialog(page);
+  await prepare(page);
+  const save = p.getByRole('button', { name: 'Записать', exact: true });
+  await expect(save).toBeEnabled();
+  await expect(p).toContainText('Окончание работы зафиксировано:');
+  stub.state.timerValidationDelayMs = 1000;
+  const checks = () => writes().filter((c) => c.path.endsWith('/validate-rows')).length,
+    baseline = checks();
+  const responses = stub.state.timerValidationResponses;
+  await p.getByLabel('С 1', { exact: true }).selectOption('510');
+  await expect.poll(checks).toBeGreaterThan(baseline);
+  stub.state.timerFinishError = true;
+  await p.getByLabel('До 1', { exact: true }).selectOption('600');
+  await expect(save).toBeDisabled();
+  // Wait for the first validation response through the server call's resolved client state, not a wall-clock guess.
+  await expect(p).toContainText('Дождитесь завершения действия с таймером.');
+  await expect(save).toBeDisabled();
+  await expect.poll(() => stub.state.timerValidationResponses).toBeGreaterThan(responses);
+  stub.state.timerFinishError = false;
+  stub.state.timerValidationDelayMs = 0;
+  await p.getByRole('button', { name: 'Повторить проверку строк', exact: true }).click();
+  await expect(save).toBeEnabled();
+  expect(stub.state.timerWrites).toHaveLength(0);
+  await p.getByRole('button', { name: 'Закрыть проверку', exact: true }).click();
+  stub.state.timerPreparedTtlMs = 700;
+  await prepare(page);
+  await expect(p).toContainText('Срок проверки истёк.');
+  await expect(save).toBeDisabled();
+  expect(stub.state.timerWrites).toHaveLength(0);
+});
+
+test('явное добавление 15 минут меняет начало только после подтверждения и сохраняет паузу', async () => {
+  stub.state.timers[1] = liveTimer('pause');
+  const original = stub.state.timers[1].startedAt;
+  const page = await launch(),
+    p = dialog(page);
+  await p.getByRole('button', { name: 'Добавить 15 минут', exact: true }).click();
+  await expect(p).toContainText('Начало первого интервала сдвинется на 15 минут назад');
+  expect(writes()).toHaveLength(0);
+  await p.getByRole('button', { name: 'Отмена добавления', exact: true }).click();
+  expect(writes()).toHaveLength(0);
+  await p.getByRole('button', { name: 'Добавить 15 минут', exact: true }).click();
+  await p.getByRole('button', { name: 'Да, добавить 15 минут', exact: true }).click();
+  await expect(p).toContainText('К началу работы добавлено 15 минут.');
+  await expect(p.locator('.timer-state')).toHaveText('На паузе');
+  expect(stub.state.timers[1]?.startedAt).toBe(
+    new Date(Date.parse(original) - 15 * 60000).toISOString(),
+  );
+  expect(writes().map((c) => c.path)).toEqual(['/api/time/timer/extend']);
 });

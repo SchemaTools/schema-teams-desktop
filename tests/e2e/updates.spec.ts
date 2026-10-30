@@ -85,6 +85,11 @@ test('нет опубликованной сборки отличается от
   stub.state.latest = releaseFixture('0.1.0');
   await p.getByRole('button', { name: 'Проверить обновления' }).click();
   await expect(p).toContainText('Новых опубликованных версий нет.');
+  for (const mode of ['light', 'dark'] as const) {
+    await page.evaluate((mode) => window.teams.request({ kind: 'theme', mode }), mode);
+    await expect(p).toContainText('Установлена на этом компьютере:');
+    await expect(p).toContainText('Опубликована на сервере: 0.1.0');
+  }
   stub.state.latestStatus = 500;
   await p.getByRole('button', { name: 'Проверить обновления' }).click();
   await expect(p.getByRole('alert')).toContainText('Не удалось проверить обновления.');

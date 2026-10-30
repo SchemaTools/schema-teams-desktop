@@ -28,7 +28,7 @@ const states = new Set([
   'passwordChange',
   'incompatible',
 ]);
-const commands = new Set(['start', 'pause', 'resume', 'reset', 'finish']);
+const commands = new Set(['start', 'pause', 'resume', 'extend', 'reset', 'finish']);
 const codes = new Set([
   'network',
   'timeout',
@@ -49,6 +49,12 @@ const codes = new Set([
   'timer_running',
   'timer_changed',
   'timer_busy',
+  'stale_timer',
+  'stale_timer_segment',
+  'precondition_required',
+  'prepared_expired',
+  'invalid_event_time',
+  'timer_day_start',
   'other',
 ]);
 const errors = new Set([
