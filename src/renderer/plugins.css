@@ -1,0 +1,120 @@
+.plugins-active > .chat-list,
+.plugins-active > .conversation {
+  display: none;
+}
+.plugins-page {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: var(--background);
+  color: var(--body);
+  padding: 28px;
+}
+.plugins-column {
+  width: min(100%, 1000px);
+  margin: auto;
+}
+.plugins-hero,
+.plugin-card,
+.plugins-settings label,
+.plugins-trust {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  margin-bottom: 14px;
+}
+.plugins-hero h1,
+.plugin-card h3 {
+  margin: 0;
+  color: var(--ink);
+}
+.plugins-page p {
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+.plugins-hero > div,
+.plugin-description,
+.plugins-settings label > span {
+  flex: 1;
+  min-width: 0;
+}
+.plugins-symbol,
+.plugin-short {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 58px;
+  height: 58px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.plugins-page button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: none;
+  background: var(--panel);
+  color: var(--body);
+  border: 1px solid var(--control-line);
+  border-radius: 8px;
+  padding: 9px 14px;
+  cursor: pointer;
+}
+.plugins-page button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.plugins-trust {
+  align-items: flex-start;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.plugins-trust > svg {
+  flex: none;
+}
+.plugins-page h2 {
+  font-size: 17px;
+  margin: 24px 0 14px;
+}
+.plugin-version {
+  font-family: var(--mono);
+}
+.plugin-notes {
+  white-space: pre-wrap;
+}
+.plugins-page summary {
+  cursor: pointer;
+  color: var(--accent-text);
+  padding: 8px 0;
+  width: fit-content;
+}
+.plugins-settings small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+}
+.plugins-settings input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+  flex: none;
+}
+@media (max-width: 780px) {
+  .plugins-page {
+    padding: 16px;
+  }
+  .plugins-hero,
+  .plugin-card {
+    flex-wrap: wrap;
+  }
+  .plugins-hero h1 {
+    font-size: 22px;
+  }
+}
