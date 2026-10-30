@@ -175,7 +175,7 @@ test('учёт времени использует сохранённую нас
   await p.getByRole('tab', { name: 'Учёт времени', exact: true }).click();
   await expect(p.getByRole('combobox', { name: 'Время напоминания' })).toHaveValue('19:00');
   await p.getByRole('tab', { name: 'Плагины Revit', exact: true }).click();
-  await expect(p).toContainText('Каталог плагинов пока недоступен.');
+  await expect(p).toContainText('Установка недоступна: доверенный издатель не настроен.');
 });
 test('настройки открываются из настоящего меню трея', async () => {
   const page = await launch(true);

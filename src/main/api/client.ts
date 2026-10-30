@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { unlink, rmdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import type {
   ApiResult,
   ChatDetail,
@@ -24,6 +26,10 @@ import * as parse from './parse';
 import * as time from './time';
 import { desktopRelease } from './updates';
 import { desktopConfig } from './desktopConfig';
+import { pluginCatalog } from './plugins';
+import type { PluginBuild, PluginCatalog } from '../../shared/plugins';
+import { downloadPlugin } from '../plugins/download';
+import { auditPlugin, type PluginAuditListener } from '../plugins/audit';
 import type { DesktopConfig } from '../../shared/desktopConfig';
 import type { DesktopRelease } from '../../shared/updates';
 import {
@@ -41,6 +47,7 @@ import {
 import { validateUpload } from '../files/uploadPolicy';
 
 export interface TeamsApiOptions {
+  onPluginAudit?: PluginAuditListener;
   fetch: (path: string, init?: RequestInit) => Promise<Response>;
   onAuthLost?: () => void;
   onTimerAudit?: (audit: TimerAudit) => void;
@@ -215,6 +222,53 @@ export class TeamsApi {
   }
   listChats(): Promise<ApiResult<ChatList>> {
     return this.request('/api/chats', 'GET', parse.list);
+  }
+  async plugins(): Promise<ApiResult<PluginCatalog>> {
+    auditPlugin(this.o.onPluginAudit, { operation: 'catalog', phase: 'requested' });
+    const result = await this.request('/api/desktop/plugins', 'GET', pluginCatalog);
+    auditPlugin(this.o.onPluginAudit, {
+      operation: 'catalog',
+      phase: 'result',
+      outcome: result.ok ? 'ok' : 'rejected',
+      ...(!result.ok && { reason: result.code }),
+    });
+    return result;
+  }
+  async downloadPlugin(
+    build: PluginBuild,
+    root: string,
+    signal?: AbortSignal,
+  ): Promise<ApiResult<string>> {
+    const epoch = this.epoch,
+      owner = this.owner;
+    if (!owner) return failure('unauthenticated');
+    if (this.user?.mustChangePassword) return failure('password_change_required');
+    const controller = new AbortController();
+    this.pending.add(controller);
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
+    try {
+      const path = await downloadPlugin(build, {
+        audit: this.o.onPluginAudit,
+        root,
+        signal: controller.signal,
+        fetch: (path, init) => this.o.fetch(path, init),
+        current: () => epoch === this.epoch && owner === this.owner,
+        onUnauthorized: () => this.authLost(epoch),
+      });
+      if (epoch !== this.epoch || owner !== this.owner || controller.signal.aborted) {
+        await unlink(path).catch(() => {});
+        await rmdir(dirname(path)).catch(() => {});
+        return failure('stale_session');
+      }
+      return { ok: true, data: path };
+    } catch {
+      return failure(epoch !== this.epoch ? 'stale_session' : 'invalid_file');
+    } finally {
+      signal?.removeEventListener('abort', abort);
+      this.pending.delete(controller);
+    }
   }
   timer(): Promise<ApiResult<WorkTimer | null>> {
     return this.request('/api/time/timer', 'GET', (raw) => {

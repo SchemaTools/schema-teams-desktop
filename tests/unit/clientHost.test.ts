@@ -61,6 +61,7 @@ const h = vi.hoisted(() => ({
   pin: vi.fn(),
   top: vi.fn(),
   morning: vi.fn(),
+  plugins: vi.fn(),
   supportUpload: vi.fn(),
   supportSend: vi.fn(),
   desktopConfig: undefined as undefined | import('../../src/shared/desktopConfig').DesktopConfig,
@@ -151,6 +152,7 @@ vi.mock('../../src/main/api/client', async (original) => {
         h.api.owner = null;
       }
       readDesktopConfig = h.readDesktopConfig;
+      plugins = h.plugins;
       timerPending = h.timerPending;
       timerNoticeAck = h.timerNoticeAck;
       timerValidateRows = h.timerValidateRows;
@@ -2262,5 +2264,70 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     await control(f.host).flushAbsencePause();
     expect(h.timerResume).not.toHaveBeenCalled();
     expect(stores.returns.list(required(control(f.host).pauseScope()))).toHaveLength(1);
+  });
+});
+
+describe('Plugin catalog main authorization and scoped opt-in', () => {
+  const setup = () => {
+    const f = fixture();
+    h.desktopConfig = {
+      bureau: { timeZone: 'Asia/Yekaterinburg', workEnd: '18:00' },
+      serverNow: '2026-10-31T04:00:00.000Z',
+      supportChatId: null,
+      capabilities: { plugins: 1, timerControl: 2 },
+    };
+    h.plugins.mockResolvedValue({ ok: true, data: { tester: true, plugins: [] } });
+    return f;
+  };
+  it('local beta opt-in belongs to current server+owner, and tester removal gates it immediately', async () => {
+    const f = setup();
+    await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+    expect(await f.invoke({ kind: 'plugins.preferences', epoch: 7, beta: true })).toEqual({
+      ok: true,
+      data: null,
+    });
+    expect(f.state.plugins?.beta).toBe(true);
+    h.api.owner = 2;
+    h.api.epoch = 8;
+    f.state.user = { id: 2, shortName: 'Другой', mustChangePassword: false };
+    f.state.epoch = 8;
+    (f.host as unknown as { configEpoch: number }).configEpoch = 8;
+    await f.invoke({ kind: 'plugins.refresh', epoch: 8 });
+    expect(f.state.plugins?.beta).toBe(false);
+    await f.invoke({ kind: 'plugins.preferences', epoch: 8, beta: true });
+    expect(f.getSettings().plugins?.betaScopes).toHaveLength(2);
+    h.plugins.mockResolvedValue({ ok: true, data: { tester: false, plugins: [] } });
+    await f.invoke({ kind: 'plugins.refresh', epoch: 8 });
+    expect(f.state.plugins?.beta).toBe(false);
+    expect(await f.invoke({ kind: 'plugins.preferences', epoch: 8, beta: true })).toMatchObject({
+      ok: false,
+      code: 'forbidden',
+    });
+  });
+  it('missing capability performs no catalog read or preference write and hides previous catalog', async () => {
+    const f = setup();
+    await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+    h.desktopConfig = { ...required(h.desktopConfig), capabilities: { timerControl: 2 } };
+    h.plugins.mockClear();
+    await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+    expect(h.plugins).not.toHaveBeenCalled();
+    expect(f.state.plugins?.catalog).toBeNull();
+    expect(
+      await f.invoke({ kind: 'plugins.preferences', epoch: 7, autoUpdate: false }),
+    ).toMatchObject({ ok: false, code: 'forbidden' });
+  });
+  it('late pending catalog after host destroy cannot publish to replacement host', async () => {
+    const f = setup(),
+      pending = deferred<ApiResult<import('../../src/shared/plugins').PluginCatalog>>();
+    h.plugins.mockReturnValueOnce(pending.promise);
+    const work = f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+    (f.host as unknown as { pluginCatalog: { invalidate: () => void } }).pluginCatalog.invalidate();
+    f.host.destroy();
+    const replacement = setup();
+    const before = h.published.length;
+    pending.resolve({ ok: true, data: { tester: true, plugins: [] } });
+    expect(await work).toMatchObject({ ok: false, code: 'stale_session' });
+    expect(h.published).toHaveLength(before);
+    expect(replacement.state.plugins?.catalog ?? null).toBeNull();
   });
 });

@@ -71,7 +71,7 @@ async function toDone(page: Page, inventoryFailure = false) {
       };
     });
   await wizard(page).getByRole('button', { name: 'Далее', exact: true }).click();
-  await expect(wizard(page)).toContainText('Каталог плагинов бюро пока недоступен');
+  await expect(wizard(page)).toContainText('Каталог открывается в разделе «Плагины»');
   await expect(
     wizard(page).getByRole('button', { name: 'Проверить папки ещё раз', exact: true }),
   ).toBeEnabled();

@@ -33,6 +33,9 @@ export interface FixtureCall {
   bytes?: number;
 }
 export interface FixtureState {
+  pluginCatalog: import('../../src/shared/plugins').PluginCatalog;
+  pluginCatalogStatus: number | null;
+  pluginCatalogDelayMs: number;
   desktopConfig: import('../../src/shared/desktopConfig').DesktopConfig | null;
   morningSummary: import('../../src/shared/morning').MorningSummary;
   morningDelayMs: number;
@@ -155,6 +158,9 @@ export async function startClientStub() {
   const files = new Map<number, { bytes: Buffer; mime: string; status?: number }>();
   const state: FixtureState = {
     desktopConfig: null,
+    pluginCatalog: { tester: false, plugins: [] },
+    pluginCatalogStatus: null,
+    pluginCatalogDelayMs: 0,
     morningSummary: { date: '2026-10-31', workday: true, dueToday: 0, review: 0, newRemarks: 0 },
     morningDelayMs: 0,
     morningResponses: 0,
@@ -478,6 +484,17 @@ export async function startClientStub() {
     }
     if (path === '/api/desktop/config') {
       json(res, 200, state.desktopConfig ?? configFixture());
+      return;
+    }
+    if (path === '/api/desktop/plugins' && method === 'GET') {
+      const response = structuredClone(state.pluginCatalog);
+      if (state.pluginCatalogDelayMs)
+        await new Promise<void>((done) => setTimeout(done, state.pluginCatalogDelayMs));
+      if (state.pluginCatalogStatus) {
+        denied(res, 'forbidden', state.pluginCatalogStatus);
+        return;
+      }
+      json(res, 200, response);
       return;
     }
     if (path === '/api/desktop/morning' && method === 'GET') {

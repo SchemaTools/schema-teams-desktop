@@ -67,6 +67,7 @@ import { UpdateBanner } from './updates';
 import { ServerConfigurationPanel } from './serverConfiguration';
 import { SetupPanel } from './setup';
 import { ReportPanel } from './report';
+import { PluginsPage } from './plugins';
 
 const EMPTY: ClientSnapshot = {
   connection: 'connecting',
@@ -122,6 +123,7 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [liveCelebration]);
   const [folder, setFolder] = useState<Folder>('all');
+  const [pluginsOpen, setPluginsOpen] = useState(false);
   const [selection, setSelection] = useState<Selection>(null);
   const selectionRef = useRef<Selection>(null);
   const [search, setSearch] = useState('');
@@ -258,6 +260,7 @@ export function App() {
   const select = useCallback(
     (next: Selection, around?: number, expectedEpoch = snapshotRef.current.epoch) => {
       if (snapshotRef.current.epoch !== expectedEpoch) return;
+      setPluginsOpen(false);
       setLiveCelebration(undefined);
       selectionRef.current = next;
       setSelection(next);
@@ -625,6 +628,7 @@ export function App() {
   }
 
   function chooseFolder(next: Folder) {
+    setPluginsOpen(false);
     if (snapshotRef.current.epoch !== snapshot.epoch) return;
     setFolder(next);
     setSearch('');
@@ -919,7 +923,10 @@ export function App() {
   }
 
   return (
-    <div className="app-shell" data-connection={snapshot.connection}>
+    <div
+      className={`app-shell${pluginsOpen ? ' plugins-active' : ''}`}
+      data-connection={snapshot.connection}
+    >
       {reportOpen && (
         <ReportPanel
           snapshot={snapshot}
@@ -997,16 +1004,21 @@ export function App() {
           <button
             type="button"
             key={key}
-            className={`folder-button${folder === key ? ' active' : ''}`}
+            className={`folder-button${!pluginsOpen && folder === key ? ' active' : ''}`}
             onClick={() => chooseFolder(key)}
-            aria-pressed={folder === key}
+            aria-pressed={!pluginsOpen && folder === key}
           >
             <Icon size={24} />
             {label}
             {count > 0 && <b className="rail-count">{count > 99 ? '99+' : count}</b>}
           </button>
         ))}
-        <button type="button" className="folder-button" disabled title={R.pluginsUnavailable}>
+        <button
+          type="button"
+          className={`folder-button${pluginsOpen ? ' active' : ''}`}
+          aria-pressed={pluginsOpen}
+          onClick={() => setPluginsOpen(true)}
+        >
           <Layers size={24} />
           {R.plugins}
         </button>
@@ -1121,6 +1133,7 @@ export function App() {
           )}
         </section>
       )}
+      {pluginsOpen && <PluginsPage key={snapshot.epoch} snapshot={snapshot} />}
       <aside className="chat-list">
         <label className="search-field">
           <MessageCircleMore size={19} />

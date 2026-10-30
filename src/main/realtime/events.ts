@@ -1,4 +1,5 @@
 export const REALTIME_EVENTS = [
+  'desktop:plugins',
   'notification',
   'chat:message',
   'chat:update',

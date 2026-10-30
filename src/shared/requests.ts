@@ -42,6 +42,15 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
   const only = (...keys: string[]) =>
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
+    case 'plugins.refresh':
+      return only();
+    case 'plugins.preferences':
+      return (
+        only('beta', 'autoUpdate') &&
+        ('beta' in r || 'autoUpdate' in r) &&
+        (!('beta' in r) || typeof r.beta === 'boolean') &&
+        (!('autoUpdate' in r) || typeof r.autoUpdate === 'boolean')
+      );
     case 'report.send':
     case 'report.retry':
     case 'report.fallback':

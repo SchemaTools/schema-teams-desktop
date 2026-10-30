@@ -7,6 +7,7 @@ import { isoDay } from '../shared/time';
 import { serverPartitionValid } from '../shared/serverConfiguration';
 
 export interface Settings {
+  plugins?: { betaScopes: string[]; autoUpdate: boolean };
   deviceId?: string;
   /** Адрес сервера; пусто — адрес из сборки */
   serverUrl?: string;
@@ -59,6 +60,24 @@ export function normalizeSettings(raw: unknown): Settings {
   };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
+  if (r.plugins && typeof r.plugins === 'object' && !Array.isArray(r.plugins)) {
+    const p = r.plugins as Record<string, unknown>;
+    s.plugins = {
+      betaScopes: Array.isArray(p.betaScopes)
+        ? [
+            ...new Set(
+              p.betaScopes.filter(
+                (v): v is string =>
+                  typeof v === 'string' &&
+                  /^[a-f0-9]{64}:[1-9]\d{0,15}$/.test(v) &&
+                  Number.isSafeInteger(Number(v.split(':')[1])),
+              ),
+            ),
+          ].slice(-128)
+        : [],
+      autoUpdate: p.autoUpdate !== false,
+    };
+  }
   if (Array.isArray(r.morningSeen))
     s.morningSeen = [
       ...new Set(

@@ -59,6 +59,7 @@ export interface ClientSnapshot {
   notifications: NotificationItem[];
   reportSupport?: import('./report').ReportSupportState;
   morningWarning?: string | null;
+  plugins?: import('./plugins').PluginsState;
   /** Only a validated live push may initiate the issued-album celebration. */
   albumCelebration?: { notificationId: number; at: number } | null;
   notificationUnread: number;
@@ -113,6 +114,8 @@ export type DesktopRequest =
   | { kind: 'report.export' | 'report.reveal'; id: string }
   | ({ epoch: number } & (
       | { kind: 'logout' }
+      | { kind: 'plugins.refresh' }
+      | { kind: 'plugins.preferences'; beta?: boolean; autoUpdate?: boolean }
       | { kind: 'report.send'; id: string }
       | { kind: 'report.retry'; id: string }
       | { kind: 'report.fallback'; id: string }
@@ -188,6 +191,8 @@ export type DesktopRequest =
       | { kind: 'notifications.read'; id: number | 'all' }
     ));
 export interface DesktopResponseMap {
+  'plugins.refresh': import('./plugins').PluginsState;
+  'plugins.preferences': null;
   init: ClientSnapshot;
   login: null;
   retry: null;

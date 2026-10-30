@@ -62,6 +62,7 @@ import { RevitInventoryService } from './desktop/revitInventory';
 import { ReportService, type ReportBackend } from './diagnostics/service';
 import { SupportLedger, supportStorage } from './diagnostics/ledger';
 import { SupportSender, type SupportContext } from './diagnostics/sender';
+import { PluginCatalogService } from './plugins/catalog';
 import {
   MorningNotices,
   bureauMorning,
@@ -128,6 +129,22 @@ export class ClientHost {
   >();
   private readonly readThrough = new Map<number, number>();
   private readonly liveNotices = new LiveNoticeGate();
+  private readonly pluginCatalog = new PluginCatalogService({
+    context: () =>
+      !this.destroyed &&
+      this.api?.owner &&
+      this.state.connection === 'online' &&
+      this.state.user?.id === this.api.owner &&
+      this.configEpoch === this.api.epoch &&
+      (this.api.desktopConfiguration?.capabilities.plugins ?? 0) >= 1
+        ? `${this.serverScopeHash}:${this.api.owner}:${this.api.epoch}`
+        : null,
+    read: () => this.api.plugins(),
+    changed: () => {
+      if (!this.destroyed) this.publish();
+    },
+    now: () => performance.now(),
+  });
   private trayWindow?: BrowserWindow;
   private readonly peers = new Map<number, string>();
   private readonly pending = new Map<number, number>();
@@ -322,6 +339,7 @@ export class ClientHost {
       },
       onAuthLost: () => this.signedOut(),
       onTimerAudit: (audit) => o.log.info('команда таймера', { ...audit }),
+      onPluginAudit: (audit) => o.log.info('плагины', { ...audit }),
     });
     this.paths = new PathService({ log: o.log });
     this.files = new AttachmentService({
@@ -534,6 +552,7 @@ export class ClientHost {
     void this.bootstrap();
   }
   private invalidate(): void {
+    this.pluginCatalog.reset();
     this.configEpoch = -1;
     this.timerEpoch = -1;
     this.serverClock = null;
@@ -584,6 +603,7 @@ export class ClientHost {
     this.publish();
   }
   private signedOut(): void {
+    this.pluginCatalog.reset();
     this.configEpoch = -1;
     this.timerEpoch = -1;
     this.serverClock = null;
@@ -793,6 +813,7 @@ export class ClientHost {
       this.publish();
       if (focus.ok) this.checkReminder();
       void this.checkMorning();
+      void this.pluginCatalog.refresh();
       await this.checkTimerPending();
       void this.flushAbsencePause();
     } finally {
@@ -1435,6 +1456,10 @@ export class ClientHost {
   }
   private event(name: RealtimeEvent, data: unknown): void {
     this.o.log.info('событие клиента', { event: name });
+    if (name === 'desktop:plugins') {
+      this.pluginCatalog.invalidate();
+      return;
+    }
     if (name === 'time:timer') {
       this.timerRevision++;
       try {
@@ -2034,6 +2059,33 @@ export class ClientHost {
       }
     }
     if (!this.api.owner || this.state.user?.mustChangePassword) return failure('unauthenticated');
+    if (r.kind === 'plugins.refresh') {
+      await this.pluginCatalog.refresh(true);
+      return !this.destroyed && r.epoch === this.api.epoch
+        ? ok(this.pluginCatalog.state)
+        : failure('stale_session');
+    }
+    if (r.kind === 'plugins.preferences') {
+      if (
+        (this.api.desktopConfiguration?.capabilities.plugins ?? 0) < 1 ||
+        this.configEpoch !== this.api.epoch
+      )
+        return failure('forbidden');
+      if (r.beta === true && !this.pluginCatalog.state.catalog?.tester) return failure('forbidden');
+      const before = this.o.settings.get().plugins ?? { betaScopes: [], autoUpdate: true };
+      const scope = `${this.serverScopeHash}:${this.api.owner}`;
+      const betaScopes =
+        r.beta === undefined ? before.betaScopes : before.betaScopes.filter((key) => key !== scope);
+      if (r.beta === true) betaScopes.push(scope);
+      this.o.settings.update({
+        plugins: {
+          betaScopes: betaScopes.slice(-128),
+          autoUpdate: r.autoUpdate ?? before.autoUpdate,
+        },
+      });
+      this.publish();
+      return ok(null);
+    }
     if (
       [
         'timer.start',
@@ -2325,6 +2377,29 @@ export class ClientHost {
     }
   }
   private publish(): void {
+    const pluginPreferences = this.o.settings.get().plugins ?? { betaScopes: [], autoUpdate: true };
+    this.state.plugins = {
+      ...this.pluginCatalog.state,
+      beta:
+        pluginPreferences.betaScopes.includes(`${this.serverScopeHash}:${this.api?.owner}`) &&
+        this.pluginCatalog.state.catalog?.tester === true,
+      autoUpdate: pluginPreferences.autoUpdate,
+    };
+    if (
+      !this.api?.owner ||
+      this.state.user?.id !== this.api.owner ||
+      this.state.connection !== 'online' ||
+      this.configEpoch !== this.api.epoch ||
+      (this.api.desktopConfiguration?.capabilities.plugins ?? 0) < 1
+    )
+      this.state.plugins = {
+        ...this.state.plugins,
+        status: 'unavailable',
+        catalog: null,
+        error: null,
+        beta: false,
+        checkedAt: null,
+      };
     if (this.support) {
       const config = this.api.desktopConfiguration,
         owner = this.api.owner;
@@ -2507,6 +2582,7 @@ export class ClientHost {
     this.updates.destroy();
     clearInterval(this.tick);
     this.destroyed = true;
+    this.pluginCatalog.reset();
     this.boot++;
     clearTimeout(this.refreshTimer);
     clearTimeout(this.retryTimer);
