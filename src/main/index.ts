@@ -156,15 +156,26 @@ app.on('before-quit', (e) => {
   // cookie входа должны лечь на диск до выхода, иначе пароль спросят снова (ТЗ, 2.2)
   e.preventDefault();
   log.info('выход');
-  client?.destroy();
-  session
-    .fromPartition(client?.partition ?? PARTITION)
-    .cookies.flushStore()
-    .catch((err: unknown) => log.warn('cookie не сохранены', { err }))
-    .finally(() => {
-      tray?.destroy();
-      app.quit();
-    });
+  void (async () => {
+    try {
+      client?.destroy();
+    } catch (err) {
+      log.error('ошибка завершения клиента', { err });
+    }
+    try {
+      await session.fromPartition(client?.partition ?? PARTITION).cookies.flushStore();
+    } catch (err) {
+      log.warn('cookie не сохранены', { err });
+    } finally {
+      try {
+        tray?.destroy();
+      } catch (err) {
+        log.error('ошибка завершения клиента', { err });
+      } finally {
+        app.quit();
+      }
+    }
+  })();
 });
 
 /**

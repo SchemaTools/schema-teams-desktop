@@ -10,6 +10,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startClientStub, type ClientStub } from './clientStub';
+import { collectNonText } from './nonTextContrast';
 
 const ROOT = resolve(__dirname, '../..');
 let stub: ClientStub, app: ElectronApplication | undefined, profile: string;
@@ -78,9 +79,32 @@ async function audit(page: Page, name: string, context = 'html') {
     name,
   ).toBe(true);
   expect(result.violations, name).toEqual([]);
+  const nonText = await page.evaluate(collectNonText, context);
+  await test.info().attach(`${name}-non-text`, {
+    body: JSON.stringify(nonText),
+    contentType: 'application/json',
+  });
+  for (const sample of nonText.samples) {
+    if (sample.width !== undefined)
+      expect(parseFloat(sample.width), sample.target).toBeGreaterThan(0);
+    const foreground = rgb(sample.foreground),
+      background = rgb(sample.background),
+      alpha = foreground[3] ?? 1;
+    const blended = foreground
+      .slice(0, 3)
+      .map((v, i) => v * alpha + (background[i] ?? 0) * (1 - alpha));
+    expect(contrast(blended, background), `${sample.kind}:${sample.target}`).toBeGreaterThanOrEqual(
+      3,
+    );
+  }
 }
 
 function rgb(color: string): number[] {
+  if (color.startsWith('color(srgb ')) {
+    const values = color.match(/[\d.]+/g)?.map(Number);
+    if (!values || values.length < 3) throw Error(`Unsupported computed color: ${color}`);
+    return values.map((v, i) => (i < 3 ? v * 255 : v));
+  }
   if (!/^rgba?\(/.test(color)) throw Error(`Unsupported computed color: ${color}`);
   const values = color.match(/[\d.]+/g)?.map(Number);
   if (!values || values.length < 3) throw Error(`Unsupported computed color: ${color}`);
@@ -196,6 +220,20 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.locator('.message-row')).toHaveCount(2);
     await audit(page, 'chat');
     await gradientBounds(page);
+    const composer = page.getByRole('textbox', { name: 'Сообщение', exact: true });
+    await composer.focus();
+    await expect(page.locator('.composer-field')).toHaveCSS('outline-style', 'solid');
+    const focus = await page.locator('.composer-field').evaluate((el) => {
+      const style = getComputedStyle(el);
+      return {
+        color: style.outlineColor,
+        width: style.outlineWidth,
+        offset: style.outlineOffset,
+        dpr: window.devicePixelRatio,
+      };
+    });
+    expect(parseFloat(focus.width) * focus.dpr).toBeGreaterThanOrEqual(2);
+    expect(parseFloat(focus.offset)).toBeGreaterThan(0);
     await page.locator('.chat-row[data-chat-id="events"]').click();
     await expect(page.locator('.event-card')).toBeVisible();
     await audit(page, 'events');

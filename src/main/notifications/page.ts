@@ -20,14 +20,14 @@ font:13px/1.4 "Segoe UI",Arial,sans-serif}
 background:#f9f9f9;display:flex;flex-direction:column;gap:9px;overflow:auto;scrollbar-width:thin}
 header{display:flex;align-items:center;gap:6px;color:#5f6469;font-size:11px}
 .mark{width:12px;height:12px;background:linear-gradient(135deg,#1a1d21 0 50%,#1b3fd1 50% 100%)}
-button{font:inherit;cursor:pointer;border:1px solid #c9ced2;border-radius:6px;background:#fff;
+button{font:inherit;cursor:pointer;border:1px solid #626e79;border-radius:6px;background:#fff;
 padding:6px 10px;color:#1a1d21}button:hover{background:#edf0f8}button:focus-visible,
 textarea:focus-visible{outline:2px solid #1b3fd1;outline-offset:1px}
 #close{margin-left:auto;border:0;padding:0 4px;font-size:18px;line-height:18px;background:transparent}
 h1{font-size:13px;margin:0;font-weight:600;overflow-wrap:anywhere}#message{cursor:pointer}
 .body{margin:2px 0 0;color:#333;white-space:pre-wrap;overflow-wrap:anywhere;max-height:56px;overflow:auto}
 .reply-row{display:flex;gap:6px}textarea{resize:none;min-width:0;flex:1;height:60px;
-border:1px solid #c9ced2;border-radius:6px;padding:7px 8px;font:inherit;background:#fff;color:#1a1d21}
+border:1px solid #626e79;border-radius:6px;padding:7px 8px;font:inherit;background:#fff;color:#1a1d21}
 #send{align-self:stretch;background:#1b3fd1;color:#fff;border-color:#1b3fd1;font-size:18px;padding:5px 11px}
 #send:hover{background:#1433ad}button:disabled{opacity:.55;cursor:default}
 .hint{font-size:11px;color:#5f6469;margin-top:4px}.actions{display:flex;gap:6px;margin-top:auto}

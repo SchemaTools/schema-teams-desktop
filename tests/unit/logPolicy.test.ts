@@ -3,6 +3,14 @@ import { projectLog } from '../../src/main/logPolicy';
 import { applicationLog } from '../../src/main/diagnostics/logs';
 import { REALTIME_EVENTS } from '../../src/main/realtime/events';
 describe('Fixed diagnostic projection', () => {
+  it('retains only the error class for shutdown cleanup failures', () => {
+    expect(
+      projectLog('ошибка завершения клиента', {
+        err: new TypeError('private shutdown detail'),
+        stack: 'private stack',
+      }),
+    ).toEqual({ message: 'ошибка завершения клиента', details: { errorType: 'TypeError' } });
+  });
   it('keeps actual realtime kinds including timer/notification without any payload', () => {
     for (const event of REALTIME_EVENTS)
       expect(

@@ -2,6 +2,7 @@ import { REALTIME_EVENTS } from './realtime/events';
 export const LOG_MESSAGES = [
   'запуск',
   'выход',
+  'ошибка завершения клиента',
   'необработанная ошибка',
   'необработанный отказ',
   'запуск не удался',
@@ -119,6 +120,7 @@ export function projectLog(message: string, raw?: Record<string, unknown>): LogP
         'необработанный отказ',
         'запуск не удался',
         'cookie не сохранены',
+        'ошибка завершения клиента',
       ].includes(safeMessage)
     ) {
       const name = raw.err instanceof Error ? raw.err.name : raw.errorType;

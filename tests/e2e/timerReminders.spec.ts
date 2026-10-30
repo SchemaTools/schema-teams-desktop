@@ -6,7 +6,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startClientStub, type ClientStub } from './clientStub';
@@ -117,7 +117,7 @@ test('напоминание показывает таймер, завершен
   await expect(page.locator('.timer-state')).toHaveText('Идёт работа');
   expect(writes()).toHaveLength(0);
 });
-test('«Ещё работаю» закрывает напоминание, день не повторяется после перезапуска', async () => {
+async function restartReminder(cleanupFailure = false) {
   const page = await launch();
   await policy(true);
   const toast = await fire();
@@ -130,11 +130,46 @@ test('«Ещё работаю» закрывает напоминание, де�
   await expect.poll(() => toast.isClosed()).toBe(true);
   expect(writes()).toHaveLength(0);
   if (!app) throw Error('App unavailable');
-  await test.step('Завершить первый процесс после закрытия карточки', async () => {
-    if (!app) throw Error('App unavailable');
-    await app.close();
-  });
+  await app.evaluate(
+    (_, diagnosticPath) => {
+      process.prependListener('uncaughtException', (error) => {
+        process.getBuiltinModule('fs').writeFileSync(diagnosticPath, error.stack ?? String(error));
+      });
+    },
+    join(profile, 'quit-fixture-error.txt'),
+  );
+  if (cleanupFailure)
+    await app.evaluate(({ app }) => {
+      const { createRequire } = process.getBuiltinModule('module');
+      const host = createRequire(`${app.getAppPath()}/package.json`)('./dist/main/index.js') as {
+        client: { destroy: () => void };
+      };
+      host.client.destroy = () => {
+        throw new TypeError('private shutdown detail');
+      };
+    });
+  try {
+    await test.step(
+      'Завершить первый процесс после закрытия карточки',
+      async () => {
+        if (!app) throw Error('App unavailable');
+        await app.close();
+      },
+      { timeout: 10000 },
+    );
+  } catch (error) {
+    app.process().kill();
+    app = undefined;
+    throw error;
+  }
   app = undefined;
+  expect(existsSync(join(profile, 'quit-fixture-error.txt'))).toBe(false);
+  if (cleanupFailure) {
+    const log = readFileSync(join(profile, 'logs/app.log'), 'utf8');
+    expect(log).toContain('ошибка завершения клиента');
+    expect(log).toContain('"errorType":"TypeError"');
+    expect(log).not.toContain('private shutdown detail');
+  }
   existingProfile(profile);
   app = await test.step('Запустить второй процесс с тем же профилем', () =>
     electron.launch({
@@ -155,7 +190,11 @@ test('«Ещё работаю» закрывает напоминание, де�
   expect(Object.keys(shownDay())).toEqual(['1']);
   expect(writes()).toHaveLength(0);
   expect(page.isClosed()).toBe(true);
-});
+}
+test('«Ещё работаю» закрывает напоминание, день не повторяется после перезапуска', () =>
+  restartReminder());
+test('TypeError очистки не блокирует выход, cookie и показанный день сохранены', () =>
+  restartReminder(true));
 test('отказ системной политики не засчитывает показ; после разрешения напоминание доступно', async () => {
   await launch();
   await policy(false);
