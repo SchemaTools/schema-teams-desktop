@@ -82,6 +82,15 @@ test('главное окно загружает локальный клиент
     })),
   ).toEqual({ node: 'undefined', bridge: 'function' });
   await expect.poll(async () => (await mainState(app))?.visible).toBe(true);
+  const graphics = await app.evaluate(({ app }) => ({
+    platform: process.platform,
+    collectorDisabled: app.commandLine.hasSwitch('disable-gpu-process-for-dx12-info-collection'),
+    rendererDisabled: app.commandLine.hasSwitch('disable-gpu'),
+    gpuProcesses: app.getAppMetrics().filter((p) => p.type === 'GPU').length,
+  }));
+  expect(graphics.collectorDisabled).toBe(graphics.platform === 'win32');
+  expect(graphics.rendererDisabled).toBe(false);
+  expect(graphics.gpuProcesses).toBeGreaterThan(0);
 });
 
 test('отдельный вход сохраняет HttpOnly cookie после перезапуска', async () => {

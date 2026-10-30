@@ -19,6 +19,11 @@ import { reportBackend } from './diagnostics/backend';
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
 const HIDDEN_ARG = '--hidden';
+// Chromium 152 starts a separate, non-sandboxed DX12 information collector
+// after 120 seconds on Windows. Desktop does not use that optional report;
+// skip this short-lived process while keeping the normal rendering GPU process.
+if (process.platform === 'win32')
+  app.commandLine.appendSwitch('disable-gpu-process-for-dx12-info-collection');
 protocol.registerSchemesAsPrivileged([
   { scheme: 'schema-attachment', privileges: { standard: true, secure: true } },
 ]);
