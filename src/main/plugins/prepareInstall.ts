@@ -23,12 +23,17 @@ import type {
   PluginTransactionResult,
 } from './transactionTypes';
 import type { PluginTransactions } from './transaction';
+import { pluginPlanSafety as safety } from './planSafety';
 
 export interface PrepareInstallOptions {
   scope: PluginScope;
   code: string;
   years: readonly (2025 | 2026)[];
   beta: boolean;
+  /** Automatic jobs require verified metadata for every member of the closure. */
+  verifiedOnly?: boolean;
+  automaticSafety?: string;
+  validateAutomatic?: (plans: readonly PluginPlan[]) => boolean;
   expectedCurrentId: string | null;
   local: readonly LocalPluginEvidence[];
   templates: readonly ApprovedInstallTemplate[];
@@ -55,6 +60,7 @@ interface OwnedPreparation {
   readCatalog: () => Promise<PluginCatalog>;
   selection: { code: string; years: (2025 | 2026)[]; beta: boolean; local: LocalPluginEvidence[] };
   safety: string;
+  validateAutomatic?: () => boolean;
   state: 'ready' | 'in-use' | 'consumed' | 'releasing';
 }
 const owned = new WeakMap<PreparedInstall, OwnedPreparation>();
@@ -65,26 +71,6 @@ const freeze = <T>(v: T): T => {
   }
   return v;
 };
-function safety(plans: readonly PluginPlan[], catalog: PluginCatalog): string {
-  return JSON.stringify(
-    plans.map((p) => ({
-      year: p.year,
-      builds: p.builds.map(({ code, build: b }) => ({
-        code,
-        channel:
-          catalog.plugins.find((p) => p.code === code)?.beta?.id === b.id ? 'beta' : 'stable',
-        id: b.id,
-        version: b.version,
-        verified: b.verified,
-        sha256: b.sha256,
-        size: b.size,
-        url: b.url,
-        revit: [...b.revit].sort(),
-        requires: [...b.requires].sort((a, b) => a.plugin.localeCompare(b.plugin)),
-      })),
-    })),
-  );
-}
 
 /** Main-only preparation. No target activation, receipt mutation or renderer-provided path. */
 export async function preparePluginInstall(input: PrepareInstallOptions): Promise<PreparedInstall> {
@@ -105,7 +91,10 @@ export async function preparePluginInstall(input: PrepareInstallOptions): Promis
     verify = input.verify ?? verifyPluginSignature,
     external = input.signal,
     expected = input.expectedCurrentId,
-    expandedBudget = input.expandedBudgetBytes ?? 1024 * 1024 * 1024;
+    expandedBudget = input.expandedBudgetBytes ?? 1024 * 1024 * 1024,
+    verifiedOnly = input.verifiedOnly === true,
+    automaticSafety = input.automaticSafety,
+    validateAutomatic = input.validateAutomatic;
   if (
     !scopeValid(scope) ||
     (expected !== null && !uuid(expected)) ||
@@ -164,6 +153,10 @@ export async function preparePluginInstall(input: PrepareInstallOptions): Promis
         selection.local,
       ),
       stamp = safety(plans, catalog);
+    if (verifiedOnly && plans.some((p) => p.builds.some((item) => !item.build.verified)))
+      throw Error('unverified_automatic_build');
+    if (verifiedOnly && (automaticSafety !== stamp || !validateAutomatic?.(plans)))
+      throw Error('automatic_admission_changed');
     const groups = new Map<string, { code: string; build: PluginBuild; years: (2025 | 2026)[] }>();
     for (const p of plans)
       for (const item of p.builds) {
@@ -304,6 +297,7 @@ export async function preparePluginInstall(input: PrepareInstallOptions): Promis
       readCatalog,
       selection,
       safety: stamp,
+      validateAutomatic: verifiedOnly ? () => validateAutomatic?.(plans) === true : undefined,
       state: 'ready',
     });
     return handle;
@@ -324,6 +318,8 @@ async function preparedInstallPlan(
   const entry = owned.get(handle);
   if (!entry || !scopeSame(scope, entry.plan.scope) || !entry.current())
     throw Error('stale_install');
+  if (entry.validateAutomatic && !entry.validateAutomatic())
+    throw Error('automatic_admission_changed');
   const catalog = pluginCatalog(await entry.readCatalog());
   if (
     !entry.current() ||
@@ -339,6 +335,8 @@ async function preparedInstallPlan(
     ) !== entry.safety
   )
     throw Error('plugin_catalog_changed');
+  if (entry.validateAutomatic && !entry.validateAutomatic())
+    throw Error('automatic_admission_changed');
   return structuredClone(entry.plan);
 }
 

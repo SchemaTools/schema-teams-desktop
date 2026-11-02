@@ -89,6 +89,15 @@
 .plugin-notes {
   white-space: pre-wrap;
 }
+.plugin-work {
+  border-left: 3px solid var(--accent-text);
+  padding-left: 12px;
+  margin: 8px 0;
+}
+.plugin-work progress {
+  width: min(100%, 280px);
+  accent-color: var(--accent);
+}
 .plugins-page summary {
   cursor: pointer;
   color: var(--accent-text);

@@ -73,10 +73,11 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       );
     case 'plugins.preferences':
       return (
-        only('beta', 'autoUpdate') &&
-        ('beta' in r || 'autoUpdate' in r) &&
+        only('beta', 'autoUpdate', 'notifyInstalled') &&
+        ('beta' in r || 'autoUpdate' in r || 'notifyInstalled' in r) &&
         (!('beta' in r) || typeof r.beta === 'boolean') &&
-        (!('autoUpdate' in r) || typeof r.autoUpdate === 'boolean')
+        (!('autoUpdate' in r) || typeof r.autoUpdate === 'boolean') &&
+        (!('notifyInstalled' in r) || typeof r.notifyInstalled === 'boolean')
       );
     case 'report.send':
     case 'report.retry':

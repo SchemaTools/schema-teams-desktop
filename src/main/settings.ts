@@ -7,7 +7,7 @@ import { isoDay } from '../shared/time';
 import { serverPartitionValid } from '../shared/serverConfiguration';
 
 export interface Settings {
-  plugins?: { betaScopes: string[]; autoUpdate: boolean };
+  plugins?: { betaScopes: string[]; autoUpdate: boolean; notifyInstalled?: boolean };
   deviceId?: string;
   /** Адрес сервера; пусто — адрес из сборки */
   serverUrl?: string;
@@ -76,6 +76,7 @@ export function normalizeSettings(raw: unknown): Settings {
           ].slice(-128)
         : [],
       autoUpdate: p.autoUpdate !== false,
+      notifyInstalled: p.notifyInstalled !== false,
     };
   }
   if (Array.isArray(r.morningSeen))

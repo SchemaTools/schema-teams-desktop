@@ -127,7 +127,12 @@ export type DesktopRequest =
   | ({ epoch: number } & (
       | { kind: 'logout' }
       | { kind: 'plugins.refresh' }
-      | { kind: 'plugins.preferences'; beta?: boolean; autoUpdate?: boolean }
+      | {
+          kind: 'plugins.preferences';
+          beta?: boolean;
+          autoUpdate?: boolean;
+          notifyInstalled?: boolean;
+        }
       | { kind: 'plugins.install'; code: string; years: (2025 | 2026)[] }
       | { kind: 'plugins.rollback'; receiptId: string }
       | { kind: 'plugins.recover' }

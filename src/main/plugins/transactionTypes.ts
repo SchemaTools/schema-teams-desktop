@@ -68,4 +68,4 @@ export interface PluginTransactionJournal {
 }
 export type PluginTransactionResult =
   | { status: 'complete'; receipt: PluginReceipt }
-  | { status: 'waiting' | 'blocked' | 'recovery'; reason: string };
+  | { status: 'waiting' | 'blocked' | 'recovery'; reason: string; processInterruption?: true };

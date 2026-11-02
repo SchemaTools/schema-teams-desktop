@@ -217,7 +217,7 @@ it('beta opt-in persistence accepts only bounded server-owner identities, never 
     normalizeSettings({
       plugins: { beta: true, autoUpdate: false, betaScopes: [a, b, a, {}, [a], 'bad'] },
     }).plugins,
-  ).toEqual({ autoUpdate: false, betaScopes: [a, b] });
+  ).toEqual({ autoUpdate: false, betaScopes: [a, b], notifyInstalled: true });
   expect(normalizeSettings({ plugins: { beta: true } }).plugins?.betaScopes).toEqual([]);
 });
 it('audit projection emits only bounded identifiers and fixed classification; observer exceptions never escape', () => {

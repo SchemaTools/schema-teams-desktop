@@ -1,4 +1,5 @@
 import { REALTIME_EVENTS } from './realtime/events';
+import { auditPlugin, type PluginAudit } from './plugins/audit';
 export const LOG_MESSAGES = [
   'запуск',
   'выход',
@@ -18,6 +19,7 @@ export const LOG_MESSAGES = [
   'состояние соединения',
   'команда таймера',
   'событие исключено',
+  'плагины',
 ] as const;
 const states = new Set([
   'noServer',
@@ -79,6 +81,15 @@ export function projectLog(message: string, raw?: Record<string, unknown>): LogP
     : 'событие исключено';
   const details: LogProjection['details'] = {};
   try {
+    if (raw && safeMessage === 'плагины')
+      auditPlugin(
+        (event) => {
+          for (const [key, value] of Object.entries(event))
+            if (typeof value === 'string') details[key] = value;
+          if (event.buildId !== undefined) details.buildId = String(event.buildId);
+        },
+        raw as unknown as PluginAudit,
+      );
     if (raw && safeMessage === 'запуск') {
       for (const key of ['app', 'electron', 'chrome', 'windows']) {
         const value = raw[key];

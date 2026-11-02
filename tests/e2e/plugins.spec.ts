@@ -12,6 +12,7 @@ import { source } from 'axe-core';
 import { collectNonText } from './nonTextContrast';
 import { startClientStub, type ClientStub } from './clientStub';
 import type { PluginCatalog } from '../../src/shared/plugins';
+import { makePluginZip, fixtureXml, fixtureGuid, fileHash } from '../helpers/pluginArchiveFixture';
 const ROOT = resolve(__dirname, '../..');
 let stub: ClientStub, app: ElectronApplication | undefined, profile: string;
 const initial = (): PluginCatalog => ({
@@ -188,6 +189,182 @@ test('tester opt-in switches beta; revocation/tester removal removes old metadat
   expect(forged).toMatchObject({ ok: false, code: 'forbidden' });
   expect(stub.state.calls.some((c) => c.path.includes('/plugins/files/'))).toBe(false);
 });
+
+for (const theme of ['light', 'dark'] as const)
+  test(`automatic waiting → fresh verified temp transaction → receipt and grouped UI: ${theme}`, async () => {
+    test.skip(process.platform !== 'win32', 'native inert XML fixture is Windows-only');
+    const zip = makePluginZip([
+      { name: 'Plugin.addin', bytes: fixtureXml('Plugin.dll') },
+      { name: 'Plugin.dll', bytes: Buffer.from('INERT E2E FIXTURE, NEVER LOAD') },
+    ]).buffer;
+    const plugin = stub.state.pluginCatalog.plugins[0];
+    if (!plugin?.stable) throw Error('Missing fixture');
+    plugin.stable.requires = [];
+    plugin.stable.revit = [2025];
+    plugin.beta = null;
+    plugin.stable.sha256 = fileHash(zip);
+    plugin.stable.size = zip.length;
+    const page = await launch(theme),
+      panel = pagePlugins(page);
+    await app?.evaluate(
+      ({ app }, data) => {
+        const { createRequire } = process.getBuiltinModule('module'),
+          load = createRequire(`${app.getAppPath()}/package.json`);
+        const { join } = load('node:path') as typeof import('node:path');
+        const fs = load('node:fs/promises') as typeof import('node:fs/promises');
+        type Host = {
+          pluginContext: () => import('../../src/main/plugins/controller').PluginJobContext | null;
+          pluginJobs: Pick<
+            import('../../src/main/plugins/controller').PluginController,
+            'inspect'
+          > & {
+            o: import('../../src/main/plugins/controller').PluginControllerOptions;
+          };
+          pluginUpdates: Pick<
+            import('../../src/main/plugins/updateCoordinator').PluginUpdateCoordinator,
+            'invalidate'
+          > & {
+            o: import('../../src/main/plugins/updateCoordinator').PluginUpdatePorts;
+          };
+          pluginTestState?: { revit: 'busy' | 'idle'; downloads: number };
+          publish(): void;
+        };
+        const host = (load('./dist/main/index.js') as { client: Host }).client,
+          original = host.pluginContext.bind(host),
+          root = join(app.getPath('userData'), 'inert-plugin-fixture'),
+          state = { revit: 'busy' as 'busy' | 'idle', downloads: 0 };
+        host.pluginUpdates.invalidate();
+        host.pluginContext = () => {
+          const context = original();
+          return context
+            ? {
+                ...context,
+                targetRoot: join(root, 'user'),
+                dataRoot: join(root, 'data'),
+                stagingParent: join(root, 'staging'),
+                scanRoots: ([2025, 2026] as const).flatMap((year) => [
+                  { year, path: join(root, 'user', String(year)) },
+                  { year, path: join(root, 'machine', String(year)) },
+                ]),
+              }
+            : null;
+        };
+        const { PluginController } = load(
+          './dist/main/plugins/controller.js',
+        ) as typeof import('../../src/main/plugins/controller');
+        const old = host.pluginJobs.o;
+        host.pluginJobs = new PluginController({
+          ...old,
+          context: () => host.pluginContext(),
+          processes: async () => state.revit,
+          pathAllowed: async () => true,
+          verify: async (_path, hash) => ({
+            v: 1,
+            verdict: 'valid',
+            reason: 'verified',
+            fileSha256: hash,
+            signerDerSha256: 'f'.repeat(64),
+            winTrustCode: '00000000',
+          }),
+          policy: () => ({
+            publisherPins: ['f'.repeat(64)],
+            templates: [
+              {
+                policyId: 'synthetic',
+                code: 'floor-plans',
+                archive: {
+                  id: 'raw',
+                  files: [
+                    { relativePath: 'Plugin.dll', kind: 'dll' },
+                    { relativePath: 'Plugin.addin', kind: 'addin' },
+                  ],
+                  manifests: [
+                    {
+                      relativePath: 'Plugin.addin',
+                      year: 2025,
+                      addIns: [{ addInId: data.guid, assemblyRelativePath: 'Plugin.dll' }],
+                    },
+                  ],
+                },
+                yearFiles: [{ year: 2025, paths: ['Plugin.dll'] }],
+                manifestTargets: [
+                  {
+                    year: 2025,
+                    sourceRelativePath: 'Plugin.addin',
+                    targetBasename: 'Schema.addin',
+                  },
+                ],
+              },
+            ],
+          }),
+          download: async (_build, parent) => {
+            state.downloads++;
+            const dir = await fs.mkdtemp(join(parent, 'archive-')),
+              file = join(dir, 'package.zip');
+            await fs.writeFile(file, Buffer.from(data.zip, 'base64'));
+            return file;
+          },
+        }) as unknown as Host['pluginJobs'];
+        host.pluginUpdates.o.processes = async () => state.revit;
+        host.pluginTestState = state;
+        host.publish();
+      },
+      { zip: zip.toString('base64'), guid: fixtureGuid },
+    );
+    await expect(
+      panel.getByRole('heading', { name: 'Ожидают закрытия Revit', exact: true }),
+    ).toBeVisible();
+    await expect(panel).toContainText('Ожидаем закрытия всех процессов Revit');
+    expect(
+      await app?.evaluate(({ app }) => {
+        const load = process
+          .getBuiltinModule('module')
+          .createRequire(`${app.getAppPath()}/package.json`);
+        return (
+          load('./dist/main/index.js') as { client: { pluginTestState: { downloads: number } } }
+        ).client.pluginTestState.downloads;
+      }),
+    ).toBe(0);
+    await page.screenshot({ path: test.info().outputPath(`plugins-auto-waiting-${theme}.png`) });
+    await app?.evaluate(({ app }) => {
+      const load = process
+        .getBuiltinModule('module')
+        .createRequire(`${app.getAppPath()}/package.json`);
+      (
+        load('./dist/main/index.js') as { client: { pluginTestState: { revit: string } } }
+      ).client.pluginTestState.revit = 'idle';
+    });
+    await expect(panel).toContainText('Установка подтверждена.', { timeout: 20000 });
+    await expect(panel.getByRole('heading', { name: 'Установленные', exact: true })).toBeVisible();
+    await expect(panel).not.toContainText('доверенный издатель не настроен');
+    const facts = await app?.evaluate(async ({ app }) => {
+      const load = process
+          .getBuiltinModule('module')
+          .createRequire(`${app.getAppPath()}/package.json`),
+        host = (
+          load('./dist/main/index.js') as {
+            client: {
+              pluginJobs: { inspect: () => Promise<unknown> };
+              pluginTestState: { downloads: number };
+            };
+          }
+        ).client;
+      return { view: await host.pluginJobs.inspect(), downloads: host.pluginTestState.downloads };
+    });
+    expect(facts).toMatchObject({
+      downloads: 1,
+      view: {
+        status: 'ready',
+        packages: [{ code: 'floor-plans', buildId: 1, version: '1.10', years: [2025] }],
+      },
+    });
+    await page.screenshot({ path: test.info().outputPath(`plugins-auto-complete-${theme}.png`) });
+    await panel.getByRole('checkbox', { name: 'Сообщать об установке' }).uncheck();
+    const preference = JSON.parse(
+      await (await import('node:fs/promises')).readFile(join(profile, 'settings.json'), 'utf8'),
+    ) as { plugins: { notifyInstalled: boolean } };
+    expect(preference.plugins.notifyInstalled).toBe(false);
+  });
 test('empty catalog, forbidden response and retry are honest; no install or background downloads', async () => {
   stub.state.pluginCatalog = { tester: false, plugins: [] };
   const page = await launch(),

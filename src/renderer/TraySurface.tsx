@@ -6,6 +6,7 @@ import {
   Check,
   Settings,
   Info,
+  Layers,
   Moon,
   Send,
   LogIn,
@@ -315,6 +316,18 @@ export function TraySurface() {
       >
         <Settings size={20} />
         <span>Настройки</span>
+      </button>
+      <button
+        className="tray-item"
+        onClick={() => void act({ kind: 'settings.open', tab: 'plugins' })}
+      >
+        <Layers size={20} />
+        <span>
+          Плагины
+          {(snapshot?.plugins?.workflow?.pending ?? 0) > 0
+            ? ` · ${snapshot?.plugins?.workflow?.pending} ждут`
+            : ''}
+        </span>
       </button>
       <button
         className="tray-item"

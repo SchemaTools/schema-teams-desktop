@@ -76,6 +76,10 @@ import { SupportLedger, supportStorage } from './diagnostics/ledger';
 import { SupportSender, type SupportContext } from './diagnostics/sender';
 import { PluginCatalogService } from './plugins/catalog';
 import { createProductionPluginController, type PluginJobContext } from './plugins/controller';
+import { PluginUpdateCoordinator, type PluginUpdateNotice } from './plugins/updateCoordinator';
+import { readRevitProcesses } from './plugins/safety';
+import { PluginAutoHolds, pluginAutoHoldKey, rolledBackBuildHolds } from './plugins/autoHolds';
+import { nodePathSafe } from './plugins/transactionFs';
 import type { ManagedPluginsView } from '../shared/plugins';
 import {
   MorningNotices,
@@ -104,6 +108,7 @@ interface Options {
   report?: Omit<ReportBackend, 'metadata'>;
 }
 interface Notice {
+  pluginUpdate?: PluginUpdateNotice;
   morning?: MorningTicket;
   recovery?: PauseReturn;
   reminder?: ReminderTicket;
@@ -155,11 +160,18 @@ export class ClientHost {
         : null,
     read: () => this.api.plugins(),
     changed: () => {
-      if (!this.destroyed) this.publish();
+      if (!this.destroyed) {
+        this.publish();
+        if (this.pluginCatalog.state.status === 'ready') void this.pluginUpdates?.refresh();
+      }
     },
     now: () => performance.now(),
   });
   private pluginGeneration = 0;
+  private pluginMaintenance = false;
+  private readonly pluginAutoHolds = new PluginAutoHolds(
+    join(app.getPath('userData'), 'plugin-auto-holds.json'),
+  );
   private pluginContextStamp?: string;
   private pluginManaged: ManagedPluginsView = {
     status: 'unavailable',
@@ -168,6 +180,43 @@ export class ClientHost {
     packages: [],
   };
   private readonly pluginJobs = createProductionPluginController({
+    automaticHeld: (scope, rootsHash, code, year, build) =>
+      this.pluginAutoHolds
+        .read()
+        .has(
+          pluginAutoHoldKey(
+            scope.serverHash,
+            scope.ownerId,
+            rootsHash,
+            code,
+            year,
+            build.id,
+            build.sha256,
+          ),
+        ),
+    beforeRollback: async (previous, next) => {
+      const context = this.pluginContext(),
+        stamp = JSON.stringify(context),
+        generation = this.pluginGeneration;
+      if (
+        !context ||
+        context.scope.serverHash !== previous.scope.serverHash ||
+        context.scope.ownerId !== previous.scope.ownerId
+      )
+        throw Error('stale_plugin_job');
+      await nodePathSafe(join(app.getPath('userData'), 'plugin-auto-holds.json'));
+      if (
+        this.destroyed ||
+        desktopShutdown.locked ||
+        generation !== this.pluginGeneration ||
+        stamp !== JSON.stringify(this.pluginContext())
+      )
+        throw Error('stale_plugin_job');
+      this.pluginAutoHolds.add(rolledBackBuildHolds(previous, next));
+    },
+    audit: (event) => this.o.log.info('плагины', { ...event }),
+    mayRun: () => !this.destroyed && !desktopShutdown.locked,
+    stage: (phase) => this.pluginUpdates?.phase(phase),
     context: () => this.pluginContext(),
     readCatalog: async () => {
       const result = await this.api.plugins();
@@ -180,6 +229,75 @@ export class ClientHost {
       return result.data;
     },
   });
+  private readonly pluginUpdates = new PluginUpdateCoordinator({
+    automaticHeld: (rootsHash, code, year, build) => {
+      const scope = this.pluginContext()?.scope;
+      return (
+        !scope ||
+        this.pluginAutoHolds
+          .read()
+          .has(
+            pluginAutoHoldKey(
+              scope.serverHash,
+              scope.ownerId,
+              rootsHash,
+              code,
+              year,
+              build.id,
+              build.sha256,
+            ),
+          )
+      );
+    },
+    context: () => {
+      const context = this.pluginContext();
+      return context
+        ? {
+            key: JSON.stringify(context),
+            automatic: this.o.settings.get().plugins?.autoUpdate !== false,
+            beta: context.beta,
+          }
+        : null;
+    },
+    mayRun: () => !this.destroyed && !desktopShutdown.locked && !this.pluginMaintenance,
+    inspect: async () => {
+      const stamp = JSON.stringify(this.pluginContext()),
+        view = await this.pluginJobs.inspect();
+      if (!this.destroyed && stamp === JSON.stringify(this.pluginContext()))
+        this.pluginManaged = view;
+      return view;
+    },
+    years: async () => {
+      const inventory = await this.inventory.inspect(true);
+      return inventory.years.filter((y) => y.executable === 'found').map((y) => y.year);
+    },
+    catalog: async () => {
+      const result = await this.api.plugins();
+      if (!result.ok) throw Error(result.code);
+      return result.data;
+    },
+    install: async (code, years, verified, automatic) => {
+      const result = await (verified
+        ? this.pluginJobs.installVerified(code, years, automatic)
+        : this.pluginJobs.install(code, years));
+      await this.refreshManagedPlugins();
+      return result;
+    },
+    recover: async () => {
+      const result = await this.pluginJobs.recover();
+      await this.refreshManagedPlugins();
+      return result;
+    },
+    processes: readRevitProcesses,
+    cancel: () => this.pluginJobs.invalidate(),
+    changed: () => {
+      if (!this.destroyed) {
+        this.publish();
+        queueMicrotask(() => this.showPluginNotices());
+      }
+    },
+  });
+  private readonly pluginNoticeWindows = new Map<string, PluginUpdateNotice>();
   private trayWindow?: BrowserWindow;
   private readonly peers = new Map<number, string>();
   private readonly pending = new Map<number, number>();
@@ -224,6 +342,9 @@ export class ClientHost {
           !this.destroyed &&
           this.updateContext().stamp === stamp &&
           !this.pauseFlight &&
+          !this.pluginJobs.busy &&
+          !this.pluginUpdates.busy &&
+          !this.pluginMaintenance &&
           !this.login?.open &&
           !this.toasts.hasReplySurface &&
           this.traySafeForUpdate() &&
@@ -481,6 +602,11 @@ export class ClientHost {
       onButton: (spec, index) => {
         const n = this.notices.get(spec);
         if (!n || !this.owned(n)) return;
+        if (n.pluginUpdate) {
+          if (index === 0 && this.current(n))
+            void this.request({ kind: 'settings.open', tab: 'plugins' });
+          return;
+        }
         if (n.morning) {
           if (this.morningValid(n.morning, true)) this.openNotice(n);
           return;
@@ -519,6 +645,7 @@ export class ClientHost {
         if (
           n &&
           this.owned(n) &&
+          (!n.pluginUpdate || this.current(n)) &&
           (!n.reminder || this.current(n)) &&
           (!n.morning || this.morningValid(n.morning, true))
         )
@@ -527,6 +654,7 @@ export class ClientHost {
       onShow: (spec) => {
         const n = this.notices.get(spec);
         if (n && this.current(n)) {
+          if (n.pluginUpdate) this.pluginUpdates.shown(n.pluginUpdate);
           if (n.morning) {
             this.morning.shown(n.morning);
             this.saveMorning(n.morning);
@@ -562,6 +690,7 @@ export class ClientHost {
       },
       onClose: (spec) => {
         const n = this.notices.get(spec);
+        if (n?.pluginUpdate) this.pluginNoticeWindows.delete(n.pluginUpdate.id);
         if (n?.recovery) this.recoveryNotices.delete(n.recovery.key);
         if (n?.pendingDeviceId && n.notificationId) this.noticePending.delete(n.notificationId);
       },
@@ -923,6 +1052,7 @@ export class ClientHost {
       if (focus.ok) this.checkReminder();
       void this.checkMorning();
       void this.pluginCatalog.refresh();
+      this.showPluginNotices();
       await this.checkTimerPending();
       void this.flushAbsencePause();
     } finally {
@@ -1960,6 +2090,11 @@ export class ClientHost {
   private current(n: Notice): boolean {
     return (
       this.owned(n) &&
+      (!n.pluginUpdate ||
+        (!desktopShutdown.locked &&
+          this.pluginUpdates.noticeCurrent(n.pluginUpdate) &&
+          (n.pluginUpdate.type !== 'complete' ||
+            this.o.settings.get().plugins?.notifyInstalled !== false))) &&
       (!n.morning || this.morningValid(n.morning)) &&
       (!n.recovery || this.currentRecovery(n.recovery)) &&
       !(
@@ -2230,6 +2365,8 @@ export class ClientHost {
       case 'updates.cancel':
         return ok(await this.desktopUpdates.cancel(r.jobId));
       case 'updates.requestLaunch':
+        if (this.pluginJobs.busy || this.pluginUpdates.busy || this.pluginMaintenance)
+          return failure('update_busy');
         if (!this.traySafeForUpdate() || this.toasts.hasReplySurface) return failure('update_busy');
         return ok(this.desktopUpdates.requestLaunch(r.jobId));
       case 'updates.acknowledge':
@@ -2350,6 +2487,7 @@ export class ClientHost {
     if (r.kind === 'plugins.refresh') {
       await this.pluginCatalog.refresh(true);
       await this.refreshManagedPlugins();
+      await this.pluginUpdates.refresh(true);
       return !this.destroyed && r.epoch === this.api.epoch
         ? ok(this.pluginCatalog.state)
         : failure('stale_session');
@@ -2362,7 +2500,11 @@ export class ClientHost {
         return failure('forbidden');
       if (r.beta === true && !this.pluginCatalog.state.catalog?.tester) return failure('forbidden');
       this.invalidatePluginJobs();
-      const before = this.o.settings.get().plugins ?? { betaScopes: [], autoUpdate: true };
+      const before = this.o.settings.get().plugins ?? {
+        betaScopes: [],
+        autoUpdate: true,
+        notifyInstalled: true,
+      };
       const scope = `${this.serverScopeHash}:${this.api.owner}`;
       const betaScopes =
         r.beta === undefined ? before.betaScopes : before.betaScopes.filter((key) => key !== scope);
@@ -2371,6 +2513,7 @@ export class ClientHost {
         plugins: {
           betaScopes: betaScopes.slice(-128),
           autoUpdate: r.autoUpdate ?? before.autoUpdate,
+          notifyInstalled: r.notifyInstalled ?? before.notifyInstalled ?? true,
         },
       });
       this.publish();
@@ -2412,11 +2555,32 @@ export class ClientHost {
         )
           return failure('forbidden');
       }
-      const result = await (r.kind === 'plugins.install'
-        ? this.pluginJobs.install(r.code, r.years)
-        : r.kind === 'plugins.rollback'
+      if (r.kind === 'plugins.install') {
+        const scheduled = await this.pluginUpdates.manual(r.code, [...r.years]);
+        if (this.destroyed || epoch !== this.api.epoch) return failure('stale_session');
+        await this.refreshManagedPlugins();
+        return scheduled.accepted
+          ? ok(null)
+          : {
+              ok: false,
+              code: 'plugin_job_blocked',
+              retryable: false,
+              error:
+                'Проверка плагина не пройдена. Установка не подтверждена; обновите сведения в окне плагинов.',
+            };
+      }
+      if (this.pluginJobs.busy || this.pluginUpdates.busy || this.pluginMaintenance)
+        return failure('update_busy');
+      this.pluginMaintenance = true;
+      this.pluginUpdates.invalidate();
+      let result;
+      try {
+        result = await (r.kind === 'plugins.rollback'
           ? this.pluginJobs.rollback(r.receiptId)
           : this.pluginJobs.recover());
+      } finally {
+        this.pluginMaintenance = false;
+      }
       if (this.destroyed || epoch !== this.api.epoch) return failure('stale_session');
       await this.refreshManagedPlugins();
       if (
@@ -2730,12 +2894,56 @@ export class ClientHost {
   private invalidatePluginJobs(): void {
     this.pluginGeneration++;
     this.pluginJobs.invalidate();
+    this.pluginUpdates?.invalidate();
     this.pluginManaged = {
       status: 'unavailable',
       installationAvailable: false,
       receiptId: null,
       packages: [],
     };
+  }
+  private showPluginNotices(): void {
+    if (this.destroyed || !this.toasts) return;
+    for (const [id, ticket] of this.pluginNoticeWindows) {
+      if (!this.pluginUpdates.noticeCurrent(ticket)) {
+        this.pluginNoticeWindows.delete(id);
+        this.toasts.dismiss('plugins:' + id);
+      }
+    }
+    const owner = this.api.owner;
+    if (!owner) return;
+    for (const ticket of this.pluginUpdates.pendingNotices()) {
+      if (this.pluginNoticeWindows.has(ticket.id)) continue;
+      const notice: Notice = {
+        pluginUpdate: ticket,
+        epoch: this.api.epoch,
+        owner,
+        chatId: null,
+        mention: false,
+        ordinary: true,
+      };
+      if (!this.current(notice)) continue;
+      const spec: ToastSpec = {
+        id: 'plugins:' + ticket.id,
+        key: ticket.id,
+        groupId: 'plugin-' + ticket.type,
+        title:
+          ticket.type === 'waiting'
+            ? 'Готовы обновления плагинов'
+            : 'Плагины обновлены — можно открывать Revit',
+        body: `${ticket.item.name} ${ticket.item.version} · Revit ${ticket.item.years.join(', ')}${ticket.type === 'waiting' ? '. Проверим и установим после закрытия всех процессов Revit.' : ''}`,
+        hasReply: false,
+        buttons: ticket.type === 'waiting' ? ['Что нового', 'Хорошо'] : [],
+        delayMs: 0,
+      };
+      this.pluginNoticeWindows.set(ticket.id, ticket);
+      this.notices.set(spec, notice);
+      try {
+        if (this.toasts.show(spec) === false) this.pluginNoticeWindows.delete(ticket.id);
+      } catch {
+        this.pluginNoticeWindows.delete(ticket.id);
+      }
+    }
   }
   private pluginContext(): PluginJobContext | null {
     if (
@@ -2752,7 +2960,11 @@ export class ClientHost {
       return null;
     const targetRoot = join(app.getPath('appData'), 'Autodesk', 'Revit', 'Addins'),
       machine = join(process.env.ProgramData, 'Autodesk', 'Revit', 'Addins');
-    const preferences = this.o.settings.get().plugins ?? { betaScopes: [], autoUpdate: true };
+    const preferences = this.o.settings.get().plugins ?? {
+      betaScopes: [],
+      autoUpdate: true,
+      notifyInstalled: true,
+    };
     return {
       scope: { serverHash: this.serverScopeHash, ownerId: this.api.owner },
       token: JSON.stringify([
@@ -2834,13 +3046,20 @@ export class ClientHost {
       this.invalidatePluginJobs();
       this.pluginContextStamp = JSON.stringify(this.pluginContext());
     }
-    const pluginPreferences = this.o.settings.get().plugins ?? { betaScopes: [], autoUpdate: true };
+    this.pluginUpdates.sync();
+    const pluginPreferences = this.o.settings.get().plugins ?? {
+      betaScopes: [],
+      autoUpdate: true,
+      notifyInstalled: true,
+    };
     this.state.plugins = {
       ...this.pluginCatalog.state,
       beta:
         pluginPreferences.betaScopes.includes(`${this.serverScopeHash}:${this.api?.owner}`) &&
         this.pluginCatalog.state.catalog?.tester === true,
       autoUpdate: pluginPreferences.autoUpdate,
+      notifyInstalled: pluginPreferences.notifyInstalled !== false,
+      workflow: structuredClone(this.pluginUpdates.state),
       managed: this.pluginManaged,
     };
     if (
@@ -3055,6 +3274,7 @@ export class ClientHost {
     this.configuration.destroy();
     this.updates.destroy();
     this.desktopUpdates.destroy();
+    this.pluginUpdates.dispose();
     this.saverPoller?.dispose();
     clearInterval(this.tick);
     this.pluginCatalog.reset();

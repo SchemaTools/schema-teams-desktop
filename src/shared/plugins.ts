@@ -29,13 +29,36 @@ export interface PluginsState {
   checkedAt: number | null;
   beta: boolean;
   autoUpdate: boolean;
+  notifyInstalled?: boolean;
+  workflow?: PluginWorkflowState;
   managed?: ManagedPluginsView;
 }
 export interface ManagedPluginsView {
+  rootsHash?: string;
   status: 'unavailable' | 'busy' | 'recovery' | 'blocked' | 'ready';
   installationAvailable: boolean;
   receiptId: string | null;
-  packages: { code: string; version: string; years: (2025 | 2026)[] }[];
+  packages: {
+    code: string;
+    version: string;
+    years: (2025 | 2026)[];
+    buildId?: number;
+    archiveSha256?: string;
+  }[];
+}
+export interface PluginWorkItem {
+  code: string;
+  name: string;
+  version: string;
+  years: (2025 | 2026)[];
+  phase: 'checking' | 'downloading' | 'installing' | 'waiting' | 'complete' | 'error';
+  reason?: string;
+}
+export interface PluginWorkflowState {
+  phase: 'idle' | 'unavailable' | 'checking' | 'running' | 'waiting' | 'error';
+  active: boolean;
+  pending: number;
+  items: PluginWorkItem[];
 }
 export const PLUGIN_INSTALL_BLOCKED = 'Установка недоступна: доверенный издатель не настроен.';
 export const pluginCode = (v: unknown): v is string =>

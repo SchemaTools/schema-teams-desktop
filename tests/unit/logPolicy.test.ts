@@ -3,6 +3,42 @@ import { projectLog } from '../../src/main/logPolicy';
 import { applicationLog } from '../../src/main/diagnostics/logs';
 import { REALTIME_EVENTS } from '../../src/main/realtime/events';
 describe('Fixed diagnostic projection', () => {
+  it('keeps fixed plugin operation classification on disk and in legacy report projection', () => {
+    const event = {
+      operation: 'rollback',
+      phase: 'result',
+      outcome: 'rejected',
+      reason: 'revit_busy',
+      plugin: 'floor-plans',
+      version: '2.0',
+      buildId: 42,
+      path: 'private path',
+      cookie: 'private cookie',
+      error: 'private stack',
+    };
+    const projected = projectLog('плагины', event);
+    expect(projected.details).toEqual({
+      operation: 'rollback',
+      phase: 'result',
+      outcome: 'rejected',
+      reason: 'revit_busy',
+      plugin: 'floor-plans',
+      version: '2.0',
+      buildId: '42',
+    });
+    const report = applicationLog(`2026-11-03T00:00:00.000Z INFO плагины ${JSON.stringify(event)}`);
+    expect(report).toContain('"operation":"rollback"');
+    expect(report).not.toMatch(/private|cookie|path|stack/);
+    expect(
+      projectLog('плагины', {
+        ...event,
+        reason: 'private reason',
+        plugin: '../private',
+        version: 'private',
+        buildId: -1,
+      }).details,
+    ).toEqual({ operation: 'rollback', phase: 'result', outcome: 'rejected', reason: 'error' });
+  });
   it('retains only the error class for shutdown cleanup failures', () => {
     expect(
       projectLog('ошибка завершения клиента', {

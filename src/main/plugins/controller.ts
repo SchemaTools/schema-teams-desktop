@@ -1,5 +1,11 @@
 import { join, resolve } from 'node:path';
-import type { PluginBuild, PluginCatalog, ManagedPluginsView } from '../../shared/plugins';
+import {
+  comparePluginVersions,
+  type PluginBuild,
+  type PluginCatalog,
+  type ManagedPluginsView,
+} from '../../shared/plugins';
+import type { AutomaticPluginAdmission } from './planSafety';
 import type {
   PluginScope,
   PluginReceipt,
@@ -21,6 +27,17 @@ import { PluginProcessWatch } from './processWatch';
 import { readRevitProcesses, windowsPathSafe } from './safety';
 import { verifyPluginSignature, APPROVED_PLUGIN_PUBLISHER_DER_SHA256 } from './signature';
 import { snapshotInstallTemplates, type ApprovedInstallTemplate } from './layoutPolicy';
+import { auditPlugin, type PluginAuditListener } from './audit';
+type PluginIntent =
+  | {
+      kind: 'install';
+      code: string;
+      years: (2025 | 2026)[];
+      verifiedOnly?: boolean;
+      automatic?: AutomaticPluginAdmission;
+    }
+  | { kind: 'rollback'; expectedCurrentId: string }
+  | { kind: 'recovery' };
 
 export interface PluginJobContext {
   scope: PluginScope;
@@ -37,9 +54,21 @@ interface Policy {
   publisherPins: readonly string[];
 }
 export interface PluginControllerPorts {
+  automaticHeld?: (
+    scope: PluginScope,
+    rootsHash: string,
+    code: string,
+    year: 2025 | 2026,
+    build: PluginBuild,
+  ) => boolean;
+  beforeRollback?: (previous: PluginReceipt, next: PluginReceipt) => Promise<void>;
+  audit?: PluginAuditListener;
   context: () => PluginJobContext | null;
   readCatalog: () => Promise<PluginCatalog>;
   download: (build: PluginBuild, root: string, signal: AbortSignal) => Promise<string>;
+  /** Main-only lifecycle gate; no job may start during a Desktop handoff. */
+  mayRun?: () => boolean;
+  stage?: (phase: 'checking' | 'downloading' | 'installing') => void;
 }
 /** Dependency injection is main/test-only; production factory fixes every safety hook. */
 export interface PluginControllerOptions extends PluginControllerPorts {
@@ -69,7 +98,7 @@ export function createProductionPluginController(ports: PluginControllerPorts): 
   });
 }
 
-/** Explicit jobs only. No automatic retry, activation, download or resume. */
+/** One verified job at a time. Scheduling/waiting belongs to the main coordinator. */
 export class PluginController {
   private readonly o: Readonly<PluginControllerOptions>;
   private active?: AbortController;
@@ -77,12 +106,28 @@ export class PluginController {
   constructor(options: PluginControllerOptions) {
     this.o = Object.freeze({ ...options });
   }
+  get busy(): boolean {
+    return this.active !== undefined;
+  }
   invalidate(): void {
     this.generation++;
     this.active?.abort();
   }
   install(code: string, years: readonly (2025 | 2026)[]): Promise<PluginTransactionResult> {
     return this.run({ kind: 'install', code, years: [...years] });
+  }
+  installVerified(
+    code: string,
+    years: readonly (2025 | 2026)[],
+    automatic?: AutomaticPluginAdmission,
+  ): Promise<PluginTransactionResult> {
+    return this.run({
+      kind: 'install',
+      code,
+      years: [...years],
+      verifiedOnly: true,
+      automatic: structuredClone(automatic),
+    });
   }
   rollback(expectedCurrentId: string): Promise<PluginTransactionResult> {
     return this.run({ kind: 'rollback', expectedCurrentId });
@@ -100,11 +145,13 @@ export class PluginController {
     const generation = this.generation;
     let core: PluginTransactions | undefined;
     try {
+      if (this.o.mayRun?.() === false) return view('unavailable');
       const context = structuredClone(this.o.context());
       if (!context || !scopeValid(context.scope)) return view('unavailable');
       const stamp = JSON.stringify(context),
         current = () =>
           !this.active &&
+          this.o.mayRun?.() !== false &&
           generation === this.generation &&
           JSON.stringify(this.o.context()) === stamp;
       const policy = this.o.policy(structuredClone(context.scope));
@@ -146,9 +193,12 @@ export class PluginController {
         status: 'ready',
         installationAvailable: true,
         receiptId: state.receipt?.id ?? null,
+        rootsHash: core.rootsHash,
         packages: (state.receipt?.packages ?? []).map((p) => ({
           code: p.code,
           version: p.version,
+          buildId: p.buildId,
+          archiveSha256: p.archiveSha256,
           years: [...p.revit],
         })),
       };
@@ -158,19 +208,52 @@ export class PluginController {
       core?.dispose();
     }
   }
-  private async run(
-    intent:
-      | { kind: 'install'; code: string; years: (2025 | 2026)[] }
-      | { kind: 'rollback'; expectedCurrentId: string }
-      | { kind: 'recovery' },
-  ): Promise<PluginTransactionResult> {
+  private async run(intent: PluginIntent): Promise<PluginTransactionResult> {
+    const operation = intent.kind;
+    auditPlugin(this.o.audit, {
+      operation,
+      phase: 'requested',
+      ...(intent.kind === 'install' && { plugin: intent.code }),
+    });
+    let result: PluginTransactionResult;
+    try {
+      result = await this.runCore(intent);
+    } catch {
+      result = { status: 'blocked', reason: 'plugin_job_failed' };
+    }
+    if (result.status === 'complete') {
+      for (const p of result.receipt.packages)
+        auditPlugin(this.o.audit, {
+          operation,
+          phase: 'result',
+          outcome: 'ok',
+          plugin: p.code,
+          version: p.version,
+          buildId: p.buildId,
+        });
+    } else
+      auditPlugin(this.o.audit, {
+        operation,
+        phase: result.status === 'waiting' || result.processInterruption ? 'waiting' : 'result',
+        outcome: 'rejected',
+        reason: result.reason,
+        ...(intent.kind === 'install' && { plugin: intent.code }),
+      });
+    return result;
+  }
+  private async runCore(intent: PluginIntent): Promise<PluginTransactionResult> {
     if (this.active) return { status: 'blocked', reason: 'busy' };
+    if (this.o.mayRun?.() === false)
+      return { status: 'blocked', reason: 'desktop_update_in_progress' };
     const abort = new AbortController(),
       generation = this.generation;
     this.active = abort;
     let core: PluginTransactions | undefined,
       watch: PluginProcessWatch | undefined,
       prepared: PreparedInstall | undefined;
+    let processChanged = false;
+    let automaticCommitCheck: (() => boolean) | undefined;
+    let stillCurrent = () => false;
     try {
       const context = structuredClone(this.o.context());
       if (
@@ -186,7 +269,13 @@ export class PluginController {
         this.active === abort &&
         !abort.signal.aborted &&
         generation === this.generation &&
+        this.o.mayRun?.() !== false &&
         JSON.stringify(this.o.context()) === stamp;
+      stillCurrent = baseCurrent;
+      const observedResult = (result: PluginTransactionResult): PluginTransactionResult =>
+        result.status !== 'complete' && processChanged && baseCurrent()
+          ? { ...result, processInterruption: true }
+          : result;
       let processSafe = true;
       const current = () => baseCurrent() && processSafe;
       const check = () => {
@@ -195,6 +284,7 @@ export class PluginController {
       const rawPolicy = this.o.policy(structuredClone(scope));
       if (!rawPolicy || !rawPolicy.publisherPins.length || !rawPolicy.templates.length)
         return { status: 'blocked', reason: 'plugin_trust_unconfigured' };
+      this.o.stage?.('checking');
       const templates = snapshotInstallTemplates(rawPolicy.templates),
         publisherPins = [...rawPolicy.publisherPins];
       if (
@@ -232,10 +322,14 @@ export class PluginController {
         read: async () => {
           try {
             const state = await processes();
-            if (state !== 'idle') processSafe = false;
+            if (state !== 'idle') {
+              processSafe = false;
+              processChanged = true;
+            }
             return state;
           } catch {
             processSafe = false;
+            processChanged = true;
             return 'unknown';
           }
         },
@@ -269,6 +363,11 @@ export class PluginController {
       core = new PluginTransactions({
         ...context,
         current: (s) => scopeSame(s, scope) && current(),
+        beforeRollback: this.o.beforeRollback,
+        beforeInstall: async () => {
+          if (intent.kind === 'install' && intent.verifiedOnly && !automaticCommitCheck?.())
+            throw Error('automatic_admission_changed');
+        },
         pathAllowed,
         processes: () => (watch ? watch.read() : Promise.resolve('unknown')),
         admit: async (request) => {
@@ -345,14 +444,40 @@ export class PluginController {
       const existing = await core.inspect(scope);
       check();
       if (existing.blocked) return { status: 'blocked', reason: 'plugin_state_unavailable' };
-      if (intent.kind === 'recovery') return await core.recover(scope);
+      if (intent.kind === 'recovery') return observedResult(await core.recover(scope));
       if (existing.pending) return { status: 'recovery', reason: 'unfinished_transaction' };
-      if (intent.kind === 'rollback') return await core.rollback(scope, intent.expectedCurrentId);
+      if (intent.kind === 'rollback')
+        return observedResult(await core.rollback(scope, intent.expectedCurrentId));
+      if (
+        intent.verifiedOnly &&
+        (!intent.automatic || intent.automatic.currentId !== (existing.receipt?.id ?? null))
+      )
+        return { status: 'blocked', reason: 'automatic_admission_changed' };
+      const rootsHash = core.rootsHash;
       prepared = await preparePluginInstall({
         ...common,
         code: intent.code,
         years: intent.years,
         beta: context.beta,
+        verifiedOnly: intent.verifiedOnly === true,
+        automaticSafety: intent.automatic?.safety,
+        validateAutomatic: (plans) => {
+          const allowed = () =>
+            plans.every((p) =>
+              p.builds.every(({ code, build }) => {
+                const installed = existing.receipt?.packages.find(
+                  (i) => i.code === code && i.revit.includes(p.year),
+                );
+                if (installed && comparePluginVersions(installed.version, build.version) > 0)
+                  return false;
+                if (installed?.buildId === build.id && installed.archiveSha256 === build.sha256)
+                  return true;
+                return !this.o.automaticHeld?.(scope, rootsHash, code, p.year, build);
+              }),
+            );
+          automaticCommitCheck = allowed;
+          return allowed();
+        },
         expectedCurrentId: existing.receipt?.id ?? null,
         local: (existing.receipt?.packages ?? []).map((p) => ({
           plugin: p.code,
@@ -362,14 +487,21 @@ export class PluginController {
         readCatalog,
         download: async (build, root, signal) => {
           check();
+          this.o.stage?.('downloading');
           const path = await this.o.download(build, root, signal);
           check();
           return path;
         },
       });
       check();
-      return await runPreparedInstall(prepared, scope, core);
+      this.o.stage?.('installing');
+      const result = await runPreparedInstall(prepared, scope, core);
+      // A mid-job process change is an intent to recheck/recover after idle,
+      // never evidence that rollback or installation already completed.
+      return observedResult(result);
     } catch {
+      if (processChanged && stillCurrent())
+        return { status: 'blocked', reason: 'plugin_job_failed', processInterruption: true };
       return { status: 'blocked', reason: 'plugin_job_failed' };
     } finally {
       if (prepared && core) {

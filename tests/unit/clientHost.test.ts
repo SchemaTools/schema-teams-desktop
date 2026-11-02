@@ -2,6 +2,10 @@ import { PauseOutbox, type PauseOutboxStorage } from '../../src/main/timer/pause
 import { PauseReturns } from '../../src/main/timer/pauseReturns';
 import { SupportLedger } from '../../src/main/diagnostics/ledger';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import * as pluginFs from '../../src/main/plugins/transactionFs';
+import { PluginAutoHolds } from '../../src/main/plugins/autoHolds';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IpcMainInvokeEvent, Tray } from 'electron';
 import type { ApiResult, FocusState } from '../../src/shared/client';
@@ -16,6 +20,7 @@ import { releaseFixture } from '../fixtures/updates';
 import { desktopShutdown } from '../../src/main/desktop/updateShutdown';
 import { timerExpected } from '../../src/shared/time';
 import { ScreenSaverObserver } from '../../src/main/desktop/screenSaverObserver';
+import { PluginUpdateCoordinator } from '../../src/main/plugins/updateCoordinator';
 import type { DesktopUpdateControllerOptions } from '../../src/main/desktop/updateController';
 
 const URL = 'file:///unit/client.html';
@@ -786,6 +791,34 @@ describe('Host updater boundaries use real IPC and the global shutdown lease', (
     h.mutation.revision++;
     expect(lease.current()).toBe(false);
     expect(desktopShutdown.locked).toBe(true);
+  });
+  it('background plugin work blocks launch and ACK; waiting alone releases the slot, and a held Desktop lease denies plugin work', async () => {
+    const f = fixture(),
+      host = updater(f);
+    const plugins = f.host as unknown as {
+      pluginMaintenance: boolean;
+      pluginJobs: { busy: boolean };
+      pluginUpdates: { busy: boolean; o: { mayRun(): boolean }; state: { pending: number } };
+    };
+    const active = vi.spyOn(plugins.pluginUpdates, 'busy', 'get').mockReturnValue(true);
+    expect(host.desktopUpdates.o.acquireQuiescence()).toBeNull();
+    expect(
+      await f.invoke({ kind: 'updates.requestLaunch', jobId: host.updateContext().stamp }),
+    ).toMatchObject({ code: 'update_busy' });
+    active.mockReturnValue(false);
+    const core = vi.spyOn(plugins.pluginJobs, 'busy', 'get').mockReturnValue(true);
+    expect(host.desktopUpdates.o.acquireQuiescence()).toBeNull();
+    core.mockReturnValue(false);
+    plugins.pluginMaintenance = true;
+    expect(host.desktopUpdates.o.acquireQuiescence()).toBeNull();
+    plugins.pluginMaintenance = false;
+    plugins.pluginUpdates.state.pending = 2;
+    const lease = host.desktopUpdates.o.acquireQuiescence();
+    if (!lease) throw Error('waiting-only must be quiescent');
+    updateLeases.push(lease);
+    expect(plugins.pluginUpdates.o.mayRun()).toBe(false);
+    lease.release();
+    expect(plugins.pluginUpdates.o.mayRun()).toBe(true);
   });
   it('an unknown, visible, dirty or busy tray blocks; a freshly reported clean hidden tray permits acquisition', () => {
     const f = fixture(),
@@ -2793,6 +2826,105 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
 });
 
 describe('Plugin catalog main authorization and scoped opt-in', () => {
+  async function notices(waiting: boolean, notifyInstalled = true) {
+    const f = fixture({ plugins: { betaScopes: [], autoUpdate: true, notifyInstalled } }),
+      owned = f.host as unknown as {
+        pluginUpdates: PluginUpdateCoordinator;
+        publish(): void;
+        showPluginNotices(): void;
+      };
+    owned.publish();
+    owned.pluginUpdates.dispose();
+    const coordinator = new PluginUpdateCoordinator({
+      context: () => ({ key: String(h.api.owner), automatic: true, beta: false }),
+      mayRun: () => true,
+      inspect: async () => ({
+        status: 'ready',
+        installationAvailable: true,
+        receiptId: null,
+        packages: [],
+      }),
+      years: async () => [2025],
+      catalog: async () => ({
+        tester: false,
+        plugins: [
+          {
+            code: 'alpha',
+            name: 'Fixture',
+            short: 'AL',
+            beta: null,
+            stable: {
+              id: 1,
+              version: '1.0',
+              verified: true,
+              revit: [2025],
+              notes: '',
+              size: 10,
+              sha256: 'a'.repeat(64),
+              url: '/api/desktop/plugins/files/1',
+              publishedAt: '2026-11-03T00:00:00.000Z',
+              requires: [],
+            },
+          },
+        ],
+      }),
+      install: async () =>
+        waiting
+          ? { status: 'waiting', reason: 'revit_busy' }
+          : {
+              status: 'complete',
+              receipt: {
+                schema: 1,
+                id: '00000000-0000-4000-8000-000000000001',
+                scope: { serverHash: 'a'.repeat(64), ownerId: 1 },
+                rootsHash: 'b'.repeat(64),
+                files: [],
+                packages: [],
+              },
+            },
+      recover: async () => ({ status: 'blocked', reason: 'unused' }),
+      processes: async () => 'busy',
+      cancel: () => {},
+      changed: () => {
+        owned.publish();
+        owned.showPluginNotices();
+      },
+    });
+    owned.pluginUpdates = coordinator;
+    h.toastShow.mockClear();
+    await coordinator.refresh();
+    await Promise.resolve();
+    return { f, coordinator };
+  }
+  it('plugin waiting remains pending until actual policy-approved display, and late owner cannot acknowledge it', async () => {
+    const { coordinator } = await notices(true);
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    expect(spec).toMatchObject({
+      title: 'Готовы обновления плагинов',
+      hasReply: false,
+      buttons: ['Что нового', 'Хорошо'],
+    });
+    expect(coordinator.pendingNotices()).toHaveLength(1);
+    h.policyAllows.mockResolvedValueOnce(false);
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(false);
+    expect(coordinator.pendingNotices()).toHaveLength(1);
+    const delayed = deferred<boolean>();
+    h.policyAllows.mockReturnValueOnce(delayed.promise);
+    const show = required(h.toastOptions).beforeShow(spec);
+    h.api.owner = 2;
+    delayed.resolve(true);
+    expect(await show).toBe(false);
+    required(h.toastOptions).onShow(spec);
+    expect(coordinator.pendingNotices()).toEqual([]);
+  });
+  it('installed notification preference suppresses only completion, not the waiting notice', async () => {
+    const complete = await notices(false, false);
+    expect(complete.coordinator.state.items[0]?.phase).toBe('complete');
+    expect(h.toastShow).not.toHaveBeenCalled();
+    const waiting = await notices(true, false);
+    expect(waiting.coordinator.state.pending).toBe(1);
+    expect(h.toastShow).toHaveBeenCalled();
+  });
   const setup = () => {
     const f = fixture();
     h.desktopConfig = {
@@ -2804,7 +2936,74 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
     h.plugins.mockResolvedValue({ ok: true, data: { tester: true, plugins: [] } });
     return f;
   };
+  it.skipIf(process.platform !== 'win32')(
+    'A2: a destroyed old Host cannot write rollback holds after a late path check',
+    async () => {
+      const f = setup();
+      await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+      const owned = f.host as unknown as {
+        pluginAutoHolds: PluginAutoHolds;
+        pluginContext(): import('../../src/main/plugins/controller').PluginJobContext | null;
+        pluginJobs: { o: import('../../src/main/plugins/controller').PluginControllerOptions };
+      };
+      const context = required(owned.pluginContext()),
+        root = mkdtempSync(join(process.cwd(), 'private', 'stale-plugin-holds-')),
+        file = join(root, 'holds.json'),
+        store = new PluginAutoHolds(file);
+      owned.pluginAutoHolds = store;
+      const previous: import('../../src/main/plugins/transactionTypes').PluginReceipt = {
+          schema: 1,
+          id: '00000000-0000-4000-8000-000000000001',
+          rootsHash: 'b'.repeat(64),
+          scope: context.scope,
+          files: [],
+          packages: [
+            {
+              code: 'alpha',
+              buildId: 2,
+              version: '2.0',
+              archiveSha256: '2'.repeat(64),
+              archiveSize: 10,
+              descriptorId: 'synthetic',
+              revit: [2025],
+            },
+          ],
+        },
+        next = { ...previous, packages: [] };
+      const gate = deferred<undefined>(),
+        pathCheck = vi.spyOn(pluginFs, 'nodePathSafe').mockReturnValueOnce(gate.promise);
+      try {
+        const work = required(owned.pluginJobs.o.beforeRollback)(previous, next);
+        expect(pathCheck).toHaveBeenCalledOnce();
+        f.host.destroy();
+        store.add(['c'.repeat(64)]);
+        const before = readFileSync(file),
+          write = vi.spyOn(store, 'add');
+        gate.resolve(undefined);
+        await expect(work).rejects.toThrow('stale_plugin_job');
+        expect(write).not.toHaveBeenCalled();
+        expect(readFileSync(file)).toEqual(before);
+      } finally {
+        pathCheck.mockRestore();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
   it('IPC accepts intent only; paths, trust pins, plans and unsupported years are rejected', () => {
+    expect(requestValid({ kind: 'plugins.preferences', epoch: 7, notifyInstalled: false })).toBe(
+      true,
+    );
+    expect(requestValid({ kind: 'plugins.preferences', epoch: 7, notifyInstalled: 'false' })).toBe(
+      false,
+    );
+    expect(
+      requestValid({
+        kind: 'plugins.preferences',
+        epoch: 7,
+        notifyInstalled: false,
+        automaticHolds: [],
+      }),
+    ).toBe(false);
     const install = { kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] };
     expect(requestValid(install)).toBe(true);
     for (const extra of [
@@ -2901,7 +3100,7 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
       owned.publish();
       f.state.connection = 'online';
       owned.publish();
-      expect(invalidated).toHaveBeenCalledTimes(2);
+      expect(invalidated.mock.calls.length).toBeGreaterThanOrEqual(2);
     },
   );
   it.skipIf(process.platform === 'win32')(

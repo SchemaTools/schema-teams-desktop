@@ -46,6 +46,8 @@ export interface PluginTransactionOptions {
   pathAllowed: (path: string) => Promise<boolean>;
   afterCheckpoint?: (phase: PluginTransactionJournal['phase']) => Promise<void>;
   afterWrite?: (targetPath: string) => Promise<void>;
+  beforeRollback?: (previous: PluginReceipt, next: PluginReceipt) => Promise<void>;
+  beforeInstall?: () => Promise<void>;
 }
 class Waiting extends Error {
   constructor(readonly reason: string) {
@@ -375,6 +377,14 @@ export class PluginTransactions {
       if (purpose === 'install') j.id = next.id;
       await this.check(scope);
       if (!journalValid(j)) throw new Blocked('journal_invalid');
+      if (purpose === 'rollback' && previous) {
+        await this.o.beforeRollback?.(structuredClone(previous), structuredClone(next));
+        await this.check(scope);
+      }
+      if (purpose === 'install') {
+        await this.o.beforeInstall?.();
+        await this.check(scope);
+      }
       await this.store.write('journal', j);
       started = true;
       await this.o.afterCheckpoint?.('intent');
