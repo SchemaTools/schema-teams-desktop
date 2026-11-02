@@ -21,6 +21,27 @@ const memory = (): PauseOutboxStorage => {
   };
 };
 describe('Durable return delivery state', () => {
+  it('round-trips screensaver observed completion, preserves prior formats and rejects future enums without writes', () => {
+    const storage = memory(),
+      store = new PauseReturns('memory', storage),
+      item = record();
+    store.put(item);
+    store.returned(item, item.key, '2026-10-30T04:10:00.000Z', 'screensaver');
+    const restored = new PauseReturns('memory', storage);
+    expect(restored.healthy).toBe(true);
+    expect(restored.list(item)[0]?.returnKind).toBe('screensaver');
+    let writes = 0;
+    const future = new PauseReturns('memory', {
+      read: () =>
+        JSON.stringify([{ ...item, returnedAt: '2026-10-30T04:10:00.000Z', returnKind: 'future' }]),
+      replace: () => {
+        writes++;
+      },
+    });
+    expect(future.healthy).toBe(false);
+    expect(future.put(item)).toBe(false);
+    expect(writes).toBe(0);
+  });
   it('keeps the same pending intent across crash-between-files and only records actual show', () => {
     const storage = memory(),
       first = new PauseReturns('memory', storage),
@@ -115,7 +136,7 @@ it('preserves restart connection evidence without claiming an observed unlock ev
   });
 });
 
-it('upgrades a pending scheduled-wake or connection bound only when actual unlock is observed, then freezes through DND', () => {
+it('keeps the first aggregate-clear boundary when a later source arrives during DND', () => {
   const disk = memory(),
     store = new PauseReturns('memory', disk),
     item = record();
@@ -124,7 +145,7 @@ it('upgrades a pending scheduled-wake or connection bound only when actual unloc
   store.returned(item, item.key, '2026-10-30T04:30:00.000Z', 'unlock');
   store.returned(item, item.key, '2026-10-30T04:50:00.000Z', 'unlock');
   expect(store.list(item)[0]).toMatchObject({
-    returnKind: 'unlock',
-    returnedAt: '2026-10-30T04:30:00.000Z',
+    returnKind: 'wake',
+    returnedAt: '2026-10-30T04:10:00.000Z',
   });
 });

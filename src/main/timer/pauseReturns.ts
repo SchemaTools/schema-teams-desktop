@@ -1,12 +1,13 @@
 import { atomicPauseStorage, type PauseScope, type PauseOutboxStorage } from './pauseOutbox';
 import { expectedValid, utcInstant, type TimerExpected } from '../../shared/time';
 
+export type PauseReturnKind = 'unlock' | 'wake' | 'screensaver' | 'connection';
 export interface PauseReturn extends PauseScope {
   key: string;
   expected: TimerExpected;
   at: string;
   returnedAt: string | null;
-  returnKind: 'unlock' | 'wake' | 'connection' | null;
+  returnKind: PauseReturnKind | null;
   delivery: 'pending' | 'shown';
 }
 const valid = (raw: unknown): raw is PauseReturn => {
@@ -27,7 +28,10 @@ const valid = (raw: unknown): raw is PauseReturn => {
       ? r.returnKind === null
       : utcInstant(r.returnedAt) &&
         Date.parse(r.returnedAt) >= Date.parse(r.at) &&
-        (r.returnKind === 'unlock' || r.returnKind === 'wake' || r.returnKind === 'connection')) &&
+        (r.returnKind === 'unlock' ||
+          r.returnKind === 'wake' ||
+          r.returnKind === 'screensaver' ||
+          r.returnKind === 'connection')) &&
     ['pending', 'shown'].includes(r.delivery)
   );
 };
@@ -82,15 +86,13 @@ export class PauseReturns {
     scope: PauseScope,
     key: string,
     at: string,
-    returnKind: 'unlock' | 'wake' | 'connection' = 'unlock',
+    returnKind: PauseReturnKind = 'unlock',
   ): boolean {
     const record = this.records.find((r) => sameScope(r, scope) && r.key === key);
     if (!record || !utcInstant(at)) return false;
-    if (
-      record.returnedAt !== null &&
-      !(returnKind === 'unlock' && record.returnKind !== 'unlock' && record.delivery === 'pending')
-    )
-      return true;
+    // The Host records only aggregate-clear boundaries. A later source cannot
+    // rewrite this observation while a notification is delayed by policy.
+    if (record.returnedAt !== null) return true;
     const returnedAt = new Date(Math.max(Date.parse(record.at), Date.parse(at))).toISOString();
     return this.commit(
       this.records.map((r) => (r === record ? { ...r, returnedAt, returnKind } : r)),

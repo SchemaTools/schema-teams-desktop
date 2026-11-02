@@ -442,7 +442,73 @@ const returnState = () =>
         returnKind?: string;
       }[])
     : [];
-test('синтетические lock/unlock показывают только подтверждённую паузу; явная кнопка продолжает с CAS', async () => {
+/** Synthetic samples via Playwright main inspection; real Host, durable files,
+ * local API and popup. No saver launch or production settings override. */
+async function observeSaver(state: 'running' | 'stopped' | 'unknown' | 'lock' | 'unlock') {
+  if (!app) throw Error('App unavailable');
+  await app.evaluate(({ app }, state) => {
+    const { createRequire } = process.getBuiltinModule('module'),
+      load = createRequire(app.getAppPath() + '/package.json');
+    const host = (
+      load('./dist/main/index.js') as {
+        client: {
+          saverPoller: { stop(): void };
+          saver: { token: number };
+          screenSaverBinding(): string;
+          acceptScreenSaver(
+            sample: { state: 'running' | 'stopped' | 'unknown'; observedMono: number },
+            context: { token: number; binding: string },
+          ): void;
+          lock(): void;
+          unlock(): void;
+        };
+      }
+    ).client;
+    host.saverPoller.stop();
+    if (state === 'lock') host.lock();
+    else if (state === 'unlock') host.unlock();
+    else
+      host.acceptScreenSaver(
+        { state, observedMono: performance.now() },
+        { token: host.saver.token, binding: host.screenSaverBinding() },
+      );
+  }, state);
+}
+for (const theme of ['light', 'dark'] as const)
+  test(`synthetic screensaver holds pause through unknown/unlock, explicit popup CAS resumes: ${theme}`, async () => {
+    stub.state.timers[1] = liveTimer();
+    const page = await launch();
+    await allowReturnPopup();
+    if (!app) throw Error('App unavailable');
+    await page.evaluate((mode) => window.teams.request({ kind: 'theme', mode }), theme);
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+    await observeSaver('running');
+    await expect(dialog(page).locator('.timer-state')).toHaveText('На паузе');
+    await expect.poll(() => returnState().length).toBe(1);
+    await observeSaver('lock');
+    await observeSaver('unknown');
+    await observeSaver('unlock');
+    expect(returnState()[0]?.delivery).toBe('pending');
+    expect(app.windows().filter((w) => w.url().startsWith('data:'))).toHaveLength(0);
+    expect(writes().filter((c) => c.path.endsWith('/pause'))).toHaveLength(1);
+    expect(writes().filter((c) => c.path.endsWith('/resume'))).toHaveLength(0);
+    const next = app.waitForEvent('window');
+    await observeSaver('stopped');
+    const toast = await next;
+    await expect(toast.locator('.body')).toContainText('Заставка больше не обнаружена');
+    await expect.poll(() => returnState()[0]?.delivery).toBe('shown');
+    expect(returnState()[0]?.returnKind).toBe('screensaver');
+    await toast.screenshot({ path: test.info().outputPath(`screensaver-return-${theme}.png`) });
+    expect(writes().filter((c) => c.path.endsWith('/resume'))).toHaveLength(0);
+    await toast.getByRole('button', { name: 'Продолжить', exact: true }).click();
+    await expect(dialog(page).locator('.timer-state')).toHaveText('Идёт работа');
+    expect(writes().filter((c) => c.path.endsWith('/resume'))).toHaveLength(1);
+    expect(writes().find((c) => c.path.endsWith('/resume'))?.body).toMatchObject({
+      expected: { timerId: 71, revision: 2, currentSegmentFrom: null },
+    });
+  });
+
+test('синтетические lock/unlock ждут свежего stopped; явная кнопка продолжает с CAS', async () => {
   stub.state.timers[1] = liveTimer();
   const page = await launch();
   await allowReturnPopup();
@@ -455,8 +521,8 @@ test('синтетические lock/unlock показывают только �
   const toast = await next;
   await expect(toast.getByRole('button', { name: 'Продолжить', exact: true })).toBeVisible();
   await expect.poll(() => returnState()[0]?.delivery).toBe('shown');
-  expect(returnState()[0]?.returnKind).toBe('unlock');
-  await expect(toast.locator('.body')).toContainText('Не учтено:');
+  expect(returnState()[0]?.returnKind).toBe('screensaver');
+  await expect(toast.locator('.body')).toContainText('Заставка больше не обнаружена');
   await toast.screenshot({ path: test.info().outputPath('return-popup-unlock.png') });
   expect(writes().filter((call) => call.path.endsWith('/resume'))).toHaveLength(0);
   await toast.getByRole('button', { name: 'Продолжить', exact: true }).click();

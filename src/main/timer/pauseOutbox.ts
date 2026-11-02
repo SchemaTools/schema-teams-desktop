@@ -21,7 +21,7 @@ export interface PauseScope {
   readonly serverScopeHash: string;
   readonly ownerId: number;
 }
-export type PauseEvent = 'lock' | 'suspend' | 'query-session-end' | 'session-end';
+export type PauseEvent = 'lock' | 'suspend' | 'screensaver' | 'query-session-end' | 'session-end';
 export type PauseStatus = 'candidate' | 'pending' | 'unknown' | 'review' | 'cancelled';
 export type PauseReviewReason =
   | 'unconfirmed-query'
@@ -118,7 +118,13 @@ const sameExpected = (a: Readonly<TimerExpected>, b: Readonly<TimerExpected>): b
   a.currentSegmentFrom === b.currentSegmentFrom;
 const keyValid = (key: unknown): key is string =>
   typeof key === 'string' && /^[A-Za-z0-9._:-]{8,100}$/.test(key);
-const events: readonly string[] = ['lock', 'suspend', 'query-session-end', 'session-end'];
+const events: readonly string[] = [
+  'lock',
+  'suspend',
+  'screensaver',
+  'query-session-end',
+  'session-end',
+];
 const statuses: readonly string[] = ['candidate', 'pending', 'unknown', 'review', 'cancelled'];
 const reasons: readonly string[] = [
   'unconfirmed-query',

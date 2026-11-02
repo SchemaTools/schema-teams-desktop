@@ -22,7 +22,13 @@ import {
   type PauseEnvelope,
   type PauseEvent,
 } from './timer/pauseOutbox';
-import { PauseReturns, type PauseReturn } from './timer/pauseReturns';
+import { PauseReturns, type PauseReturn, type PauseReturnKind } from './timer/pauseReturns';
+import { ScreenSaverObserver } from './desktop/screenSaverObserver';
+import {
+  ScreenSaverPoller,
+  WindowsScreenSaverReader,
+  type ScreenSaverSample,
+} from './desktop/screenSaverState';
 import type { ApiResult, ChatMessage, NotificationItem, FocusState } from '../shared/client';
 import type { ClientSnapshot, DesktopRequest } from '../shared/desktop';
 import { requestValid } from '../shared/requests';
@@ -243,15 +249,22 @@ export class ClientHost {
   private reminderId: string | null = null;
   private locked = false;
   private suspended = false;
+  private readonly saver = new ScreenSaverObserver();
+  private saverPoller?: ScreenSaverPoller<{ token: number; binding: string }>;
+  private saverActive = false;
+  private saverBinding = '';
+  private saverUncertain = false;
   private readonly pauseOutbox: PauseOutbox;
   private readonly pauseReturns: PauseReturns;
   private readonly serverScopeHash: string;
   private serverClock: { ms: number; observedAt: number } | null = null;
+  private clockInvalidatedBySleep = false;
   private configEpoch = -1;
   private timerEpoch = -1;
   private storageWarning = false;
+  private pauseClockWarning = false;
   private returnedAt: string | null = null;
-  private returnedKind: 'unlock' | 'wake' | null = null;
+  private returnedKind: PauseReturnKind | null = null;
   private queryCandidate?: { scope: PauseScope; key: string };
   private readonly pauseAttempts = new Map<string, { count: number; nextAt: number }>();
   private readonly recoveryNotices = new Set<string>();
@@ -262,28 +275,39 @@ export class ClientHost {
   private noticePending = new Set<number>();
   private readonly themeChanged = () => this.publish();
   private readonly lock = () => {
-    this.pauseForAbsence();
-    this.absence.depart('lock', this.state);
     this.locked = true;
+    this.saver.explicit('lock', true, performance.now());
+    this.absence.depart('lock', this.state);
+    this.pauseForAbsence();
+    this.saverPoller?.fresh();
     this.toasts.clear();
   };
   private readonly unlock = () => {
     this.locked = false;
+    this.saver.explicit('lock', false, performance.now());
+    this.absence.return('unlock', this.state, Date.now(), false);
     this.recordReturnTime('unlock');
-    this.absence.return('unlock', this.state);
+    this.saverPoller?.fresh();
     this.publish();
     this.scheduleRefresh();
   };
   private readonly sleep = () => {
-    this.pauseForAbsence('suspend');
-    this.absence.depart('suspend', this.state);
     this.suspended = true;
+    this.saver.explicit('suspend', true, performance.now());
+    this.saverPoller?.suspend();
+    this.absence.depart('suspend', this.state);
+    this.pauseForAbsence('suspend');
+    // Monotonic clocks across sleep are not a new server calibration.
+    this.serverClock = null;
+    this.clockInvalidatedBySleep = true;
     this.toasts.clear();
   };
   private readonly wake = () => {
     this.suspended = false;
+    this.saver.explicit('suspend', false, performance.now());
+    this.absence.return('resume', this.state, Date.now(), false);
     this.recordReturnTime('wake');
-    this.absence.return('resume', this.state);
+    this.saverPoller?.resume();
     this.publish();
     this.scheduleRefresh();
   };
@@ -590,6 +614,11 @@ export class ClientHost {
     });
     this.ses.cookies.on('changed', this.cookieChanged);
     nativeTheme.on('updated', this.themeChanged);
+    this.saverPoller = new ScreenSaverPoller(
+      new WindowsScreenSaverReader({ appPath: app.getAppPath(), isPackaged: app.isPackaged }),
+      (sample, context) => this.acceptScreenSaver(sample, context),
+      () => ({ token: this.saver.token, binding: this.screenSaverBinding() }),
+    );
     powerMonitor.on('lock-screen', this.lock);
     powerMonitor.on('unlock-screen', this.unlock);
     powerMonitor.on('suspend', this.sleep);
@@ -633,6 +662,7 @@ export class ClientHost {
     this.configEpoch = -1;
     this.timerEpoch = -1;
     this.serverClock = null;
+    this.pauseClockWarning = false;
     this.returnedAt = null;
     this.returnedKind = null;
     this.recoveryNotices.clear();
@@ -685,6 +715,7 @@ export class ClientHost {
     this.configEpoch = -1;
     this.timerEpoch = -1;
     this.serverClock = null;
+    this.pauseClockWarning = false;
     this.returnedAt = null;
     this.returnedKind = null;
     this.returnedAt = null;
@@ -903,8 +934,10 @@ export class ClientHost {
     }
   }
   private observeServerTime(value: unknown): void {
-    if (utcInstant(value))
+    if (utcInstant(value)) {
       this.serverClock = { ms: Date.parse(value), observedAt: performance.now() };
+      this.clockInvalidatedBySleep = false;
+    }
   }
   private supportCurrent(context: SupportContext): boolean {
     const config = this.api.desktopConfiguration;
@@ -981,6 +1014,7 @@ export class ClientHost {
       !!context &&
       !this.locked &&
       !this.suspended &&
+      !this.saver.absent &&
       this.morning.valid(ticket, context, this.o.settings.get().morningSeen, shownAction)
     );
   }
@@ -1005,6 +1039,7 @@ export class ClientHost {
       this.morningFlight ||
       this.locked ||
       this.suspended ||
+      this.saver.absent ||
       !this.o.settings.get().notifications.enabled ||
       !this.o.settings.get().notifications.morning
     )
@@ -1061,9 +1096,81 @@ export class ClientHost {
     }
   }
   private serverTime(): number {
-    return this.serverClock
-      ? this.serverClock.ms + Math.max(0, performance.now() - this.serverClock.observedAt)
-      : NaN;
+    const age = this.serverClock ? performance.now() - this.serverClock.observedAt : NaN;
+    return this.serverClock && Number.isFinite(age) && age >= 0 ? this.serverClock.ms + age : NaN;
+  }
+  private screenSaverBinding(): string {
+    const timer = this.state.timer;
+    return JSON.stringify([
+      this.boot,
+      this.api.epoch,
+      this.api.owner,
+      this.state.user?.id,
+      this.configEpoch,
+      this.timerEpoch,
+      this.timerRevision,
+      this.state.timerReady,
+      this.state.timerControl,
+      timer?.timerId,
+      timer?.version,
+      timer?.segments.at(-1)?.from,
+      timer?.state,
+      this.o.settings.get().timer.pauseOnLock,
+    ]);
+  }
+  private syncScreenSaverDemand(): void {
+    const scope = this.pauseScope();
+    const binding = `${this.boot}:${this.api.epoch}:${scope?.ownerId ?? ''}`;
+    if (binding !== this.saverBinding) {
+      this.saverBinding = binding;
+      this.saver.invalidate();
+      this.saverPoller?.stop();
+      this.saverActive = false;
+    }
+    // A physical latch must still be cleared by observation after logout or
+    // capability removal. Permission to read it is independent of timer writes.
+    const wanted =
+      !this.destroyed &&
+      (this.saver.absent ||
+        (!!scope &&
+          this.state.timerControl &&
+          ((this.state.timer?.state === 'run' && this.o.settings.get().timer.pauseOnLock) ||
+            this.pauseOutbox.list(scope).length > 0 ||
+            this.pauseReturns.list(scope).length > 0)));
+    if (wanted && !this.saverActive && this.saverPoller) {
+      this.saverActive = true;
+      if (this.suspended) this.saverPoller.suspend();
+      this.saverPoller.start();
+    } else if (!wanted && this.saverActive) {
+      this.saverActive = false;
+      this.saver.invalidate();
+      this.saverPoller?.stop();
+    }
+  }
+  private acceptScreenSaver(
+    sample: ScreenSaverSample,
+    context: { token: number; binding: string },
+  ): void {
+    if (this.destroyed) return;
+    if (context.binding !== this.screenSaverBinding()) {
+      this.saverPoller?.fresh();
+      return;
+    }
+    const result = this.saver.sample(sample, context.token);
+    if (!result) return;
+    this.saverUncertain = sample.state === 'unknown';
+    if (sample.state === 'running') {
+      this.absence.depart('screensaver', this.state);
+      this.toasts.clear();
+      // Snapshot, scope and timer expected were captured before the async read.
+      // No timer A sample may be retargeted to timer B on completion.
+      this.pauseForAbsence('screensaver');
+    } else if (sample.state === 'stopped') {
+      this.absence.return('screensaver', this.state, Date.now(), false);
+      if (result.transition === 'return') this.recordReturnTime('screensaver');
+      this.showPauseReturn();
+    }
+    this.publish();
   }
   private pauseScope(): PauseScope | null {
     return this.api.owner && this.state.user?.id === this.api.owner
@@ -1093,10 +1200,20 @@ export class ClientHost {
     )
       return null;
     // A run snapshot is the calibration source. Ongoing elapsed time uses only a monotonic clock.
-    if (!this.serverClock) this.observeServerTime(timer.serverNow);
+    if (!this.serverClock && !this.clockInvalidatedBySleep && kind !== 'screensaver')
+      this.observeServerTime(timer.serverNow);
+    // The detector must not invent an event timestamp from an old timer payload,
+    // especially after sleep. Expired calibration leaves a visible review warning.
+    if (
+      kind === 'screensaver' &&
+      (!this.serverClock || performance.now() - this.serverClock.observedAt > 120000)
+    ) {
+      this.pauseClockWarning = true;
+      return null;
+    }
     const now = this.serverTime();
     if (!Number.isFinite(now)) {
-      this.storageWarning = true;
+      this.pauseClockWarning = true;
       return null;
     }
     const command = this.pauseOutbox.capture(
@@ -1112,7 +1229,7 @@ export class ClientHost {
     }
     return command;
   }
-  private pauseForAbsence(kind: 'lock' | 'suspend' = 'lock'): void {
+  private pauseForAbsence(kind: 'lock' | 'suspend' | 'screensaver' = 'lock'): void {
     const command = this.captureAbsence(kind);
     if (command) {
       this.queryCandidate = undefined;
@@ -1312,8 +1429,8 @@ export class ClientHost {
     const scope = this.pauseScope();
     if (
       !scope ||
-      this.locked ||
-      this.suspended ||
+      !this.saver.returnAllowed ||
+      !Number.isFinite(this.serverTime()) ||
       !this.o.settings.get().timer.askOnUnlock ||
       !this.pauseReturns.healthy ||
       this.pauseOutbox.health.blocked
@@ -1356,7 +1473,7 @@ export class ClientHost {
       title: 'Таймер на паузе',
       body:
         this.o.settings.get().notifications.preview && this.state.timer
-          ? `${record.returnKind === 'unlock' ? 'Не учтено: ' : 'Пауза с '}${new Date(record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${record.returnKind === 'unlock' ? ' — ' : record.returnKind === 'wake' ? '. Система возобновила работу ' : '. Снова подключились '}${new Date(record.returnedAt ?? record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.\n${[this.state.timer.task.mark, this.state.timer.task.title].filter(Boolean).join(' · ').slice(0, 100)} · ${timerClock(elapsedAt(this.state.timer, this.state.timerObservedAt ?? Date.now()))}`
+          ? `${record.returnKind === 'unlock' ? 'Не учтено: ' : 'Пауза с '}${new Date(record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${record.returnKind === 'unlock' ? ' — ' : record.returnKind === 'wake' ? '. Система возобновила работу ' : record.returnKind === 'screensaver' ? '. Заставка больше не обнаружена ' : '. Снова подключились '}${new Date(record.returnedAt ?? record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.\n${[this.state.timer.task.mark, this.state.timer.task.title].filter(Boolean).join(' · ').slice(0, 100)} · ${timerClock(elapsedAt(this.state.timer, this.state.timerObservedAt ?? Date.now()))}`
           : 'Пауза подтверждена сервером. Продолжите таймер или проверьте трудозатраты.',
       hasReply: false,
       buttons: ['Продолжить', 'Закончить и проверить'],
@@ -1366,14 +1483,16 @@ export class ClientHost {
     this.notices.set(spec, notice);
     if (this.toasts.show(spec) === false) this.recoveryNotices.delete(record.key);
   }
-  private recordReturnTime(kind: 'unlock' | 'wake'): void {
-    if (!Number.isFinite(this.serverTime())) return;
-    if (kind === 'unlock') {
-      this.returnedAt = new Date(this.serverTime()).toISOString();
-      this.returnedKind = 'unlock';
-    }
-    if (this.locked || this.suspended) return;
-    if (this.returnedKind !== 'unlock') {
+  private recordReturnTime(kind: PauseReturnKind): void {
+    if (
+      !this.saver.returnAllowed ||
+      this.locked ||
+      this.suspended ||
+      !Number.isFinite(this.serverTime())
+    )
+      return;
+    this.absence.confirmReturn();
+    if (!this.returnedAt) {
       this.returnedAt = new Date(this.serverTime()).toISOString();
       this.returnedKind = kind;
     }
@@ -1405,6 +1524,15 @@ export class ClientHost {
     const scope = this.pauseScope();
     if (!scope) return null;
     const now = Number.isFinite(this.serverTime()) ? this.serverTime() : Date.now();
+    if (this.pauseClockWarning)
+      return {
+        id: this.absenceRecordId('clock-warning'),
+        from: now,
+        to: now,
+        durable: true,
+        message:
+          'Нет свежего подтверждённого времени сервера для автопаузы. Время начала отсутствия не восстановлено. Проверьте время вручную.',
+      };
     if (this.storageWarning || this.pauseOutbox.health.blocked || !this.pauseReturns.healthy)
       return {
         id: this.absenceRecordId('storage'),
@@ -1431,6 +1559,15 @@ export class ClientHost {
               : 'Пауза не подтверждена или исходный таймер изменился. Автоматический повтор остановлен. Проверьте интервалы вручную.',
       };
     const returned = this.pauseReturns.list(scope)[0];
+    if (!returned && this.saverUncertain && this.state.timer?.state === 'run')
+      return {
+        id: this.absenceRecordId('screensaver-unknown'),
+        from: now,
+        to: now,
+        durable: true,
+        message:
+          'Состояние экранной заставки неизвестно. Автопауза по этому датчику не подтверждена; при необходимости поставьте таймер на паузу вручную.',
+      };
     return returned
       ? {
           id: this.absenceRecordId(returned.key),
@@ -1446,6 +1583,7 @@ export class ClientHost {
   private acknowledgeAbsence(id: number): void {
     const scope = this.pauseScope();
     if (!scope) return;
+    if (id === this.absenceRecordId('clock-warning')) this.pauseClockWarning = false;
     for (const record of this.pauseOutbox.list(scope))
       if (this.absenceRecordId(record.key) === id) {
         if (['pending', 'unknown'].includes(record.status))
@@ -1789,6 +1927,7 @@ export class ClientHost {
   }
   private currentRecovery(record: PauseReturn): boolean {
     if (
+      !this.saver.returnAllowed ||
       !this.o.settings.get().timer.askOnUnlock ||
       !this.pauseReturns.healthy ||
       this.pauseOutbox.health.blocked ||
@@ -1835,6 +1974,7 @@ export class ClientHost {
       this.o.settings.get().notifications.enabled &&
       !this.locked &&
       !this.suspended &&
+      !this.saver.absent &&
       (!this.state.focus.until || Date.parse(this.state.focus.until) <= Date.now() || n.mention) &&
       !(
         n.chatId &&
@@ -2678,6 +2818,7 @@ export class ClientHost {
     );
   }
   private publish(): void {
+    this.syncScreenSaverDemand();
     this.syncUpdateContext();
     this.state.desktopUpdate = {
       ...this.desktopUpdates.state,
@@ -2914,6 +3055,7 @@ export class ClientHost {
     this.configuration.destroy();
     this.updates.destroy();
     this.desktopUpdates.destroy();
+    this.saverPoller?.dispose();
     clearInterval(this.tick);
     this.pluginCatalog.reset();
     this.boot++;

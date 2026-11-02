@@ -6,6 +6,22 @@ const state = (owner = 1) => ({
   timer: timerFixture(),
 });
 describe('TimerAbsence: passive warnings, no timer commands', () => {
+  it('waits for screensaver layer and fresh aggregate clearance without inventing an early warning', () => {
+    const a = new TimerAbsence(),
+      s = state();
+    a.depart('screensaver', s, 1000);
+    a.depart('lock', s, 1100);
+    a.depart('suspend', s, 1200);
+    a.return('unlock', s, 1500, false);
+    a.return('resume', s, 1600, false);
+    expect(a.away).toBe(true);
+    expect(a.warning).toBeNull();
+    a.return('screensaver', s, 1700, false);
+    expect(a.away).toBe(false);
+    expect(a.warning).toBeNull();
+    a.confirmReturn(1800);
+    expect(a.warning).toEqual({ id: 1, owner: 1, from: 1000, to: 1800 });
+  });
   it('keeps the first departure and waits until both lock and sleep ended', () => {
     const a = new TimerAbsence(),
       s = state();

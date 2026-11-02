@@ -14,6 +14,8 @@ import { requestValid } from '../../src/shared/requests';
 import { timerFixture, proposalFixture, timerPushFixture } from '../fixtures/time';
 import { releaseFixture } from '../fixtures/updates';
 import { desktopShutdown } from '../../src/main/desktop/updateShutdown';
+import { timerExpected } from '../../src/shared/time';
+import { ScreenSaverObserver } from '../../src/main/desktop/screenSaverObserver';
 import type { DesktopUpdateControllerOptions } from '../../src/main/desktop/updateController';
 
 const URL = 'file:///unit/client.html';
@@ -24,6 +26,7 @@ const h = vi.hoisted(() => ({
   mutation: { active: 0, revision: 0 },
   loginOpen: false,
   toastReplySurface: false,
+  screenSaverRead: vi.fn(),
   readDesktopConfig: vi.fn(),
   timerPending: vi.fn(),
   timerNoticeAck: vi.fn(),
@@ -117,6 +120,7 @@ vi.mock('electron', async () => {
   return {
     app: {
       getVersion: () => '0.6.0',
+      getAppPath: () => '/unit/app',
       quit: h.quit,
       getPath: (name: string) => `${process.cwd()}/private/host-profile/${name}`,
     },
@@ -142,6 +146,17 @@ vi.mock('../../src/main/mainWindow', () => ({
   PARTITION: 'persist:teams',
   guardLocal: () => {},
 }));
+vi.mock('../../src/main/desktop/screenSaverState', async (original) => {
+  const actual = await original<typeof import('../../src/main/desktop/screenSaverState')>();
+  return {
+    ...actual,
+    WindowsScreenSaverReader: class {
+      read = h.screenSaverRead;
+      invalidate() {}
+      dispose() {}
+    },
+  };
+});
 vi.mock('../../src/main/api/client', async (original) => {
   const actual = await original<typeof import('../../src/main/api/client')>();
   return {
@@ -339,6 +354,14 @@ function fixture(
   });
   hosts.push(host);
   const owned = host as unknown as { state: ClientSnapshot; authCookie: string | null };
+  // Existing IPC fixtures start with a known stopped detector. T3 cases below
+  // explicitly invalidate it and control the actual asynchronous poller reader.
+  const saver = (
+    host as unknown as {
+      saver: import('../../src/main/desktop/screenSaverObserver').ScreenSaverObserver;
+    }
+  ).saver;
+  saver.sample({ state: 'stopped', observedMono: performance.now() }, saver.token);
   owned.state.user = { id: 1, shortName: 'Тест', mustChangePassword: false };
   owned.state.connection = 'online';
   owned.state.timerControl = true;
@@ -401,12 +424,280 @@ beforeEach(() => {
     data: { rows: [], digestHourly: false, quiet: null },
   });
   h.timer.mockResolvedValue({ ok: true, data: null });
+  h.screenSaverRead.mockImplementation(async () => ({
+    state: 'stopped',
+    observedMono: performance.now(),
+  }));
 });
 afterEach(() => {
   for (const lease of updateLeases.splice(0)) lease.release();
   for (const host of hosts.splice(0)) host.destroy();
   vi.clearAllTimers();
   vi.useRealTimers();
+});
+
+describe('T3 screensaver integration — synthetic samples, no real OS transitions', () => {
+  type Control = {
+    saver: import('../../src/main/desktop/screenSaverObserver').ScreenSaverObserver;
+    screenSaverBinding(): string;
+    acceptScreenSaver(
+      sample: import('../../src/main/desktop/screenSaverState').ScreenSaverSample,
+      context: { token: number; binding: string },
+    ): void;
+    pauseOutbox: PauseOutbox;
+    pauseReturns: PauseReturns;
+    pauseScope(): import('../../src/main/timer/pauseOutbox').PauseScope;
+    observeServerTime(time: string): void;
+    publish(): void;
+    lock(): void;
+    unlock(): void;
+    sleep(): void;
+    wake(): void;
+    showPauseReturn(): void;
+  };
+  const control = (f: ReturnType<typeof fixture>) => f.host as unknown as Control;
+  const ticket = (c: Control) => ({ token: c.saver.token, binding: c.screenSaverBinding() });
+  const sample = (c: Control, state: 'running' | 'stopped' | 'unknown') =>
+    c.acceptScreenSaver({ state, observedMono: performance.now() }, ticket(c));
+  function setup() {
+    h.screenSaverRead.mockImplementation(() => new Promise(() => {}));
+    const f = fixture(),
+      c = control(f);
+    f.state.timer = timerFixture();
+    f.state.connection = 'offline';
+    c.observeServerTime(f.state.timer.serverNow);
+    c.publish();
+    sample(c, 'stopped');
+    return { f, c };
+  }
+  function confirmed(c: Control, f: ReturnType<typeof fixture>) {
+    const scope = c.pauseScope(),
+      r = c.pauseOutbox.list(scope)[0];
+    if (!r) throw Error('capture missing');
+    const timer = {
+      ...timerFixture('pause'),
+      pauseReason: 'lock' as const,
+      segments: [{ from: required(r.expected.currentSegmentFrom), to: r.at }],
+    };
+    f.state.timer = timer;
+    c.pauseReturns.put({
+      ...scope,
+      key: r.key,
+      at: r.at,
+      expected: timerExpected(timer),
+      returnedAt: null,
+      returnKind: null,
+      delivery: 'pending',
+    });
+    return { scope, r };
+  }
+  it('completion-time calibration is used once, wall clock rollback and repeat samples preserve exact envelope', async () => {
+    const { f, c } = setup();
+    const initial = Date.parse(required(f.state.timer).serverNow);
+    await vi.advanceTimersByTimeAsync(700);
+    vi.setSystemTime(new Date(2020, 0, 1));
+    sample(c, 'running');
+    const r = c.pauseOutbox.list(c.pauseScope())[0];
+    expect(r?.eventKind).toBe('screensaver');
+    expect(Date.parse(required(r).at)).toBe(initial + 700);
+    sample(c, 'running');
+    c.lock();
+    c.sleep();
+    expect(c.pauseOutbox.list(c.pauseScope())).toEqual([r]);
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(h.timerResume).not.toHaveBeenCalled();
+  });
+  it.each(['timer', 'owner', 'epoch', 'config', 'lock', 'suspend'] as const)(
+    'rejects a pending A sample after %s changed',
+    (change) => {
+      const { f, c } = setup(),
+        old = ticket(c);
+      if (change === 'timer') f.state.timer = { ...timerFixture(), timerId: 999 };
+      if (change === 'owner') {
+        h.api.owner = 2;
+        required(f.state.user).id = 2;
+      }
+      if (change === 'epoch') h.api.epoch++;
+      if (change === 'config') (c as unknown as { configEpoch: number }).configEpoch = -1;
+      if (change === 'lock') c.lock();
+      if (change === 'suspend') c.sleep();
+      const prior = c.pauseOutbox.list(c.pauseScope());
+      c.acceptScreenSaver({ state: 'running', observedMono: performance.now() }, old);
+      expect(c.pauseOutbox.list(c.pauseScope())).toEqual(prior);
+      expect(h.timerPause).not.toHaveBeenCalled();
+    },
+  );
+  it('fresh sample can capture running B even while an earlier absence latch is open', () => {
+    const { f, c } = setup();
+    sample(c, 'running');
+    f.state.timer = { ...timerFixture(), timerId: 999 };
+    sample(c, 'running');
+    expect(c.pauseOutbox.list(c.pauseScope()).map((r) => r.expected.timerId)).toEqual([71, 999]);
+  });
+  it.each(['capability', 'owner', 'logout'] as const)(
+    'keeps read-only clearing demand after %s loss, without timer writes',
+    (change) => {
+      const { f, c } = setup();
+      sample(c, 'running');
+      const scope = c.pauseScope(),
+        prior = c.pauseOutbox.list(scope);
+      if (change === 'capability') f.state.timerControl = false;
+      if (change === 'owner') {
+        h.api.owner = 2;
+        required(f.state.user).id = 2;
+        f.state.timerControl = false;
+      }
+      if (change === 'logout') {
+        h.api.owner = null;
+        f.state.user = null;
+        f.state.timerControl = false;
+      }
+      c.publish();
+      expect((c as unknown as { saverActive: boolean }).saverActive).toBe(true);
+      sample(c, 'stopped');
+      expect(c.saver.absent).toBe(false);
+      expect(c.pauseOutbox.list(scope)).toEqual(prior);
+      expect(h.timerPause).not.toHaveBeenCalled();
+      expect(h.timerResume).not.toHaveBeenCalled();
+      if (change !== 'logout') {
+        f.state.connection = 'online';
+        const notice = {
+          epoch: h.api.epoch,
+          owner: h.api.owner,
+          chatId: null,
+          mention: false,
+          ordinary: true,
+        };
+        expect((c as unknown as { current: (n: unknown) => boolean }).current(notice)).toBe(true);
+      }
+    },
+  );
+  it.each(['saver-lock', 'lock-saver', 'sleep-saver'] as const)(
+    'records return only after every layer clears: %s',
+    async (order) => {
+      const { f, c } = setup();
+      sample(c, 'running');
+      const { scope } = confirmed(c, f);
+      if (order === 'saver-lock') {
+        c.lock();
+        sample(c, 'stopped');
+        expect(c.pauseReturns.list(scope)[0]?.returnedAt).toBeNull();
+        c.unlock();
+      }
+      if (order === 'lock-saver') {
+        c.lock();
+        c.unlock();
+        expect(c.pauseReturns.list(scope)[0]?.returnedAt).toBeNull();
+        sample(c, 'unknown');
+        expect(c.saver.returnAllowed).toBe(false);
+        sample(c, 'stopped');
+      }
+      if (order === 'sleep-saver') {
+        c.sleep();
+        c.wake();
+        c.observeServerTime(timerFixture().serverNow);
+        c.lock();
+        sample(c, 'stopped');
+        expect(c.pauseReturns.list(scope)[0]?.returnedAt).toBeNull();
+        c.unlock();
+      }
+      const r = c.pauseReturns.list(scope)[0];
+      expect(r?.returnedAt).not.toBeNull();
+      const boundary = r?.returnedAt;
+      c.observeServerTime(new Date(Date.parse(timerFixture().serverNow) + 1000).toISOString());
+      sample(c, 'stopped');
+      c.unlock();
+      expect(c.pauseReturns.list(scope)[0]?.returnedAt).toBe(boundary);
+      expect(h.timerResume).not.toHaveBeenCalled();
+    },
+  );
+  it('stale calibration creates no invented pause and leaves an existing visible review', async () => {
+    const { f, c } = setup();
+    const mono = vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 120001);
+    sample(c, 'running');
+    mono.mockRestore();
+    expect(c.pauseOutbox.list(c.pauseScope())).toEqual([]);
+    expect(f.state.timerAbsence?.message).toContain('Проверьте время вручную');
+    expect(h.timerPause).not.toHaveBeenCalled();
+  });
+  it('sleep invalidation cannot be refreshed by an old timer payload through another explicit event', () => {
+    const { f, c } = setup();
+    c.sleep();
+    const scope = c.pauseScope(),
+      original = c.pauseOutbox.list(scope);
+    c.wake();
+    c.lock();
+    c.unlock();
+    sample(c, 'stopped');
+    expect((c as unknown as { serverTime: () => number }).serverTime()).toBeNaN();
+    expect(c.pauseOutbox.list(scope)).toEqual(original);
+    expect(h.toastShow).not.toHaveBeenCalled();
+    sample(c, 'running');
+    expect(c.pauseOutbox.list(scope)).toEqual(original);
+    c.observeServerTime(
+      new Date(Date.parse(required(f.state.timer).serverNow) + 60000).toISOString(),
+    );
+    expect(Number.isFinite((c as unknown as { serverTime: () => number }).serverTime())).toBe(true);
+    sample(c, 'stopped');
+    expect(h.timerResume).not.toHaveBeenCalled();
+  });
+  it('newly observed stopped after restart requires fresh evidence and is labelled connection, not a fabricated unlock', () => {
+    const { f, c } = setup();
+    sample(c, 'running');
+    const { scope } = confirmed(c, f);
+    const observer = new ScreenSaverObserver();
+    (c as unknown as { saver: ScreenSaverObserver }).saver = observer;
+    f.state.connection = 'online';
+    c.showPauseReturn();
+    expect(h.toastShow).not.toHaveBeenCalled();
+    sample(c, 'unknown');
+    expect(h.toastShow).not.toHaveBeenCalled();
+    sample(c, 'stopped');
+    expect(c.pauseReturns.list(scope)[0]?.returnKind).toBe('connection');
+    expect(h.toastShow.mock.calls.at(-1)?.[0].body).toContain('Снова подключились');
+  });
+  it('new saver during an awaited OS policy rejects the popup and its shown/actions', async () => {
+    const { f, c } = setup();
+    sample(c, 'running');
+    const { scope } = confirmed(c, f);
+    f.state.connection = 'online';
+    sample(c, 'stopped');
+    const spec = h.toastShow.mock.calls.at(-1)?.[0] as ToastSpec;
+    expect(spec).toBeTruthy();
+    const policy = deferred<boolean>(),
+      entered = deferred<boolean>();
+    h.policyAllows.mockImplementationOnce(() => {
+      entered.resolve(true);
+      return policy.promise;
+    });
+    const showing = required(h.toastOptions).beforeShow(spec);
+    await entered.promise;
+    sample(c, 'running');
+    policy.resolve(true);
+    expect(await showing).toBe(false);
+    required(h.toastOptions).onShow(spec);
+    required(h.toastOptions).onButton(spec, 0);
+    expect(c.pauseReturns.list(scope)[0]?.delivery).toBe('pending');
+    expect(h.timerResume).not.toHaveBeenCalled();
+  });
+  it('actual asynchronous poller captures ticket before read and ignores stale timer before publishing', async () => {
+    const held = deferred<import('../../src/main/desktop/screenSaverState').ScreenSaverSample>();
+    h.screenSaverRead
+      .mockReturnValueOnce(held.promise)
+      .mockImplementation(() => new Promise(() => {}));
+    const f = fixture(),
+      c = control(f);
+    f.state.timer = timerFixture();
+    f.state.connection = 'offline';
+    c.observeServerTime(f.state.timer.serverNow);
+    c.publish();
+    expect(h.screenSaverRead).toHaveBeenCalledOnce();
+    f.state.timer = { ...timerFixture(), timerId: 999 };
+    held.resolve({ state: 'running', observedMono: performance.now() });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(c.pauseOutbox.list(c.pauseScope())).toEqual([]);
+    expect(h.timerPause).not.toHaveBeenCalled();
+  });
 });
 
 describe('Host updater boundaries use real IPC and the global shutdown lease', () => {
@@ -2271,7 +2562,7 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     required(h.toastOptions).onButton(spec, 0);
     expect(h.timerResume).not.toHaveBeenCalled();
   });
-  it('scheduled wake while locked waits for actual unlock and preserves that end through a later policy delay', () => {
+  it('scheduled wake while locked waits for fresh detector and actual unlock, preserving the end through policy delay', () => {
     const disk = persistent(),
       stores = disk.open(),
       f = fixture({}, stores),
@@ -2293,16 +2584,28 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     const host = f.host as unknown as {
       locked: boolean;
       suspended: boolean;
+      lock: () => void;
+      sleep: () => void;
       wake: () => void;
       unlock: () => void;
       observeServerTime: (value: string) => void;
+      saver: { token: number };
+      screenSaverBinding: () => string;
+      acceptScreenSaver: (
+        sample: { state: 'stopped'; observedMono: number },
+        context: { token: number; binding: string },
+      ) => void;
     };
-    host.locked = true;
-    host.suspended = true;
+    host.lock();
+    host.sleep();
     host.wake();
     expect(stores.returns.list(scope)[0]?.returnedAt).toBeNull();
     disk.clock.now += 60000;
     host.observeServerTime(new Date(disk.clock.now).toISOString());
+    host.acceptScreenSaver(
+      { state: 'stopped', observedMono: performance.now() },
+      { token: host.saver.token, binding: host.screenSaverBinding() },
+    );
     host.unlock();
     const first = stores.returns.list(scope)[0];
     expect(first?.returnKind).toBe('unlock');
@@ -2403,8 +2706,11 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
         epoch: h.api.epoch,
         id: required(f.owned.state.timerAbsence).id,
       });
-    if (change === 'timestamp')
-      stores.returns.returned(scope, record.key, '2026-10-29T05:00:00.000Z', 'unlock');
+    if (change === 'timestamp') {
+      const old = required(stores.returns.list(scope)[0]);
+      stores.returns.dismiss(scope, record.key);
+      stores.returns.put({ ...old, returnedAt: '2026-10-29T05:00:00.000Z', returnKind: 'unlock' });
+    }
     if (change === 'return-health') {
       failReturnWrite = true;
       expect(stores.returns.shown(scope, record.key)).toBe(false);

@@ -18,28 +18,40 @@ interface PendingAbsence {
 export class TimerAbsence {
   private locked = false;
   private suspended = false;
+  private screensaver = false;
   private pending: PendingAbsence | null = null;
   private currentWarning: AbsenceWarning | null = null;
   private nextId = 1;
 
   get away(): boolean {
-    return this.locked || this.suspended;
+    return this.locked || this.suspended || this.screensaver;
   }
 
   get warning(): AbsenceWarning | null {
     return this.currentWarning ? { ...this.currentWarning } : null;
   }
 
-  depart(kind: 'lock' | 'suspend', state: DesktopState, now = Date.now()): void {
+  depart(kind: 'lock' | 'suspend' | 'screensaver', state: DesktopState, now = Date.now()): void {
     if (kind === 'lock') this.locked = true;
-    else this.suspended = true;
+    else if (kind === 'suspend') this.suspended = true;
+    else this.screensaver = true;
     this.observe(state, now);
   }
 
-  return(kind: 'unlock' | 'resume', state: DesktopState, now = Date.now()): void {
+  return(
+    kind: 'unlock' | 'resume' | 'screensaver',
+    state: DesktopState,
+    now = Date.now(),
+    allowReturn = true,
+  ): void {
     if (kind === 'unlock') this.locked = false;
-    else this.suspended = false;
+    else if (kind === 'resume') this.suspended = false;
+    else this.screensaver = false;
     this.observe(state, now);
+    if (allowReturn) this.confirmReturn(now);
+  }
+
+  confirmReturn(now = Date.now()): void {
     if (this.away || !this.pending) return;
 
     const { owner, from } = this.pending;

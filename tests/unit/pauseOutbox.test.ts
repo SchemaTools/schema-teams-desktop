@@ -26,6 +26,33 @@ const gate: PauseReplayGate = {
   casChecked: true,
   timerControl2: true,
 };
+it('restores the exact screensaver pause envelope; unknown future event preserves bytes and blocks writes', () => {
+  let text: string | null = null,
+    writes = 0;
+  const storage = {
+    read: () => text,
+    replace: (next: string) => {
+      text = next;
+      writes++;
+    },
+  };
+  const first = new PauseOutbox('memory', {
+    storage,
+    now: () => clock,
+    newKey: () => 'screensaver-once',
+  });
+  const r = first.capture(scope, expected, at, 'screensaver');
+  expect(r).toMatchObject({ eventKind: 'screensaver', at, key: 'screensaver-once' });
+  expect(new PauseOutbox('memory', { storage, now: () => clock }).list(scope)).toEqual([r]);
+  text = required<string>(text).replace('"eventKind":"screensaver"', '"eventKind":"future-event"');
+  const original = text,
+    count = writes;
+  const future = new PauseOutbox('memory', { storage, now: () => clock });
+  expect(future.health.blocked).toBe('read');
+  expect(future.capture(scope, expected, at, 'lock')).toBeNull();
+  expect(text).toBe(original);
+  expect(writes).toBe(count);
+});
 function required<T>(value: T | null): T {
   if (value === null) throw new Error('Expected a durably captured record');
   return value;
