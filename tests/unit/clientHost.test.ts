@@ -2300,21 +2300,24 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
     );
     expect(requestValid({ kind: 'plugins.recover', epoch: 7, path: 'C:\\outside' })).toBe(false);
   });
-  it('a direct install intent cannot bypass the unconfigured production trust policy', async () => {
-    const f = setup();
-    await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
-    h.plugins.mockClear();
-    expect(
-      await f.invoke({ kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] }),
-    ).toMatchObject({
-      ok: false,
-      code: 'plugin_job_blocked',
-      error: expect.stringContaining('не настроены'),
-    });
-    expect(h.plugins).not.toHaveBeenCalled();
-    expect(f.state.plugins?.managed?.installationAvailable).toBe(false);
-  });
-  it.each(['owner', 'same-epoch-lifetime'] as const)(
+  it.skipIf(process.platform !== 'win32')(
+    'a direct install intent cannot bypass the unconfigured production trust policy',
+    async () => {
+      const f = setup();
+      await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+      h.plugins.mockClear();
+      expect(
+        await f.invoke({ kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] }),
+      ).toMatchObject({
+        ok: false,
+        code: 'plugin_job_blocked',
+        error: expect.stringContaining('не настроены'),
+      });
+      expect(h.plugins).not.toHaveBeenCalled();
+      expect(f.state.plugins?.managed?.installationAvailable).toBe(false);
+    },
+  );
+  it.skipIf(process.platform !== 'win32').each(['owner', 'same-epoch-lifetime'] as const)(
     'a held install preflight cannot restart the old intent in a new %s context',
     async (kind) => {
       const f = setup();
@@ -2363,20 +2366,45 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
       expect(inventory).not.toHaveBeenCalled();
     },
   );
-  it('an offline→online transition invalidates the previous job lifetime even within the same epoch', async () => {
-    const f = setup();
-    await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
-    const owned = f.host as unknown as {
-      pluginJobs: { invalidate: () => void };
-      publish: () => void;
-    };
-    const invalidated = vi.spyOn(owned.pluginJobs, 'invalidate');
-    f.state.connection = 'offline';
-    owned.publish();
-    f.state.connection = 'online';
-    owned.publish();
-    expect(invalidated).toHaveBeenCalledTimes(2);
-  });
+  it.skipIf(process.platform !== 'win32')(
+    'an offline→online transition invalidates the previous job lifetime even within the same epoch',
+    async () => {
+      const f = setup();
+      await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+      const owned = f.host as unknown as {
+        pluginJobs: { invalidate: () => void };
+        publish: () => void;
+      };
+      const invalidated = vi.spyOn(owned.pluginJobs, 'invalidate');
+      f.state.connection = 'offline';
+      owned.publish();
+      f.state.connection = 'online';
+      owned.publish();
+      expect(invalidated).toHaveBeenCalledTimes(2);
+    },
+  );
+  it.skipIf(process.platform === 'win32')(
+    'non-Windows hosts deny plugin mutations before inventory or catalog IO',
+    async () => {
+      const f = setup();
+      await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+      h.plugins.mockClear();
+      const owned = f.host as unknown as { inventory: { inspect: () => Promise<unknown> } };
+      const inventory = vi.spyOn(owned.inventory, 'inspect');
+      const intents: DesktopRequest[] = [
+        { kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] },
+        { kind: 'plugins.recover', epoch: 7 },
+        { kind: 'plugins.rollback', epoch: 7, receiptId: '11111111-1111-4111-8111-111111111111' },
+      ];
+      for (const intent of intents)
+        expect(await f.invoke(intent)).toMatchObject({
+          ok: false,
+          code: 'forbidden',
+        });
+      expect(h.plugins).not.toHaveBeenCalled();
+      expect(inventory).not.toHaveBeenCalled();
+    },
+  );
   it('local beta opt-in belongs to current server+owner, and tester removal gates it immediately', async () => {
     const f = setup();
     await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
