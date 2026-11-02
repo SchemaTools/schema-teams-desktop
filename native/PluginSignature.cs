@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 internal static class PluginSignature
 {
     const long MaxFile = 200L * 1024 * 1024;
+    const long MaxDesktopFile = 512L * 1024 * 1024;
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct FileInfo { public uint size; [MarshalAs(UnmanagedType.LPWStr)] public string path; public IntPtr file, subject; }
     [StructLayout(LayoutKind.Sequential)]
@@ -142,7 +143,8 @@ internal static class PluginSignature
     static int Main(string[] args) {
         string hash = null;
         try {
-            if (args.Length != 2 || !Regex.IsMatch(args[1], "\\A[0-9a-f]{64}\\z") || !Path.IsPathRooted(args[0]) || args[0].Length > 32760) {
+            bool desktop = args.Length == 3 && args[2] == "desktop";
+            if (args.Length != (desktop ? 3 : 2) || !Regex.IsMatch(args[1], "\\A[0-9a-f]{64}\\z") || !Path.IsPathRooted(args[0]) || args[0].Length > 32760) {
                 Output("invalid", "input", null, null, null); return 0;
             }
             if ((File.GetAttributes(args[0]) & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0) {
@@ -150,7 +152,7 @@ internal static class PluginSignature
             }
             // Deny write/delete sharing until both hash and provider-state extraction finish.
             using (FileStream file = new FileStream(args[0], FileMode.Open, FileAccess.Read, FileShare.Read, 65536, FileOptions.SequentialScan)) {
-                if (file.Length < 64 || file.Length > MaxFile) { Output("invalid", "size", null, null, null); return 0; }
+                if (file.Length < 64 || file.Length > (desktop ? MaxDesktopFile : MaxFile)) { Output("invalid", "size", null, null, null); return 0; }
                 using (SHA256 sha = SHA256.Create()) hash = Hex(sha.ComputeHash(file));
                 if (hash != args[1]) { Output("invalid", "hash-mismatch", hash, null, null); return 0; }
                 bool embedded;

@@ -111,6 +111,20 @@ export async function verifyPluginSignature(
   path: string,
   expectedSha256: string,
 ): Promise<SignatureVerdict> {
+  return verifySignature(path, expectedSha256, 'plugin');
+}
+/** Main-only Desktop purpose; the native plugin limit remains 200 MiB. */
+export async function verifyDesktopSignature(
+  path: string,
+  expectedSha256: string,
+): Promise<SignatureVerdict> {
+  return verifySignature(path, expectedSha256, 'desktop');
+}
+async function verifySignature(
+  path: string,
+  expectedSha256: string,
+  purpose: 'plugin' | 'desktop',
+): Promise<SignatureVerdict> {
   if (platform() !== 'win32') return { ...unknown(), verdict: 'unsupported', reason: 'platform' };
   if (
     typeof path !== 'string' ||
@@ -127,7 +141,7 @@ export async function verifyPluginSignature(
     try {
       execFile(
         helper,
-        [path, expectedSha256],
+        purpose === 'desktop' ? [path, expectedSha256, 'desktop'] : [path, expectedSha256],
         { shell: false, windowsHide: true, timeout: 10000, maxBuffer: 1024, encoding: 'utf8' },
         (error, stdout) => {
           resolve(error ? unknown() : parse(stdout, expectedSha256));

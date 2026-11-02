@@ -258,3 +258,134 @@ describe('Published release survives numeric comparison', () => {
     },
   );
 });
+
+describe('Main-only update offers follow the captured lifetime', () => {
+  it('delivers frozen full metadata only to main; errors clear permission but retain display metadata', async () => {
+    const release = releaseFixture(),
+      onOffer = vi.fn(),
+      read = vi
+        .fn<() => Promise<ApiResult<DesktopRelease | null>>>()
+        .mockResolvedValueOnce({ ok: true, data: release })
+        .mockResolvedValueOnce({ ok: false, code: 'network', error: 'private', retryable: true });
+    const checker = new UpdateChecker({
+      enabled: true,
+      currentVersion: '0.6.1',
+      read,
+      onChange: () => {},
+      lifetime: () => 'A',
+      onOffer,
+    });
+    await checker.check();
+    const full = onOffer.mock.calls[1]?.[0] as Readonly<DesktopRelease>;
+    expect(full).toEqual(releaseFixture());
+    expect(Object.isFrozen(full)).toBe(true);
+    release.notes = 'caller mutation';
+    expect(full.notes).not.toBe(release.notes);
+    expect(JSON.stringify(checker.state)).not.toMatch(/sha256|\/api\/desktop\/files/);
+    await checker.check();
+    expect(onOffer.mock.calls.at(-1)).toEqual([null, 'A']);
+    expect(checker.state.available?.version).toBe('1.1.0');
+    checker.destroy();
+  });
+  it('old owner success cannot become the new owner offer or overwrite its state', async () => {
+    let lifetime = 'A';
+    const old = wait<ApiResult<DesktopRelease | null>>(),
+      onOffer = vi.fn(),
+      read = vi
+        .fn<() => Promise<ApiResult<DesktopRelease | null>>>()
+        .mockReturnValueOnce(old.promise)
+        .mockResolvedValueOnce({ ok: true, data: releaseFixture('1.2.0') });
+    const checker = new UpdateChecker({
+      enabled: true,
+      currentVersion: '0.6.1',
+      read,
+      onChange: () => {},
+      lifetime: () => lifetime,
+      onOffer,
+    });
+    const oldFlight = checker.check();
+    lifetime = 'B';
+    checker.reset();
+    const currentFlight = checker.check();
+    expect(currentFlight).not.toBe(oldFlight);
+    await currentFlight;
+    old.resolve({ ok: true, data: releaseFixture('1.1.0') });
+    await oldFlight;
+    expect(checker.state.available?.version).toBe('1.2.0');
+    expect(onOffer.mock.calls.filter(([release]) => release !== null)).toEqual([
+      [releaseFixture('1.2.0'), 'B'],
+    ]);
+    checker.destroy();
+  });
+  it('former-owner stale_session does not retry using a new owner', async () => {
+    let lifetime = 'A';
+    const old = wait<ApiResult<DesktopRelease | null>>(),
+      onOffer = vi.fn(),
+      read = vi.fn<() => Promise<ApiResult<DesktopRelease | null>>>().mockReturnValue(old.promise);
+    const checker = new UpdateChecker({
+      enabled: true,
+      currentVersion: '0.6.1',
+      read,
+      onChange: () => {},
+      lifetime: () => lifetime,
+      onOffer,
+    });
+    const flight = checker.check();
+    lifetime = 'B';
+    checker.reset();
+    old.resolve({ ok: false, code: 'stale_session', error: 'old', retryable: false });
+    await flight;
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(checker.state.status).toBe('idle');
+    expect(onOffer.mock.calls.every(([release]) => release === null)).toBe(true);
+    checker.destroy();
+  });
+  it('same-version republish passes the new complete tuple, not an old cached file', async () => {
+    const first = releaseFixture(),
+      second = { ...first, notes: 'replacement', sha256: 'b'.repeat(64) },
+      onOffer = vi.fn(),
+      read = vi
+        .fn<() => Promise<ApiResult<DesktopRelease | null>>>()
+        .mockResolvedValueOnce({ ok: true, data: first })
+        .mockResolvedValueOnce({ ok: true, data: second });
+    const checker = new UpdateChecker({
+      enabled: true,
+      currentVersion: '0.6.1',
+      read,
+      onChange: () => {},
+      onOffer,
+    });
+    await checker.check();
+    await checker.check();
+    expect(onOffer.mock.calls).toEqual([
+      [null, ''],
+      [first, ''],
+      [null, ''],
+      [second, ''],
+    ]);
+    checker.destroy();
+  });
+  it.each(['unpublished', 'older', 'invalid'])(
+    '%s cannot supply an executable offer',
+    async (kind) => {
+      const data =
+          kind === 'unpublished'
+            ? null
+            : {
+                ...releaseFixture(kind === 'older' ? '0.1.0' : '1.1.0'),
+                ...(kind === 'invalid' ? { sha256: 'invalid' } : {}),
+              },
+        onOffer = vi.fn();
+      const checker = new UpdateChecker({
+        enabled: true,
+        currentVersion: '0.6.1',
+        read: async () => ({ ok: true, data }),
+        onChange: () => {},
+        onOffer,
+      });
+      await checker.check();
+      expect(onOffer.mock.calls).toEqual([[null, '']]);
+      checker.destroy();
+    },
+  );
+});

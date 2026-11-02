@@ -47,6 +47,8 @@ import {
 import { validateUpload } from '../files/uploadPolicy';
 
 export interface TeamsApiOptions {
+  /** Main-only shutdown barrier, consulted immediately before any mutation IO. */
+  allowMutation?: () => boolean;
   onPluginAudit?: PluginAuditListener;
   fetch: (path: string, init?: RequestInit) => Promise<Response>;
   onAuthLost?: () => void;
@@ -91,6 +93,8 @@ const ERROR_TEXT: Record<string, string> = {
   invalid_file: 'Не удалось проверить файл. Повторите загрузку из актуального сообщения.',
   file_error: 'Не удалось сохранить или открыть файл. Проверьте доступ к папке «Загрузки».',
   busy: 'Дождитесь окончания загрузки файла.',
+  update_in_progress:
+    'Подготовлен выход для обновления. Вернитесь к работе, чтобы выполнить действие.',
   forbidden_type: 'Такие файлы нельзя прикладывать. Положите файл в папку объекта.',
   too_large: 'Файл больше 50 МБ. Положите его в папку объекта.',
   no_timer: 'Таймер уже завершён. Обновите состояние.',
@@ -125,6 +129,12 @@ export class TeamsApi {
   private user: SafeUser | null = null;
   private csrf: string | null = null;
   private readonly pending = new Set<AbortController>();
+  private readonly mutating = new Set<AbortController>();
+  private mutationRevision = 0;
+  private readonly allowMutation?: () => boolean;
+  get mutationState(): Readonly<{ active: number; revision: number }> {
+    return Object.freeze({ active: this.mutating.size, revision: this.mutationRevision });
+  }
   private authFlight?: Promise<ApiResult<SafeUser>>;
   private timerFlight?: { epoch: number };
   private timerNow: string | null = null;
@@ -147,7 +157,9 @@ export class TeamsApi {
     if (result.ok) this.config = result.data;
     return result;
   }
-  constructor(private readonly o: TeamsApiOptions) {}
+  constructor(private readonly o: TeamsApiOptions) {
+    this.allowMutation = o.allowMutation;
+  }
   get epoch(): number {
     return this.generation;
   }
@@ -967,8 +979,20 @@ export class TeamsApi {
     fileSize?: number,
     upload?: UploadBody,
   ): Promise<ApiResult<Raw>> {
+    const mutation = MUTATIONS.has(method);
+    if (mutation && this.allowMutation) {
+      try {
+        if (this.allowMutation() !== true) return failure('update_in_progress');
+      } catch {
+        return failure('update_in_progress');
+      }
+    }
     const controller = new AbortController();
     this.pending.add(controller);
+    if (mutation) {
+      this.mutating.add(controller);
+      this.mutationRevision++;
+    }
     let timeout = false;
     const timer = setTimeout(
       () => {
@@ -1084,6 +1108,7 @@ export class TeamsApi {
     } finally {
       clearTimeout(timer);
       this.pending.delete(controller);
+      if (this.mutating.delete(controller)) this.mutationRevision++;
     }
   }
 }

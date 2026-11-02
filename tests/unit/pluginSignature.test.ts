@@ -13,6 +13,7 @@ import {
   APPROVED_PLUGIN_PUBLISHER_DER_SHA256,
   evaluatePublisherTrust,
   verifyPluginSignature,
+  verifyDesktopSignature,
 } from '../../src/main/plugins/signature';
 
 const hash = 'a'.repeat(64),
@@ -35,6 +36,13 @@ beforeEach(() => {
 });
 
 describe('signature wrapper, mocked process runner (not WinTrust evidence)', () => {
+  it('Desktop uses an explicit fixed purpose; plugins keep the original two arguments', async () => {
+    answer(valid);
+    expect((await verifyDesktopSignature('C:/stage/Setup.exe', hash)).verdict).toBe('valid');
+    expect(runner.mock.calls[0]?.[1]).toEqual(['C:/stage/Setup.exe', hash, 'desktop']);
+    await verifyPluginSignature('C:/stage/Plugin.dll', hash);
+    expect(runner.mock.calls[1]?.[1]).toEqual(['C:/stage/Plugin.dll', hash]);
+  });
   it('passes only controlled helper path and explicit bounded execFile options', async () => {
     answer(valid);
     expect((await verifyPluginSignature('C:/stage/plugin.dll', hash)).verdict).toBe('valid');

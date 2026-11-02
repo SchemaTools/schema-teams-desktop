@@ -1,4 +1,5 @@
 import type { ApiResult } from '../../shared/client';
+import { desktopRelease } from '../api/updates';
 import {
   compareVersions,
   initialUpdateState,
@@ -11,6 +12,9 @@ interface Options {
   currentVersion: string;
   read: () => Promise<ApiResult<DesktopRelease | null>>;
   onChange: (state: UpdateState) => void;
+  /** Main-only full metadata. Never added to the public UpdateState. */
+  onOffer?: (release: Readonly<DesktopRelease> | null, lifetime: string) => void;
+  lifetime?: () => string;
 }
 export class UpdateChecker {
   private value: UpdateState;
@@ -18,7 +22,10 @@ export class UpdateChecker {
   private bootTimer?: NodeJS.Timeout;
   private timer?: NodeJS.Timeout;
   private destroyed = false;
-  constructor(private readonly o: Options) {
+  private generation = 0;
+  private readonly o: Readonly<Options>;
+  constructor(o: Options) {
+    this.o = Object.freeze({ ...o });
     this.value = initialUpdateState(o.enabled);
   }
   get state(): UpdateState {
@@ -37,20 +44,28 @@ export class UpdateChecker {
     clearTimeout(this.bootTimer);
     if (this.destroyed || !this.o.enabled) return Promise.resolve(this.state);
     if (this.flight) return this.flight;
+    const lifetime = this.o.lifetime?.() ?? '',
+      generation = this.generation;
+    this.o.onOffer?.(null, lifetime);
     this.value = { ...this.value, status: 'checking', error: null };
     this.emit();
-    const flight = this.read().finally(() => {
+    const flight = this.read(lifetime, generation).finally(() => {
       if (this.flight === flight) this.flight = undefined;
     });
     this.flight = flight;
     return flight;
   }
-  private async read(): Promise<UpdateState> {
+  private current(lifetime: string, generation: number): boolean {
+    return (
+      !this.destroyed && generation === this.generation && lifetime === (this.o.lifetime?.() ?? '')
+    );
+  }
+  private async read(lifetime: string, generation: number): Promise<UpdateState> {
     try {
       let result = await this.o.read();
-      if (!this.destroyed && !result.ok && result.code === 'stale_session')
+      if (this.current(lifetime, generation) && !result.ok && result.code === 'stale_session')
         result = await this.o.read();
-      if (this.destroyed) return this.state;
+      if (!this.current(lifetime, generation)) return this.state;
       if (!result.ok) {
         this.value = {
           ...this.value,
@@ -69,7 +84,8 @@ export class UpdateChecker {
           error: null,
         };
       } else {
-        const comparison = compareVersions(result.data.version, this.o.currentVersion);
+        const release = desktopRelease(result.data);
+        const comparison = compareVersions(release.version, this.o.currentVersion);
         if (comparison === null)
           this.value = {
             ...this.value,
@@ -81,27 +97,28 @@ export class UpdateChecker {
             ...this.value,
             status: comparison > 0 ? 'available' : 'current',
             published: {
-              version: result.data.version,
-              notes: result.data.notes,
-              size: result.data.size,
+              version: release.version,
+              notes: release.notes,
+              size: release.size,
             },
             available:
               comparison > 0
-                ? { version: result.data.version, notes: result.data.notes, size: result.data.size }
+                ? { version: release.version, notes: release.notes, size: release.size }
                 : null,
             checkedAt: Date.now(),
             error: null,
           };
+        if (comparison === 1) this.o.onOffer?.(Object.freeze(release), lifetime);
       }
     } catch {
-      if (!this.destroyed)
+      if (this.current(lifetime, generation))
         this.value = {
           ...this.value,
           status: 'error',
           error: 'Не удалось проверить обновления. Повторите позже.',
         };
     }
-    if (!this.destroyed) this.emit();
+    if (this.current(lifetime, generation)) this.emit();
     return this.state;
   }
   later(version: string): boolean {
@@ -113,9 +130,19 @@ export class UpdateChecker {
   private emit(): void {
     this.o.onChange(this.state);
   }
+  /** A context change may start a new read without waiting for a stale flight. */
+  reset(): void {
+    if (this.destroyed) return;
+    this.generation++;
+    this.flight = undefined;
+    this.value = initialUpdateState(this.o.enabled);
+    this.o.onOffer?.(null, this.o.lifetime?.() ?? '');
+    this.emit();
+  }
   destroy(): void {
     this.destroyed = true;
     clearTimeout(this.bootTimer);
     clearInterval(this.timer);
+    this.o.onOffer?.(null, this.o.lifetime?.() ?? '');
   }
 }
