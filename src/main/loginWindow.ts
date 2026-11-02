@@ -4,6 +4,9 @@ import { isServerUrl } from './navigation';
 export class LoginWindow {
   private win?: BrowserWindow;
   private pulse?: NodeJS.Timeout;
+  get open(): boolean {
+    return !!this.win && !this.win.isDestroyed();
+  }
   constructor(
     private readonly server: URL,
     private readonly onReady: () => void,

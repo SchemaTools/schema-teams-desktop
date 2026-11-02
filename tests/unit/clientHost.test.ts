@@ -13,12 +13,17 @@ import type { Logger } from '../../src/main/logger';
 import { requestValid } from '../../src/shared/requests';
 import { timerFixture, proposalFixture, timerPushFixture } from '../fixtures/time';
 import { releaseFixture } from '../fixtures/updates';
+import { desktopShutdown } from '../../src/main/desktop/updateShutdown';
+import type { DesktopUpdateControllerOptions } from '../../src/main/desktop/updateController';
 
 const URL = 'file:///unit/client.html';
 type Handler = (event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>;
 const h = vi.hoisted(() => ({
   handlers: new Map<string, Handler>(),
   api: { epoch: 7, owner: 1 as number | null },
+  mutation: { active: 0, revision: 0 },
+  loginOpen: false,
+  toastReplySurface: false,
   readDesktopConfig: vi.fn(),
   timerPending: vi.fn(),
   timerNoticeAck: vi.fn(),
@@ -85,6 +90,7 @@ const h = vi.hoisted(() => ({
     | undefined
     | {
         beforeShow: (spec: ToastSpec) => Promise<boolean>;
+        onReply: (spec: ToastSpec, text: string) => Promise<{ ok: boolean }>;
         onShow: (spec: ToastSpec) => void;
         onClose: (spec: ToastSpec) => void;
         onButton: (spec: ToastSpec, index: number) => void;
@@ -147,6 +153,9 @@ vi.mock('../../src/main/api/client', async (original) => {
       get owner() {
         return h.api.owner;
       }
+      get mutationState() {
+        return { ...h.mutation };
+      }
       get desktopConfiguration() {
         return h.desktopConfig ?? { capabilities: { chatQuiet: h.chatQuiet } };
       }
@@ -198,6 +207,9 @@ vi.mock('../../src/main/api/client', async (original) => {
 });
 vi.mock('../../src/main/loginWindow', () => ({
   LoginWindow: class {
+    get open() {
+      return h.loginOpen;
+    }
     show = h.loginShow;
     close = h.loginClose;
   },
@@ -228,6 +240,9 @@ vi.mock('../../src/main/files/uploads', () => ({
 }));
 vi.mock('../../src/main/notifications/toasts', () => ({
   CustomToasts: class {
+    get hasReplySurface() {
+      return h.toastReplySurface;
+    }
     constructor(options: NonNullable<typeof h.toastOptions>) {
       h.toastOptions = options;
     }
@@ -256,6 +271,7 @@ import { ClientHost } from '../../src/main/clientHost';
 import { normalizeSettings } from '../../src/main/settings';
 
 const hosts: ClientHost[] = [];
+const updateLeases: { release(): void }[] = [];
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((finish) => {
@@ -356,6 +372,9 @@ beforeEach(() => {
   h.published.length = 0;
   h.api.epoch = 7;
   h.api.owner = 1;
+  h.mutation = { active: 0, revision: 0 };
+  h.loginOpen = false;
+  h.toastReplySurface = false;
   h.chatQuiet = undefined;
   h.desktopConfig = undefined;
   // Не запускаем bootstrap/сокет: эти тесты проверяют только маршрутизацию
@@ -384,9 +403,205 @@ beforeEach(() => {
   h.timer.mockResolvedValue({ ok: true, data: null });
 });
 afterEach(() => {
+  for (const lease of updateLeases.splice(0)) lease.release();
   for (const host of hosts.splice(0)) host.destroy();
   vi.clearAllTimers();
   vi.useRealTimers();
+});
+
+describe('Host updater boundaries use real IPC and the global shutdown lease', () => {
+  function updater(f: ReturnType<typeof fixture>) {
+    return f.host as unknown as {
+      desktopUpdates: { o: DesktopUpdateControllerOptions };
+      pending: Map<number, number>;
+      pauseFlight: boolean;
+      updateContext: () => { stamp: string; document: string };
+      publish: () => void;
+      flushAbsencePause: () => Promise<void>;
+      openTimer: (mode: 'finish') => unknown;
+      trayWindow?: {
+        isDestroyed(): boolean;
+        isVisible(): boolean;
+        destroy(): void;
+        webContents: { id: number };
+      };
+      trayDrafts?: { contextId: string; revision: number; dirtyCount: number; busy: boolean };
+    };
+  }
+  it('a direct IPC mutation, timer form and tray opening are blocked during the global lease', async () => {
+    const f = fixture(),
+      host = updater(f),
+      before = f.state.navigateTimer;
+    const lease = desktopShutdown.acquire(() => true);
+    if (!lease) throw Error('missing lease');
+    updateLeases.push(lease);
+    expect(
+      await f.invoke({
+        kind: 'chat.send',
+        epoch: 7,
+        chatId: 4,
+        text: 'text',
+        fileIds: [],
+        requestId: 'request-1234',
+      }),
+    ).toMatchObject({ code: 'update_in_progress' });
+    expect(await f.invoke({ kind: 'settings.open', tab: 'about' })).toMatchObject({
+      code: 'update_in_progress',
+    });
+    expect(host.openTimer('finish')).toMatchObject({ code: 'update_in_progress' });
+    expect(f.state.navigateTimer).toBe(before);
+    expect(h.send).not.toHaveBeenCalled();
+    f.host.showMenu({ x: 0, y: 0, width: 1, height: 1 });
+    expect(host.trayWindow).toBeUndefined();
+    expect((await f.invoke({ kind: 'init' })).ok).toBe(true);
+  });
+  it('a durable pause flush leaves the outbox and API untouched during an update', async () => {
+    const f = fixture(),
+      host = updater(f);
+    const lease = desktopShutdown.acquire(() => true);
+    if (!lease) throw Error('missing lease');
+    updateLeases.push(lease);
+    const outbox = (f.host as unknown as { pauseOutbox: PauseOutbox }).pauseOutbox;
+    const replay = vi.spyOn(outbox, 'replay'),
+      settle = vi.spyOn(outbox, 'settle');
+    await host.flushAbsencePause();
+    expect(replay).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+    expect(h.timerPause).not.toHaveBeenCalled();
+  });
+  it('quiescence checks prior IPC, API mutations, pause flight and an open login, then guards future revisions', () => {
+    const f = fixture(),
+      host = updater(f),
+      acquire = host.desktopUpdates.o.acquireQuiescence;
+    host.pending.set(1, 2);
+    expect(acquire()).toBeNull();
+    host.pending.clear();
+    h.mutation.active = 1;
+    expect(acquire()).toBeNull();
+    h.mutation.active = 0;
+    host.pauseFlight = true;
+    expect(acquire()).toBeNull();
+    host.pauseFlight = false;
+    h.loginOpen = true;
+    expect(acquire()).toBeNull();
+    h.loginOpen = false;
+    h.toastReplySurface = true;
+    expect(acquire()).toBeNull();
+    h.toastReplySurface = false;
+    const lease = acquire();
+    if (!lease) throw Error('missing lease');
+    updateLeases.push(lease);
+    expect(lease.current()).toBe(true);
+    h.mutation.revision++;
+    expect(lease.current()).toBe(false);
+    expect(desktopShutdown.locked).toBe(true);
+  });
+  it('an unknown, visible, dirty or busy tray blocks; a freshly reported clean hidden tray permits acquisition', () => {
+    const f = fixture(),
+      host = updater(f);
+    let visible = false;
+    host.trayWindow = {
+      isDestroyed: () => false,
+      isVisible: () => visible,
+      destroy: () => {},
+      webContents: { id: 2 },
+    };
+    const acquire = host.desktopUpdates.o.acquireQuiescence;
+    expect(acquire()).toBeNull();
+    const contextId = host.updateContext().stamp;
+    host.trayDrafts = { contextId, revision: 1, dirtyCount: 1, busy: false };
+    expect(acquire()).toBeNull();
+    host.trayDrafts.dirtyCount = 0;
+    host.trayDrafts.busy = true;
+    expect(acquire()).toBeNull();
+    host.trayDrafts.busy = false;
+    visible = true;
+    expect(acquire()).toBeNull();
+    visible = false;
+    const lease = acquire();
+    if (!lease) throw Error('missing lease');
+    updateLeases.push(lease);
+    expect(lease.current()).toBe(true);
+    host.trayDrafts.dirtyCount = 1;
+    expect(lease.current()).toBe(false);
+    host.trayWindow = undefined;
+  });
+  it('main reload and owner changes invalidate old opaque report tokens', async () => {
+    const f = fixture(),
+      host = updater(f),
+      a = host.updateContext();
+    expect(
+      await f.invoke({
+        kind: 'updates.drafts',
+        contextId: a.stamp,
+        revision: 0,
+        dirtyCount: 0,
+        editorsOpen: 0,
+        busy: false,
+      }),
+    ).toEqual({ ok: true, data: null });
+    f.win.webContents.emit('did-start-navigation', {}, URL, false, true);
+    const b = host.updateContext();
+    expect(b.stamp).not.toBe(a.stamp);
+    expect(b.document).not.toBe(a.document);
+    expect(
+      await f.invoke({
+        kind: 'updates.drafts',
+        contextId: a.stamp,
+        revision: 1,
+        dirtyCount: 0,
+        editorsOpen: 0,
+        busy: false,
+      }),
+    ).toMatchObject({ code: 'stale_session' });
+    h.api.epoch++;
+    host.publish();
+    expect(host.updateContext().stamp).not.toBe(b.stamp);
+  });
+  it('main cannot forge a tray summary and unknown offer IDs do not fetch an installer', async () => {
+    const f = fixture(),
+      host = updater(f),
+      contextId = host.updateContext().stamp;
+    expect(
+      await f.invoke({
+        kind: 'updates.trayDrafts',
+        contextId,
+        revision: 0,
+        dirtyCount: 0,
+        busy: false,
+      }),
+    ).toMatchObject({ code: 'forbidden' });
+    expect((await f.invoke({ kind: 'updates.prepare', offerId: contextId })).ok).toBe(true);
+    expect(h.fetch).not.toHaveBeenCalled();
+    expect(h.quit).not.toHaveBeenCalled();
+  });
+  it('a pending reply popup blocks before confirmation and late OS policy cannot show under a lease', async () => {
+    vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
+    const f = fixture();
+    const host = f.host as unknown as {
+      acceptTimer: (t: ReturnType<typeof timerFixture>) => void;
+      updateContext: () => { stamp: string };
+    };
+    host.acceptTimer(timerFixture());
+    const spec = required(h.toastShow.mock.calls[0])[0] as ToastSpec;
+    h.toastReplySurface = true;
+    expect(
+      await f.invoke({ kind: 'updates.requestLaunch', jobId: host.updateContext().stamp }),
+    ).toMatchObject({ code: 'update_busy' });
+    h.toastReplySurface = false;
+    const delayed = deferred<boolean>();
+    h.policyAllows.mockReturnValueOnce(delayed.promise);
+    const check = required(h.toastOptions).beforeShow(spec);
+    const lease = desktopShutdown.acquire(() => true);
+    if (!lease) throw Error('missing lease');
+    updateLeases.push(lease);
+    delayed.resolve(true);
+    expect(await check).toBe(false);
+    expect(await required(h.toastOptions).onReply(spec, 'private draft')).toMatchObject({
+      ok: false,
+    });
+    expect(h.send).not.toHaveBeenCalled();
+  });
 });
 
 describe('ClientHost: поколение входа проверяется в доверенном main-frame IPC', () => {

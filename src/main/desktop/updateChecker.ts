@@ -131,11 +131,25 @@ export class UpdateChecker {
     this.o.onChange(this.state);
   }
   /** A context change may start a new read without waiting for a stale flight. */
-  reset(): void {
+  reset(preserveDisplay = false): void {
     if (this.destroyed) return;
     this.generation++;
     this.flight = undefined;
-    this.value = initialUpdateState(this.o.enabled);
+    this.value = preserveDisplay
+      ? {
+          ...this.value,
+          status:
+            this.value.status !== 'checking'
+              ? this.value.status
+              : this.value.available
+                ? 'available'
+                : this.value.published
+                  ? 'current'
+                  : this.o.enabled
+                    ? 'idle'
+                    : 'unconfigured',
+        }
+      : initialUpdateState(this.o.enabled);
     this.o.onOffer?.(null, this.o.lifetime?.() ?? '');
     this.emit();
   }

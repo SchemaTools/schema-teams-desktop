@@ -10,7 +10,7 @@ import {
 import { request } from './bridge';
 import { TimerSettings } from './timerSettings';
 import './preferences.css';
-import { UpdatePreferences } from './updates';
+import { UpdatePreferences, type UpdateActions } from './updates';
 import { ServerConfigurationPanel } from './serverConfiguration';
 const tabs = {
   general: ['Общие', Settings],
@@ -23,10 +23,12 @@ export function PreferencesPanel({
   snapshot,
   initialTab,
   onClose,
+  updateActions,
 }: {
   snapshot: ClientSnapshot;
   initialTab: PreferencesTab;
   onClose: () => void;
+  updateActions?: UpdateActions;
 }) {
   const [tab, setTab] = useState(initialTab),
     [loaded, setLoaded] = useState<LocalPreferences | null>(snapshot.preferences ?? null),
@@ -417,7 +419,7 @@ export function PreferencesPanel({
                   Папка открывается на этом компьютере. Журналы никуда не отправляются
                   автоматически.
                 </p>
-                <UpdatePreferences snapshot={snapshot} />
+                <UpdatePreferences snapshot={snapshot} actions={updateActions} />
                 <button onClick={() => void request({ kind: 'report.open' })}>
                   Сообщить о проблеме
                 </button>

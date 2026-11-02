@@ -260,6 +260,34 @@ describe('Published release survives numeric comparison', () => {
 });
 
 describe('Main-only update offers follow the captured lifetime', () => {
+  it('preserves public unpublished/error status across owner reset while clearing executable permission', async () => {
+    const onOffer = vi.fn(),
+      read = vi
+        .fn<() => Promise<ApiResult<DesktopRelease | null>>>()
+        .mockResolvedValueOnce({ ok: true, data: null })
+        .mockResolvedValueOnce({
+          ok: false,
+          code: 'invalid_data',
+          error: 'private',
+          retryable: false,
+        });
+    const checker = new UpdateChecker({
+      enabled: true,
+      currentVersion: '0.6.1',
+      read,
+      onChange: () => {},
+      onOffer,
+    });
+    await checker.check();
+    checker.reset(true);
+    expect(checker.state.status).toBe('unpublished');
+    await checker.check();
+    const error = checker.state.error;
+    checker.reset(true);
+    expect(checker.state).toMatchObject({ status: 'error', error });
+    expect(onOffer.mock.calls.every(([release]) => release === null)).toBe(true);
+    checker.destroy();
+  });
   it('delivers frozen full metadata only to main; errors clear permission but retain display metadata', async () => {
     const release = releaseFixture(),
       onOffer = vi.fn(),

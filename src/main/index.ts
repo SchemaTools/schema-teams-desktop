@@ -9,6 +9,7 @@ import { isServerUrl } from './navigation';
 import { SettingsStore } from './settings';
 import { createTray } from './tray';
 import { ClientHost } from './clientHost';
+import { desktopShutdown } from './desktop/updateShutdown';
 import { applyAutostart, autostartAvailable } from './desktop/autostart';
 import { TeamsApi } from './api/client';
 import { parseServerUrl } from './navigation';
@@ -85,6 +86,7 @@ function start(): void {
   const environmentServer = parseServerUrl(process.env.SCHEMA_TEAMS_SERVER_URL);
   function mount(notice?: string): void {
     if (quitting || !tray) return;
+    desktopShutdown.assertMayReplace();
     const previous = main;
     const selected = resolveServerUrl({
       env: process.env.SCHEMA_TEAMS_SERVER_URL,
@@ -123,10 +125,12 @@ function start(): void {
         });
         return api.health();
       },
-      activateServer: async (candidate) =>
-        switchServer(candidate, {
+      activateServer: async (candidate) => {
+        desktopShutdown.assertMayReplace();
+        await switchServer(candidate, {
           settings,
           stop: () => {
+            desktopShutdown.assertMayReplace();
             client?.prepareServerSwitch();
             client?.destroy();
             client = undefined;
@@ -139,7 +143,8 @@ function start(): void {
             await old.cookies.flushStore();
           },
           mount,
-        }),
+        });
+      },
       applyAutostart: setAutostart,
       autostartAvailable: autostartAvailable(app, process.env.SCHEMA_TEAMS_USER_DATA),
       openLogs: () => shell.openPath(join(app.getPath('userData'), 'logs')),

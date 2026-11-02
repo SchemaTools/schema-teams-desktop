@@ -59,3 +59,17 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+.update-confirm {
+  padding: 12px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+.update-confirm button + button {
+  margin-left: 8px;
+}
+.update-info :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

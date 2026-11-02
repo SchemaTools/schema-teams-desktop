@@ -1,3 +1,5 @@
+import type { DesktopDraftSummary, DesktopUpdateView } from '../../shared/desktopUpdate';
+export type { DesktopDraftSummary, DesktopUpdateView } from '../../shared/desktopUpdate';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { desktopRelease } from '../api/updates';
@@ -28,29 +30,6 @@ export interface DesktopUpdateContext {
   readonly executable: string;
   readonly packaged: boolean;
   readonly windows: boolean;
-}
-export interface DesktopDraftSummary {
-  readonly revision: number;
-  readonly dirtyCount: number;
-  readonly editorsOpen: number;
-  readonly busy: boolean;
-}
-export interface DesktopUpdateView {
-  readonly phase:
-    | 'idle'
-    | 'preparing'
-    | 'ready'
-    | 'confirming'
-    | 'validating'
-    | 'handing-off'
-    | 'handed-off'
-    | 'error';
-  readonly offerId: string | null;
-  readonly jobId: string | null;
-  readonly version: string | null;
-  readonly fraction: number;
-  readonly challenge: Readonly<{ id: string; revision: number; dirtyCount: number }> | null;
-  readonly error: string | null;
 }
 export interface DesktopQuiescence {
   current(): boolean;

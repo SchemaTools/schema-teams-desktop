@@ -33,6 +33,7 @@ export function TraySurface() {
   const [error, setError] = useState('');
   const [drafts, setDrafts] = useState<Record<number, ReplyDraft>>({});
   const draftsRef = useRef(drafts);
+  const updateRevision = useRef(0);
   const [heldChat, setHeldChat] = useState<number | null>(null);
   const [writable, setWritable] = useState<{
     chatId: number;
@@ -80,6 +81,22 @@ export function TraySurface() {
     };
   }, []);
   const online = snapshot?.connection === 'online';
+  const updateBlocked = ['validating', 'handing-off', 'handed-off'].includes(
+    snapshot?.desktopUpdate?.phase ?? '',
+  );
+  useEffect(() => {
+    const update = snapshot?.desktopUpdate;
+    if (!update) return;
+    updateRevision.current++;
+    const all = Object.values(draftsRef.current);
+    void request({
+      kind: 'updates.trayDrafts',
+      contextId: update.contextId,
+      revision: updateRevision.current,
+      dirtyCount: all.filter((d) => d.value.length > 0).length,
+      busy: all.some((d) => d.pending || d.intent != null),
+    });
+  }, [drafts, snapshot?.desktopUpdate?.contextId]);
   const latest = useMemo(() => {
     const chats = snapshot?.chats ?? [];
     if (heldChat !== null) return chats.find((chat) => chat.id === heldChat) ?? null;
@@ -122,6 +139,12 @@ export function TraySurface() {
   }, [latest?.id, snapshot?.epoch, online]);
 
   function patch(chatId: number, edit: (before: ReplyDraft) => ReplyDraft) {
+    if (
+      ['validating', 'handing-off', 'handed-off'].includes(
+        current.current?.desktopUpdate?.phase ?? '',
+      )
+    )
+      return;
     const next = {
       ...draftsRef.current,
       [chatId]: edit(draftsRef.current[chatId] ?? freshDraft()),
@@ -172,7 +195,13 @@ export function TraySurface() {
       ? snapshot.focus.until
       : null;
   return (
-    <main className="tray-root" data-surface="tray">
+    <main
+      className="tray-root"
+      data-surface="tray"
+      ref={(root) => {
+        if (root) root.inert = updateBlocked;
+      }}
+    >
       <header className="tray-user">
         <Avatar name={snapshot?.user?.shortName ?? R.appName} id={snapshot?.user?.id ?? 0} />
         <div>

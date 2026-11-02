@@ -54,6 +54,12 @@ import {
   type LocalPreferences,
 } from '../shared/preferences';
 import { UpdateChecker } from './desktop/updateChecker';
+import { createProductionDesktopUpdateController } from './desktop/updateFactory';
+import { desktopShutdown } from './desktop/updateShutdown';
+import {
+  APPROVED_DESKTOP_PUBLISHER_DER_SHA256,
+  desktopPublisherConfigured,
+} from './desktop/updateTrust';
 import { ServerConfigurationService } from './desktop/serverConfiguration';
 import { supportedServerVersion, MINIMUM_SERVER_VERSION } from '../shared/serverConfiguration';
 import type { Health } from '../shared/client';
@@ -193,6 +199,37 @@ export class ClientHost {
   private readonly absence = new TimerAbsence();
   private readonly reminders = new TimerReminders();
   private readonly updates: UpdateChecker;
+  private updateDocument = randomUUID();
+  private updateStamp = randomUUID();
+  private updateFingerprint?: string;
+  private trayDrafts?: { contextId: string; revision: number; dirtyCount: number; busy: boolean };
+  private readonly desktopUpdates = createProductionDesktopUpdateController({
+    context: () => this.updateContext(),
+    readLatest: async () => {
+      const result = await this.api.latestRelease();
+      if (!result.ok) throw Error(result.code);
+      return result.data;
+    },
+    acquireQuiescence: () => {
+      const stamp = this.updateContext().stamp,
+        mutation = this.api.mutationState;
+      return desktopShutdown.acquire(
+        () =>
+          !this.destroyed &&
+          this.updateContext().stamp === stamp &&
+          !this.pauseFlight &&
+          !this.login?.open &&
+          !this.toasts.hasReplySurface &&
+          this.traySafeForUpdate() &&
+          this.api.mutationState.active === 0 &&
+          this.api.mutationState.revision === mutation.revision &&
+          [...this.pending.values()].reduce((sum, count) => sum + count, 0) <= 1,
+      );
+    },
+    onChange: () => {
+      if (!this.destroyed) this.publish();
+    },
+  });
   private readonly configuration: ServerConfigurationService;
   private readonly inventory: RevitInventoryService;
   private readonly report: ReportService;
@@ -351,6 +388,7 @@ export class ClientHost {
       navigateSettings: o.connectionNotice ? { tab: 'general', nonce: 1 } : null,
     };
     this.api = new TeamsApi({
+      allowMutation: () => !desktopShutdown.locked,
       fetch: (path, init) => {
         if (!o.server || !path.startsWith('/api/') || path.includes('\\'))
           return Promise.reject(new Error('invalid-path'));
@@ -404,6 +442,8 @@ export class ClientHost {
     this.toasts = new CustomToasts({
       beforeShow: (spec) => this.beforeNotice(spec),
       onReply: async (spec, text) => {
+        if (desktopShutdown.locked)
+          return { ok: false, error: 'Дождитесь завершения проверки обновления.' };
         const n = this.notices.get(spec);
         if (!n?.chatId || !this.owned(n)) return { ok: false, error: 'Вход изменился.' };
         if (n.lastText !== text || !n.requestId) {
@@ -542,6 +582,12 @@ export class ClientHost {
     this.peers.set(o.main.win.webContents.id, CLIENT_URL);
     ipcMain.handle('client:request', (e, raw: unknown) => this.receive(e, raw));
     o.main.win.webContents.on('did-finish-load', () => this.publish());
+    o.main.win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+      if (mainFrame && !inPlace) {
+        this.updateDocument = randomUUID();
+        this.syncUpdateContext();
+      }
+    });
     this.ses.cookies.on('changed', this.cookieChanged);
     nativeTheme.on('updated', this.themeChanged);
     powerMonitor.on('lock-screen', this.lock);
@@ -561,19 +607,25 @@ export class ClientHost {
       enabled: Boolean(o.server),
       currentVersion: app.getVersion(),
       read: () => this.api.latestRelease(),
+      lifetime: () => this.updateContext().stamp,
+      onOffer: (release, stamp) => {
+        this.desktopUpdates.setOffer(release, stamp);
+      },
       onChange: (state) => {
         this.state.updates = state;
         this.publish();
       },
     });
     this.state.updates = this.updates.state;
-    this.updates.start();
     this.tick = setInterval(() => {
       if (this.state.focus.until && Date.parse(this.state.focus.until) <= Date.now())
         this.updateFocus({ until: null, startedAt: null });
       this.scheduleRefresh();
     }, 30000);
-    void this.bootstrap();
+    void this.bootstrap().then(
+      () => this.updates.start(),
+      () => this.updates.start(),
+    );
   }
   private invalidate(): void {
     this.invalidatePluginJobs();
@@ -1140,6 +1192,9 @@ export class ClientHost {
     return true;
   }
   private async flushAbsencePause(): Promise<void> {
+    // An update must leave durable pauses queued, never classify a local IO
+    // barrier as an unconfirmed server command or consume the return question.
+    if (desktopShutdown.locked) return;
     const scope = this.pauseScope(),
       epoch = this.api.epoch;
     if (
@@ -1790,6 +1845,7 @@ export class ClientHost {
     );
   }
   private async beforeNotice(spec: ToastSpec): Promise<boolean> {
+    if (desktopShutdown.locked) return false;
     const n = this.notices.get(spec);
     if (!n || !this.current(n)) return false;
     if (n.ordinary || n.mention) {
@@ -1814,7 +1870,7 @@ export class ClientHost {
     const idle = powerMonitor.getSystemIdleState(1);
     if ((idle !== 'active' && idle !== 'idle') || !(await this.policy.allows())) return false;
     const after = powerMonitor.getSystemIdleState(1);
-    return (after === 'active' || after === 'idle') && this.current(n);
+    return !desktopShutdown.locked && (after === 'active' || after === 'idle') && this.current(n);
   }
   private openNotice(n: Notice): void {
     if (n.reminder) this.openTimer('finish');
@@ -1838,6 +1894,7 @@ export class ClientHost {
     prepareExpected?: import('../shared/time').TimerExpected,
   ): ApiResult<null> {
     if (this.destroyed) return failure('stale_session');
+    if (desktopShutdown.locked) return failure('update_in_progress');
     if (mode === 'finish' && (!this.state.user || this.state.connection !== 'online')) {
       const error = 'Нет связи. Подключитесь к серверу, чтобы закончить работу.';
       this.state.error = error;
@@ -1879,6 +1936,26 @@ export class ClientHost {
     )
       return failure('validation');
     if ('epoch' in raw && raw.epoch !== this.api.epoch) return failure('stale_session');
+    if (
+      raw.kind.startsWith('updates.') &&
+      !['updates.check', 'updates.later', 'updates.trayDrafts'].includes(raw.kind) &&
+      event.sender.id !== this.o.main.win.webContents.id
+    )
+      return failure('forbidden');
+    if (raw.kind === 'updates.trayDrafts' && event.sender.id !== this.trayWindow?.webContents.id)
+      return failure('forbidden');
+    if (
+      desktopShutdown.locked &&
+      ![
+        'init',
+        'updates.cancel',
+        'updates.drafts',
+        'updates.trayDrafts',
+        'window.hide',
+        'app.quit',
+      ].includes(raw.kind)
+    )
+      return failure('update_in_progress');
     const count = this.pending.get(event.sender.id) ?? 0;
     if (count >= 8) return failure('server_error');
     this.pending.set(event.sender.id, count + 1);
@@ -1994,6 +2071,40 @@ export class ClientHost {
         return this.configuration.apply(r.url, r.token);
       case 'updates.check':
         return ok(await this.updates.check());
+      case 'updates.trayDrafts': {
+        const { contextId, revision, dirtyCount, busy } = r;
+        if (
+          contextId !== this.updateContext().stamp ||
+          (this.trayDrafts?.contextId === contextId &&
+            (revision < this.trayDrafts.revision ||
+              (revision === this.trayDrafts.revision &&
+                (dirtyCount !== this.trayDrafts.dirtyCount || busy !== this.trayDrafts.busy))))
+        )
+          return failure('stale_session');
+        this.trayDrafts = { contextId, revision, dirtyCount, busy };
+        if (desktopShutdown.locked && !this.traySafeForUpdate()) this.desktopUpdates.invalidate();
+        return ok(null);
+      }
+      case 'updates.prepare':
+        return ok(await this.desktopUpdates.prepare(r.offerId));
+      case 'updates.cancel':
+        return ok(await this.desktopUpdates.cancel(r.jobId));
+      case 'updates.requestLaunch':
+        if (!this.traySafeForUpdate() || this.toasts.hasReplySurface) return failure('update_busy');
+        return ok(this.desktopUpdates.requestLaunch(r.jobId));
+      case 'updates.acknowledge':
+        return ok(await this.desktopUpdates.acknowledge(r.challengeId, r.decision));
+      case 'updates.drafts': {
+        const { revision, dirtyCount, editorsOpen, busy } = r;
+        return this.desktopUpdates.reportDrafts(this.updateDocument, r.contextId, {
+          revision,
+          dirtyCount,
+          editorsOpen,
+          busy,
+        })
+          ? ok(null)
+          : failure('stale_session');
+      }
       case 'updates.later':
         return this.updates.later(r.version) ? ok(null) : failure('validation');
       case 'settings.read':
@@ -2529,7 +2640,54 @@ export class ClientHost {
       this.publish();
     }
   }
+  private syncUpdateContext(): void {
+    const fingerprint = JSON.stringify([
+      this.serverScopeHash,
+      this.api?.epoch,
+      this.api?.owner,
+      this.state?.connection,
+      this.updateDocument,
+    ]);
+    if (fingerprint === this.updateFingerprint) return;
+    this.updateFingerprint = fingerprint;
+    this.updateStamp = randomUUID();
+    this.trayDrafts = undefined;
+    this.desktopUpdates.invalidate();
+    const interruptedRead = this.updates?.state.status === 'checking';
+    this.updates?.reset(true);
+    if (interruptedRead)
+      queueMicrotask(() => {
+        if (!this.destroyed) void this.updates.check();
+      });
+  }
+  private updateContext() {
+    this.syncUpdateContext();
+    return {
+      stamp: this.updateStamp,
+      document: this.updateDocument,
+      serverOrigin: this.o.server?.origin ?? '',
+    };
+  }
+  private traySafeForUpdate(): boolean {
+    if (!this.trayWindow || this.trayWindow.isDestroyed()) return true;
+    return (
+      !this.trayWindow.isVisible() &&
+      this.trayDrafts?.contextId === this.updateStamp &&
+      this.trayDrafts.dirtyCount === 0 &&
+      !this.trayDrafts.busy
+    );
+  }
   private publish(): void {
+    this.syncUpdateContext();
+    this.state.desktopUpdate = {
+      ...this.desktopUpdates.state,
+      contextId: this.updateStamp,
+      documentId: this.updateDocument,
+      installationAvailable:
+        process.platform === 'win32' &&
+        app.isPackaged &&
+        desktopPublisherConfigured(APPROVED_DESKTOP_PUBLISHER_DER_SHA256),
+    };
     const pluginStamp = JSON.stringify(this.pluginContext());
     if (pluginStamp !== this.pluginContextStamp) {
       this.invalidatePluginJobs();
@@ -2696,6 +2854,7 @@ export class ClientHost {
     return ok(this.preferences());
   }
   showMenu(bounds: Rectangle): void {
+    if (desktopShutdown.locked) return;
     if (!this.trayWindow || this.trayWindow.isDestroyed()) {
       const win = new BrowserWindow({
         width: 400,
@@ -2715,6 +2874,7 @@ export class ClientHost {
         },
       });
       this.trayWindow = win;
+      this.trayDrafts = undefined;
       guardLocal(win.webContents);
       this.peers.set(win.webContents.id, `${CLIENT_URL}?surface=tray`);
       win.on('blur', () => win.hide());
@@ -2722,8 +2882,14 @@ export class ClientHost {
         this.peers.delete(win.webContents.id);
       });
       win.webContents.on('did-finish-load', () => this.publish());
+      win.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
+        if (mainFrame && !inPlace) {
+          this.trayDrafts = undefined;
+          this.desktopUpdates.invalidate();
+        }
+      });
       void win.loadFile(CLIENT_FILE, { query: { surface: 'tray' } }).then(() => {
-        if (!win.isDestroyed()) {
+        if (!win.isDestroyed() && !desktopShutdown.locked) {
           win.show();
           win.focus();
         }
@@ -2742,12 +2908,13 @@ export class ClientHost {
     }
   }
   destroy(): void {
+    this.destroyed = true;
     this.invalidatePluginJobs();
     this.report.clear();
     this.configuration.destroy();
     this.updates.destroy();
+    this.desktopUpdates.destroy();
     clearInterval(this.tick);
-    this.destroyed = true;
     this.pluginCatalog.reset();
     this.boot++;
     clearTimeout(this.refreshTimer);

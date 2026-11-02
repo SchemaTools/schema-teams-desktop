@@ -7,6 +7,9 @@ import { reportOptionsValid } from './report';
 import { pluginCode } from './plugins';
 const id = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const text = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
+const uuid = (v: unknown) =>
+  typeof v === 'string' &&
+  /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(v);
 export function requestValid(raw: unknown): raw is DesktopRequest {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false;
   const r = raw as Record<string, unknown>;
@@ -24,6 +27,12 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     'logs.open',
     'updates.check',
     'updates.later',
+    'updates.prepare',
+    'updates.cancel',
+    'updates.requestLaunch',
+    'updates.acknowledge',
+    'updates.drafts',
+    'updates.trayDrafts',
     'server.read',
     'server.check',
     'server.apply',
@@ -124,6 +133,35 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       );
     case 'updates.check':
       return only();
+    case 'updates.prepare':
+      return only('offerId') && uuid(r.offerId);
+    case 'updates.cancel':
+    case 'updates.requestLaunch':
+      return only('jobId') && uuid(r.jobId);
+    case 'updates.acknowledge':
+      return (
+        only('challengeId', 'decision') &&
+        uuid(r.challengeId) &&
+        (r.decision === 'cancel' || r.decision === 'discard')
+      );
+    case 'updates.drafts':
+      return (
+        only('contextId', 'revision', 'dirtyCount', 'editorsOpen', 'busy') &&
+        uuid(r.contextId) &&
+        [r.revision, r.dirtyCount, r.editorsOpen].every(
+          (x) => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0,
+        ) &&
+        typeof r.busy === 'boolean'
+      );
+    case 'updates.trayDrafts':
+      return (
+        only('contextId', 'revision', 'dirtyCount', 'busy') &&
+        uuid(r.contextId) &&
+        [r.revision, r.dirtyCount].every(
+          (x) => typeof x === 'number' && Number.isSafeInteger(x) && x >= 0,
+        ) &&
+        typeof r.busy === 'boolean'
+      );
     case 'updates.later':
       return only('version') && releaseVersionValid(r.version);
     case 'settings.read':

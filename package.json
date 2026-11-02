@@ -17,8 +17,9 @@
     "format": "prettier --write .",
     "test": "node scripts/build-plugin-signature.mjs && node scripts/build-plugin-manifest.mjs && node scripts/build-plugin-safety.mjs && vitest run",
     "test:e2e": "npm run build && playwright test",
-    "dist": "npm run build && electron-builder --win nsis --publish never && node scripts/copy-release-notes.mjs",
-    "check": "npm run typecheck && npm run lint && npm test && npm run test:e2e"
+    "dist": "npm run build && electron-builder --win nsis --publish never && node scripts/check-packaged-runtime.mjs release/win-unpacked/resources/app.asar && node scripts/copy-release-notes.mjs",
+    "check": "npm run typecheck && npm run lint && npm test && npm run test:e2e",
+    "check:package": "node scripts/check-packaged-runtime.mjs release/win-unpacked/resources/app.asar"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

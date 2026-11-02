@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChatMessage } from '../shared/client';
 import { request } from './bridge';
 import './messageActions.css';
+import { useUpdateEditor } from './updateEditors';
 
 export function MessageActions({
   message,
@@ -34,6 +35,7 @@ export function MessageActions({
     [text, setText] = useState(message.text),
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
+  useUpdateEditor(mode !== null, busy);
   useEffect(() => {
     mounted.current = true;
     return () => {

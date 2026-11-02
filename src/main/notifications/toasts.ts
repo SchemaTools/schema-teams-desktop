@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { S } from '../strings';
 import { customToastPage } from './page';
 import type { ToastSpec } from './types';
+import { desktopShutdown } from '../desktop/updateShutdown';
 
 const CHANNEL = 'desktop:toast';
 const RESULT = 'desktop:toast-result';
@@ -36,6 +37,12 @@ interface Options {
 export class CustomToasts {
   private readonly entries = new Map<string, Entry>();
   private arranging = false;
+  /** A clean or pending reply window blocks exit: draft IPC may be in flight. */
+  get hasReplySurface(): boolean {
+    return [...this.entries.values()].some(
+      (entry) => entry.spec.hasReply && !entry.win.isDestroyed(),
+    );
+  }
   private readonly onIpc = (event: IpcMainEvent, raw: unknown) => this.receive(event, raw);
   private readonly reposition = () => this.layout();
 
@@ -46,6 +53,7 @@ export class CustomToasts {
   }
 
   show(spec: ToastSpec): boolean {
+    if (desktopShutdown.locked) return false;
     const area = screen.getPrimaryDisplay().workArea;
     const height = Math.min(spec.hasReply ? 258 : 194, area.height - GAP * 2);
     const previous = this.entries.get(spec.id);
@@ -133,7 +141,7 @@ export class CustomToasts {
       // Неизвестное состояние системы не разрешает всплывающее окно или звук.
     }
     if (entry.win.isDestroyed()) return;
-    if (!allowed) {
+    if (!allowed || desktopShutdown.locked) {
       entry.win.close();
       return;
     }

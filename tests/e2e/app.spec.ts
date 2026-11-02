@@ -119,7 +119,15 @@ test('✕ прячет окно, процесс остаётся, подсказ
   const app = await launch(profile);
   await expect((await app.firstWindow()).locator('.app-shell')).toBeAttached();
   await expect.poll(async () => (await mainState(app))?.visible).toBe(true);
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close());
+  await app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()
+      .find(
+        (w) =>
+          w.webContents.getURL().startsWith('file:') &&
+          !w.webContents.getURL().includes('surface='),
+      )
+      ?.close(),
+  );
   await expect.poll(async () => (await mainState(app))?.visible).toBe(false);
   const readSettings = () =>
     JSON.parse(readFileSync(join(profile, 'settings.json'), 'utf8')) as {
@@ -129,7 +137,10 @@ test('✕ прячет окно, процесс остаётся, подсказ
   expect(readSettings().trayHintShown).toBe(true);
   expect(readSettings().window.bounds.width).toBeGreaterThan(0);
   await app.evaluate(({ BrowserWindow }) => {
-    const w = BrowserWindow.getAllWindows()[0];
+    const w = BrowserWindow.getAllWindows().find(
+      (w) =>
+        w.webContents.getURL().startsWith('file:') && !w.webContents.getURL().includes('surface='),
+    );
     w?.show();
     w?.close();
   });

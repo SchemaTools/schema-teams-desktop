@@ -91,6 +91,7 @@ export interface ClientSnapshot {
   preferences?: LocalPreferences;
   navigateSettings?: { tab: PreferencesTab; nonce: number } | null;
   updates?: UpdateState;
+  desktopUpdate?: import('./desktopUpdate').DesktopUpdateSnapshot;
   setupRequired?: boolean;
   navigateSetup?: number;
   navigateReport?: number;
@@ -103,6 +104,17 @@ export type DesktopRequest =
   | { kind: 'settings.patch'; patch: PreferencesPatch }
   | { kind: 'updates.check' }
   | { kind: 'updates.later'; version: string }
+  | { kind: 'updates.prepare'; offerId: string }
+  | { kind: 'updates.cancel' | 'updates.requestLaunch'; jobId: string }
+  | { kind: 'updates.acknowledge'; challengeId: string; decision: 'cancel' | 'discard' }
+  | ({ kind: 'updates.drafts'; contextId: string } & import('./desktopUpdate').DesktopDraftSummary)
+  | {
+      kind: 'updates.trayDrafts';
+      contextId: string;
+      revision: number;
+      dirtyCount: number;
+      busy: boolean;
+    }
   | { kind: 'server.read' }
   | { kind: 'server.check'; url: string }
   | { kind: 'server.apply'; url: string; token: string }
@@ -223,6 +235,12 @@ export interface DesktopResponseMap {
   'logs.open': null;
   'updates.check': UpdateState;
   'updates.later': null;
+  'updates.prepare': import('./desktopUpdate').DesktopUpdateView;
+  'updates.cancel': boolean;
+  'updates.requestLaunch': import('./desktopUpdate').DesktopUpdateView;
+  'updates.acknowledge': import('./desktopUpdate').DesktopUpdateView;
+  'updates.drafts': null;
+  'updates.trayDrafts': null;
   'server.read': ServerConfiguration;
   'server.check': ServerCheck;
   'server.apply': null;
