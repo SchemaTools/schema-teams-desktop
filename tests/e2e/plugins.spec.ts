@@ -202,6 +202,30 @@ test('empty catalog, forbidden response and retry are honest; no install or back
   await panel.getByRole('button', { name: 'Проверить', exact: true }).click();
   await expect(panel.getByRole('heading', { name: 'Планы этажей' })).toBeVisible();
 });
+test('direct install IPC cannot supply paths or override production trust', async () => {
+  const page = await launch(),
+    panel = pagePlugins(page);
+  await expect(panel.getByRole('button', { name: 'Установить', exact: true })).toBeDisabled();
+  const results = await page.evaluate(async () => {
+    const snapshot = await window.teams.request({ kind: 'init' });
+    if (!snapshot.ok) throw Error('Snapshot');
+    const intent = {
+      kind: 'plugins.install' as const,
+      epoch: snapshot.data.epoch,
+      code: 'floor-plans',
+      years: [2025 as const],
+    };
+    const valid = await window.teams.request(intent);
+    const forged = await window.teams.request({
+      ...intent,
+      targetRoot: 'C:\\outside',
+    } as typeof intent);
+    return { valid, forged };
+  });
+  expect(results.valid).toMatchObject({ ok: false, code: 'plugin_job_blocked' });
+  expect(results.forged).toMatchObject({ ok: false, code: 'validation' });
+  expect(stub.state.calls.some((c) => c.path.includes('/plugins/files/'))).toBe(false);
+});
 test('missing capability never calls catalog; stale IPC epoch is rejected', async () => {
   if (!stub.state.desktopConfig) throw Error('No config');
   stub.state.desktopConfig.capabilities = { timerControl: 2 };

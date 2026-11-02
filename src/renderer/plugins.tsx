@@ -10,6 +10,7 @@ export function PluginsPage({ snapshot }: { snapshot: ClientSnapshot }) {
     online = snapshot.connection === 'online' && !!snapshot.user;
   const [error, setError] = useState(''),
     [pending, setPending] = useState(false),
+    [years, setYears] = useState<Record<string, (2025 | 2026)[]>>({}),
     [choice, setChoice] = useState({
       beta: !!state?.beta,
       autoUpdate: state?.autoUpdate !== false,
@@ -38,6 +39,23 @@ export function PluginsPage({ snapshot }: { snapshot: ClientSnapshot }) {
     setPending(false);
   }
   const catalog = state?.catalog;
+  const managed = state?.managed,
+    available = managed?.installationAvailable === true && managed.status === 'ready';
+  async function job(
+    intent:
+      | { kind: 'plugins.install'; code: string; years: (2025 | 2026)[] }
+      | { kind: 'plugins.rollback'; receiptId: string }
+      | { kind: 'plugins.recover' },
+  ) {
+    setPending(true);
+    setError('');
+    try {
+      const result = await request({ ...intent, epoch: snapshot.epoch });
+      if (!result.ok) setError(result.error);
+    } finally {
+      setPending(false);
+    }
+  }
   return (
     <section className="plugins-page" aria-label="Плагины Revit">
       <div className="plugins-column">
@@ -47,7 +65,11 @@ export function PluginsPage({ snapshot }: { snapshot: ClientSnapshot }) {
           </span>
           <div>
             <h1>Плагины Revit</h1>
-            <p>Сведения об установленных версиях пока неизвестны.</p>
+            <p>
+              {managed?.status === 'ready'
+                ? 'Управляемые версии проверены по локальным файлам и подписи.'
+                : 'Сведения об установленных версиях пока неизвестны.'}
+            </p>
           </div>
           <button
             type="button"
@@ -63,16 +85,45 @@ export function PluginsPage({ snapshot }: { snapshot: ClientSnapshot }) {
             Проверить
           </button>
         </header>
-        <div className="plugins-trust" role="status">
-          <CircleAlert size={22} />
-          <div>
-            <b>{PLUGIN_INSTALL_BLOCKED}</b>
-            <p>
-              Каталог не подтверждает подпись DLL. Автоматическая установка и загрузка пакетов
-              отключены до настройки доверия и проверки установки.
-            </p>
+        {!available && (
+          <div className="plugins-trust" role="status">
+            <CircleAlert size={22} />
+            <div>
+              <b>
+                {managed?.status === 'recovery'
+                  ? 'Обнаружена незавершённая операция.'
+                  : managed?.status === 'blocked'
+                    ? 'Управляемые файлы не прошли проверку.'
+                    : PLUGIN_INSTALL_BLOCKED}
+              </b>
+              <p>
+                {managed?.status === 'recovery'
+                  ? 'Файлы сохранены. Восстановление проверит предыдущий набор перед его активацией.'
+                  : managed?.status === 'blocked'
+                    ? 'Установка и откат заблокированы. Проверьте подключение и повторите проверку файлов.'
+                    : 'Каталог не подтверждает подпись DLL. Автоматическая установка и загрузка пакетов отключены до настройки доверия и проверки установки.'}
+              </p>
+            </div>
           </div>
-        </div>
+        )}
+        {managed?.status === 'recovery' && managed.installationAvailable && (
+          <button
+            disabled={pending || !online}
+            onClick={() => void job({ kind: 'plugins.recover' })}
+          >
+            Восстановить незавершённую операцию
+          </button>
+        )}
+        {managed?.status === 'ready' && managed.receiptId && (
+          <button
+            disabled={pending || !online}
+            onClick={() =>
+              void job({ kind: 'plugins.rollback', receiptId: managed.receiptId as string })
+            }
+          >
+            Проверить и откатить предыдущий набор
+          </button>
+        )}
         {error && <p role="alert">{error}</p>}
         {state?.error && <p role="alert">{state.error}</p>}
         {!online ? (
@@ -105,7 +156,15 @@ export function PluginsPage({ snapshot }: { snapshot: ClientSnapshot }) {
                           {beta ? 'Пробная' : 'Рабочая'} · Revit {build.revit.join(', ')}
                         </p>
                         <p>
-                          Установка не подтверждена
+                          {managed?.status === 'ready' &&
+                          managed.packages.some((x) => x.code === p.code)
+                            ? managed.packages
+                                .filter((x) => x.code === p.code)
+                                .map(
+                                  (x) => `Установлено ${x.version} · Revit ${x.years.join(', ')}`,
+                                )
+                                .join('; ')
+                            : 'Установка не подтверждена'}
                           {!build.verified ? ' · Сборка не отмечена проверенной' : ''}
                         </p>
                         <details>
@@ -122,12 +181,50 @@ export function PluginsPage({ snapshot }: { snapshot: ClientSnapshot }) {
                               : 'не указаны'}
                           </p>
                         </details>
+                        {build.revit
+                          .filter((year): year is 2025 | 2026 => year === 2025 || year === 2026)
+                          .map((year) => (
+                            <label key={year}>
+                              <input
+                                type="checkbox"
+                                aria-label={`${p.name}: Revit ${year}`}
+                                checked={years[p.code]?.includes(year) ?? false}
+                                disabled={
+                                  !available ||
+                                  pending ||
+                                  !inventory?.years.some(
+                                    (y) => y.year === year && y.executable === 'found',
+                                  )
+                                }
+                                onChange={(e) =>
+                                  setYears((before) => ({
+                                    ...before,
+                                    [p.code]: e.target.checked
+                                      ? [...(before[p.code] ?? []), year]
+                                      : (before[p.code] ?? []).filter((y) => y !== year),
+                                  }))
+                                }
+                              />
+                              Revit {year}
+                            </label>
+                          ))}
                       </>
                     ) : (
                       <p>Нет доступной сборки.</p>
                     )}
                   </div>
-                  <button type="button" disabled title={PLUGIN_INSTALL_BLOCKED}>
+                  <button
+                    type="button"
+                    disabled={!online || !available || pending || !build || !years[p.code]?.length}
+                    title={!available ? PLUGIN_INSTALL_BLOCKED : undefined}
+                    onClick={() =>
+                      void job({
+                        kind: 'plugins.install',
+                        code: p.code,
+                        years: years[p.code] ?? [],
+                      })
+                    }
+                  >
                     Установить
                   </button>
                 </article>

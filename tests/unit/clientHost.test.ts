@@ -109,7 +109,11 @@ vi.mock('electron', async () => {
   const cookies = Object.assign(new EventEmitter(), { get: h.cookiesGet, remove: h.cookiesRemove });
   const ses = { cookies, fetch: h.fetch, protocol: { handle: vi.fn(), unhandle: vi.fn() } };
   return {
-    app: { getVersion: () => '0.6.0', quit: h.quit },
+    app: {
+      getVersion: () => '0.6.0',
+      quit: h.quit,
+      getPath: (name: string) => `${process.cwd()}/private/host-profile/${name}`,
+    },
     BrowserWindow: class extends EventEmitter {},
     ipcMain: {
       handle: (name: string, fn: Handler) => h.handlers.set(name, fn),
@@ -2279,6 +2283,100 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
     h.plugins.mockResolvedValue({ ok: true, data: { tester: true, plugins: [] } });
     return f;
   };
+  it('IPC accepts intent only; paths, trust pins, plans and unsupported years are rejected', () => {
+    const install = { kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] };
+    expect(requestValid(install)).toBe(true);
+    for (const extra of [
+      { targetRoot: 'C:\\outside' },
+      { publisherPins: ['a'.repeat(64)] },
+      { plan: {} },
+      { years: [2027] },
+      { years: [2025, 2025] },
+      { code: '../foreign' },
+    ])
+      expect(requestValid({ ...install, ...extra })).toBe(false);
+    expect(requestValid({ kind: 'plugins.rollback', epoch: 7, receiptId: '../previous' })).toBe(
+      false,
+    );
+    expect(requestValid({ kind: 'plugins.recover', epoch: 7, path: 'C:\\outside' })).toBe(false);
+  });
+  it('a direct install intent cannot bypass the unconfigured production trust policy', async () => {
+    const f = setup();
+    await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+    h.plugins.mockClear();
+    expect(
+      await f.invoke({ kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] }),
+    ).toMatchObject({
+      ok: false,
+      code: 'plugin_job_blocked',
+      error: expect.stringContaining('не настроены'),
+    });
+    expect(h.plugins).not.toHaveBeenCalled();
+    expect(f.state.plugins?.managed?.installationAvailable).toBe(false);
+  });
+  it.each(['owner', 'same-epoch-lifetime'] as const)(
+    'a held install preflight cannot restart the old intent in a new %s context',
+    async (kind) => {
+      const f = setup();
+      await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+      const owned = f.host as unknown as {
+        pluginJobs: {
+          inspect: () => Promise<import('../../src/shared/plugins').ManagedPluginsView>;
+          install: () => Promise<unknown>;
+        };
+        inventory: { inspect: () => Promise<unknown> };
+        publish: () => void;
+        configEpoch: number;
+      };
+      const pending = deferred<import('../../src/shared/plugins').ManagedPluginsView>();
+      const inspect = vi.spyOn(owned.pluginJobs, 'inspect').mockReturnValueOnce(pending.promise),
+        install = vi.spyOn(owned.pluginJobs, 'install'),
+        inventory = vi.spyOn(owned.inventory, 'inspect');
+      const work = f.invoke({
+        kind: 'plugins.install',
+        epoch: 7,
+        code: 'floor-plans',
+        years: [2025],
+      });
+      await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
+      if (kind === 'owner') {
+        h.api.owner = 2;
+        h.api.epoch = 8;
+        f.state.epoch = 8;
+        f.state.user = { id: 2, shortName: 'Другой', mustChangePassword: false };
+        owned.configEpoch = 8;
+        owned.publish();
+      } else {
+        f.state.connection = 'offline';
+        owned.publish();
+        f.state.connection = 'online';
+        owned.publish();
+      }
+      pending.resolve({
+        status: 'unavailable',
+        installationAvailable: false,
+        receiptId: null,
+        packages: [],
+      });
+      expect(await work).toMatchObject({ ok: false, code: 'stale_session' });
+      expect(install).not.toHaveBeenCalled();
+      expect(inventory).not.toHaveBeenCalled();
+    },
+  );
+  it('an offline→online transition invalidates the previous job lifetime even within the same epoch', async () => {
+    const f = setup();
+    await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+    const owned = f.host as unknown as {
+      pluginJobs: { invalidate: () => void };
+      publish: () => void;
+    };
+    const invalidated = vi.spyOn(owned.pluginJobs, 'invalidate');
+    f.state.connection = 'offline';
+    owned.publish();
+    f.state.connection = 'online';
+    owned.publish();
+    expect(invalidated).toHaveBeenCalledTimes(2);
+  });
   it('local beta opt-in belongs to current server+owner, and tester removal gates it immediately', async () => {
     const f = setup();
     await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
@@ -2329,5 +2427,42 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
     expect(await work).toMatchObject({ ok: false, code: 'stale_session' });
     expect(h.published).toHaveLength(before);
     expect(replacement.state.plugins?.catalog ?? null).toBeNull();
+  });
+});
+
+describe('T1 finish requires online at the common main entrypoint', () => {
+  it('offline IPC/tray mode finish does not change navigation or issue a timer command, online still opens', async () => {
+    const f = fixture();
+    f.state.connection = 'offline';
+    const before = f.state.navigateTimer;
+    expect(await f.invoke({ kind: 'timer.open', epoch: 7, mode: 'finish' })).toMatchObject({
+      ok: false,
+      code: 'offline',
+    });
+    expect(f.state.navigateTimer).toBe(before);
+    expect(f.state.error).toContain('Подключитесь к серверу');
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(h.timerProposal).not.toHaveBeenCalled();
+    expect(h.timerFinish).not.toHaveBeenCalled();
+    f.state.connection = 'online';
+    expect(await f.invoke({ kind: 'timer.open', epoch: 7, mode: 'finish' })).toEqual({
+      ok: true,
+      data: null,
+    });
+    expect(f.state.navigateTimer?.mode).toBe('finish');
+  });
+  it('reminder button and body share offline guard and never open finish', () => {
+    vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
+    const f = fixture();
+    (
+      f.host as unknown as { acceptTimer: (t: ReturnType<typeof timerFixture>) => void }
+    ).acceptTimer(timerFixture());
+    const spec = required(h.toastShow.mock.calls[0])[0] as ToastSpec;
+    f.state.connection = 'offline';
+    required(h.toastOptions).onButton(spec, 0);
+    required(h.toastOptions).onOpen(spec);
+    expect(f.state.navigateTimer).toBeUndefined();
+    expect(h.timerPause).not.toHaveBeenCalled();
+    expect(h.timerFinish).not.toHaveBeenCalled();
   });
 });

@@ -274,6 +274,28 @@ test('offline запрещает запись и сохраняет редакт
   await expect(p.getByLabel('Примечание', { exact: true })).toHaveValue('Черновик при обрыве');
   expect(stub.state.timerWrites).toHaveLength(0);
 });
+test('offline finish does not open a new form through main button or direct IPC', async () => {
+  stub.state.timers[1] = liveTimer();
+  const page = await launch();
+  await dialog(page).getByRole('button', { name: 'Закрыть таймер' }).click();
+  stub.state.healthOnline = false;
+  stub.disconnect();
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'offline');
+  const before = writes().length;
+  await page.getByRole('button', { name: 'Таймер', exact: true }).click();
+  await expect(dialog(page)).toHaveCount(0);
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Подключитесь к серверу, чтобы закончить работу' }),
+  ).toBeVisible();
+  const blocked = await page.evaluate(async () => {
+    const s = await window.teams.request({ kind: 'init' });
+    if (!s.ok) throw Error('No snapshot');
+    return window.teams.request({ kind: 'timer.open', epoch: s.data.epoch, mode: 'finish' });
+  });
+  expect(blocked).toMatchObject({ ok: false, code: 'offline' });
+  expect(writes()).toHaveLength(before);
+  await expect(dialog(page)).toHaveCount(0);
+});
 test('назначение открывает собственный выбор задачи без автоматического запуска', async () => {
   stub.state.timers[1] = liveTimer();
   const page = await launch();

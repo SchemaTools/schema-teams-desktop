@@ -63,6 +63,8 @@ import { ReportService, type ReportBackend } from './diagnostics/service';
 import { SupportLedger, supportStorage } from './diagnostics/ledger';
 import { SupportSender, type SupportContext } from './diagnostics/sender';
 import { PluginCatalogService } from './plugins/catalog';
+import { createProductionPluginController, type PluginJobContext } from './plugins/controller';
+import type { ManagedPluginsView } from '../shared/plugins';
 import {
   MorningNotices,
   bureauMorning,
@@ -144,6 +146,27 @@ export class ClientHost {
       if (!this.destroyed) this.publish();
     },
     now: () => performance.now(),
+  });
+  private pluginGeneration = 0;
+  private pluginContextStamp?: string;
+  private pluginManaged: ManagedPluginsView = {
+    status: 'unavailable',
+    installationAvailable: false,
+    receiptId: null,
+    packages: [],
+  };
+  private readonly pluginJobs = createProductionPluginController({
+    context: () => this.pluginContext(),
+    readCatalog: async () => {
+      const result = await this.api.plugins();
+      if (!result.ok) throw Error(result.code);
+      return result.data;
+    },
+    download: async (build, root, signal) => {
+      const result = await this.api.downloadPlugin(build, root, signal);
+      if (!result.ok) throw Error(result.code);
+      return result.data;
+    },
   });
   private trayWindow?: BrowserWindow;
   private readonly peers = new Map<number, string>();
@@ -410,10 +433,11 @@ export class ClientHost {
             return;
           if (index === 0) void this.resumePauseReturn(n);
           else {
+            if (!this.openTimer('finish', undefined, n.recovery.expected).ok) return;
             const scope = this.pauseScope();
             if (scope && !this.pauseReturns.dismiss(scope, n.recovery.key))
               this.storageWarning = true;
-            this.openTimer('finish', undefined, n.recovery.expected);
+            this.publish();
           }
           return;
         }
@@ -552,6 +576,7 @@ export class ClientHost {
     void this.bootstrap();
   }
   private invalidate(): void {
+    this.invalidatePluginJobs();
     this.pluginCatalog.reset();
     this.configEpoch = -1;
     this.timerEpoch = -1;
@@ -603,6 +628,7 @@ export class ClientHost {
     this.publish();
   }
   private signedOut(): void {
+    this.invalidatePluginJobs();
     this.pluginCatalog.reset();
     this.configEpoch = -1;
     this.timerEpoch = -1;
@@ -1457,6 +1483,7 @@ export class ClientHost {
   private event(name: RealtimeEvent, data: unknown): void {
     this.o.log.info('событие клиента', { event: name });
     if (name === 'desktop:plugins') {
+      this.invalidatePluginJobs();
       this.pluginCatalog.invalidate();
       return;
     }
@@ -1809,7 +1836,16 @@ export class ClientHost {
     mode: 'pick' | 'finish',
     taskId?: number,
     prepareExpected?: import('../shared/time').TimerExpected,
-  ): void {
+  ): ApiResult<null> {
+    if (this.destroyed) return failure('stale_session');
+    if (mode === 'finish' && (!this.state.user || this.state.connection !== 'online')) {
+      const error = 'Нет связи. Подключитесь к серверу, чтобы закончить работу.';
+      this.state.error = error;
+      this.o.main.show();
+      this.trayWindow?.hide();
+      this.publish();
+      return { ok: false, code: 'offline', error, retryable: false };
+    }
     this.state.navigateTimer = {
       mode,
       ...(prepareExpected && { prepareExpected }),
@@ -1819,6 +1855,7 @@ export class ClientHost {
     this.o.main.show();
     this.trayWindow?.hide();
     this.publish();
+    return ok(null);
   }
   private site(path: string): ApiResult<null> {
     if (
@@ -2061,6 +2098,7 @@ export class ClientHost {
     if (!this.api.owner || this.state.user?.mustChangePassword) return failure('unauthenticated');
     if (r.kind === 'plugins.refresh') {
       await this.pluginCatalog.refresh(true);
+      await this.refreshManagedPlugins();
       return !this.destroyed && r.epoch === this.api.epoch
         ? ok(this.pluginCatalog.state)
         : failure('stale_session');
@@ -2072,6 +2110,7 @@ export class ClientHost {
       )
         return failure('forbidden');
       if (r.beta === true && !this.pluginCatalog.state.catalog?.tester) return failure('forbidden');
+      this.invalidatePluginJobs();
       const before = this.o.settings.get().plugins ?? { betaScopes: [], autoUpdate: true };
       const scope = `${this.serverScopeHash}:${this.api.owner}`;
       const betaScopes =
@@ -2085,6 +2124,68 @@ export class ClientHost {
       });
       this.publish();
       return ok(null);
+    }
+    if (
+      r.kind === 'plugins.install' ||
+      r.kind === 'plugins.rollback' ||
+      r.kind === 'plugins.recover'
+    ) {
+      if (!this.pluginContext()) return failure('forbidden');
+      const epoch = this.api.epoch;
+      const stamp = JSON.stringify(this.pluginContext());
+      if (r.kind === 'plugins.install') {
+        const availability = await this.pluginJobs.inspect();
+        // A denied/stale observation must never restart this intent in a new
+        // context or bypass the inventory prerequisite.
+        if (
+          this.destroyed ||
+          epoch !== this.api.epoch ||
+          stamp !== JSON.stringify(this.pluginContext())
+        )
+          return failure('stale_session');
+        if (!availability.installationAvailable || availability.status !== 'ready')
+          return {
+            ok: false,
+            code: 'plugin_job_blocked',
+            retryable: false,
+            error:
+              'Установка недоступна: доверенный издатель и раскладка пакетов не настроены или проверка не пройдена.',
+          };
+        const inventory = await this.inventory.inspect(true);
+        if (this.destroyed || stamp !== JSON.stringify(this.pluginContext()))
+          return failure('stale_session');
+        if (
+          r.years.some(
+            (year) => !inventory.years.some((y) => y.year === year && y.executable === 'found'),
+          )
+        )
+          return failure('forbidden');
+      }
+      const result = await (r.kind === 'plugins.install'
+        ? this.pluginJobs.install(r.code, r.years)
+        : r.kind === 'plugins.rollback'
+          ? this.pluginJobs.rollback(r.receiptId)
+          : this.pluginJobs.recover());
+      if (this.destroyed || epoch !== this.api.epoch) return failure('stale_session');
+      await this.refreshManagedPlugins();
+      if (
+        result.status === 'complete' ||
+        (result.status === 'blocked' && result.reason === 'rolled_back_empty')
+      )
+        return ok(null);
+      return {
+        ok: false,
+        code: 'plugin_job_blocked',
+        retryable: false,
+        error:
+          result.reason === 'plugin_trust_unconfigured'
+            ? 'Установка недоступна: доверенный издатель и раскладка пакетов не настроены.'
+            : result.reason === 'revit_busy'
+              ? 'Закройте Revit и повторите действие.'
+              : result.status === 'recovery'
+                ? 'Операция не завершена. Файлы сохранены для отдельного восстановления.'
+                : 'Проверка плагинов не пройдена. Установка или откат не подтверждены.',
+      };
     }
     if (
       [
@@ -2182,8 +2283,7 @@ export class ClientHost {
         return result.ok ? ok(null) : result;
       }
       case 'timer.open':
-        this.openTimer(r.mode, r.taskId);
-        return ok(null);
+        return this.openTimer(r.mode, r.taskId);
       case 'timer.preferences':
         if (!isReminderTime(r.reminderTime)) return failure('validation');
         try {
@@ -2376,7 +2476,65 @@ export class ClientHost {
       }
     }
   }
+  private invalidatePluginJobs(): void {
+    this.pluginGeneration++;
+    this.pluginJobs.invalidate();
+    this.pluginManaged = {
+      status: 'unavailable',
+      installationAvailable: false,
+      receiptId: null,
+      packages: [],
+    };
+  }
+  private pluginContext(): PluginJobContext | null {
+    if (
+      this.destroyed ||
+      !this.api?.owner ||
+      this.state.user?.id !== this.api.owner ||
+      this.state.user.mustChangePassword ||
+      this.state.connection !== 'online' ||
+      this.configEpoch !== this.api.epoch ||
+      (this.api.desktopConfiguration?.capabilities.plugins ?? 0) < 1 ||
+      process.platform !== 'win32' ||
+      !process.env.ProgramData
+    )
+      return null;
+    const targetRoot = join(app.getPath('appData'), 'Autodesk', 'Revit', 'Addins'),
+      machine = join(process.env.ProgramData, 'Autodesk', 'Revit', 'Addins');
+    const preferences = this.o.settings.get().plugins ?? { betaScopes: [], autoUpdate: true };
+    return {
+      scope: { serverHash: this.serverScopeHash, ownerId: this.api.owner },
+      token: JSON.stringify([
+        this.api.epoch,
+        this.configEpoch,
+        this.pluginGeneration,
+        this.api.desktopConfiguration,
+        preferences,
+      ]),
+      beta: preferences.betaScopes.includes(`${this.serverScopeHash}:${this.api.owner}`),
+      targetRoot,
+      dataRoot: join(app.getPath('userData'), 'plugins'),
+      stagingParent: join(app.getPath('userData'), 'plugin-staging'),
+      scanRoots: ([2025, 2026] as const).flatMap((year) => [
+        { year, path: join(targetRoot, String(year)) },
+        { year, path: join(machine, String(year)) },
+      ]),
+    };
+  }
+  private async refreshManagedPlugins(): Promise<void> {
+    const stamp = JSON.stringify(this.pluginContext()),
+      view = await this.pluginJobs.inspect();
+    if (!this.destroyed && stamp === JSON.stringify(this.pluginContext())) {
+      this.pluginManaged = view;
+      this.publish();
+    }
+  }
   private publish(): void {
+    const pluginStamp = JSON.stringify(this.pluginContext());
+    if (pluginStamp !== this.pluginContextStamp) {
+      this.invalidatePluginJobs();
+      this.pluginContextStamp = JSON.stringify(this.pluginContext());
+    }
     const pluginPreferences = this.o.settings.get().plugins ?? { betaScopes: [], autoUpdate: true };
     this.state.plugins = {
       ...this.pluginCatalog.state,
@@ -2384,6 +2542,7 @@ export class ClientHost {
         pluginPreferences.betaScopes.includes(`${this.serverScopeHash}:${this.api?.owner}`) &&
         this.pluginCatalog.state.catalog?.tester === true,
       autoUpdate: pluginPreferences.autoUpdate,
+      managed: this.pluginManaged,
     };
     if (
       !this.api?.owner ||
@@ -2399,6 +2558,12 @@ export class ClientHost {
         error: null,
         beta: false,
         checkedAt: null,
+        managed: {
+          status: 'unavailable',
+          installationAvailable: false,
+          receiptId: null,
+          packages: [],
+        },
       };
     if (this.support) {
       const config = this.api.desktopConfiguration,
@@ -2577,6 +2742,7 @@ export class ClientHost {
     }
   }
   destroy(): void {
+    this.invalidatePluginJobs();
     this.report.clear();
     this.configuration.destroy();
     this.updates.destroy();

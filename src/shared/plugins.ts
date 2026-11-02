@@ -29,6 +29,13 @@ export interface PluginsState {
   checkedAt: number | null;
   beta: boolean;
   autoUpdate: boolean;
+  managed?: ManagedPluginsView;
+}
+export interface ManagedPluginsView {
+  status: 'unavailable' | 'busy' | 'recovery' | 'blocked' | 'ready';
+  installationAvailable: boolean;
+  receiptId: string | null;
+  packages: { code: string; version: string; years: (2025 | 2026)[] }[];
 }
 export const PLUGIN_INSTALL_BLOCKED = 'Установка недоступна: доверенный издатель не настроен.';
 export const pluginCode = (v: unknown): v is string =>

@@ -116,6 +116,9 @@ export type DesktopRequest =
       | { kind: 'logout' }
       | { kind: 'plugins.refresh' }
       | { kind: 'plugins.preferences'; beta?: boolean; autoUpdate?: boolean }
+      | { kind: 'plugins.install'; code: string; years: (2025 | 2026)[] }
+      | { kind: 'plugins.rollback'; receiptId: string }
+      | { kind: 'plugins.recover' }
       | { kind: 'report.send'; id: string }
       | { kind: 'report.retry'; id: string }
       | { kind: 'report.fallback'; id: string }
@@ -193,6 +196,9 @@ export type DesktopRequest =
 export interface DesktopResponseMap {
   'plugins.refresh': import('./plugins').PluginsState;
   'plugins.preferences': null;
+  'plugins.install': null;
+  'plugins.rollback': null;
+  'plugins.recover': null;
   init: ClientSnapshot;
   login: null;
   retry: null;
