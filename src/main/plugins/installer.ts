@@ -84,8 +84,6 @@ interface Journal {
   result: PluginRecord;
   /** Запись до операции — для отката переноса и уборки своих .addin. */
   before: PluginRecord | null;
-  /** Папка версии создана этой операцией (при откате переноса — удалить). */
-  created: boolean;
   /** Прежняя папка той же версии, отодвинутая в staging (при откате — вернуть). */
   aside: string | null;
   legacy: { source: string; backup: string }[];
@@ -200,7 +198,6 @@ function journalValid(v: unknown): v is Journal {
     recordValid(j.result) &&
     j.result.code === j.code &&
     (j.before === null || (recordValid(j.before) && j.before.code === j.code)) &&
-    typeof j.created === 'boolean' &&
     (j.aside === null || typeof j.aside === 'string') &&
     Array.isArray(j.legacy) &&
     j.legacy.every((l) => typeof l.source === 'string' && typeof l.backup === 'string')
@@ -609,7 +606,6 @@ export class PluginInstaller {
           held: null,
         },
         before,
-        created: true,
         aside: exists ? join(this.stagingRoot, `aside-${randomUUID()}`) : null,
         legacy,
       };
@@ -718,7 +714,6 @@ export class PluginInstaller {
           held: { buildId: record.current.buildId, archiveSha256: record.current.archiveSha256 },
         },
         before: record,
-        created: false,
         aside: null,
         legacy,
       };
@@ -747,7 +742,6 @@ export class PluginInstaller {
         phase: 'addin',
         result: record,
         before: record,
-        created: false,
         aside: null,
         legacy,
       };
