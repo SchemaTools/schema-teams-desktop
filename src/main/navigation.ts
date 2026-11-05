@@ -39,3 +39,19 @@ export function decideNavigation(url: string, server: URL): NavigationDecision {
   if (isServerUrl(url, server)) return 'allow';
   return isExternalAllowed(url) ? 'external' : 'deny';
 }
+
+const PAGE_PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen']);
+/**
+ * Разрешение странице (ТЗ, 2.4): только буфер обмена и полный экран и только серверу.
+ * Проверяется источник самого запроса — кадр и его origin, — а не адрес окна;
+ * все переданные источники должны быть сервером, без источника — отказ.
+ */
+export function permissionAllowed(
+  server: URL | null,
+  permission: string,
+  ...origins: (string | undefined)[]
+): boolean {
+  if (!server || !PAGE_PERMISSIONS.has(permission)) return false;
+  const given = origins.filter((origin): origin is string => !!origin);
+  return given.length > 0 && given.every((origin) => isServerUrl(origin, server));
+}

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { decideNavigation, isExternalAllowed, parseServerUrl } from '../../src/main/navigation';
+import {
+  decideNavigation,
+  isExternalAllowed,
+  parseServerUrl,
+  permissionAllowed,
+} from '../../src/main/navigation';
 
 const server = new URL('http://server.test:8080/');
 
@@ -50,5 +55,29 @@ describe('isExternalAllowed', () => {
     expect(isExternalAllowed('https://example.com/')).toBe(true);
     expect(isExternalAllowed('mailto:someone@example.com')).toBe(false);
     expect(isExternalAllowed('\\\\server\\share')).toBe(false);
+  });
+});
+
+describe('permissionAllowed', () => {
+  it('буфер обмена и полный экран — только если запрос пришёл от сервера', () => {
+    expect(permissionAllowed(server, 'fullscreen', 'http://server.test:8080/chat')).toBe(true);
+    expect(
+      permissionAllowed(
+        server,
+        'clipboard-sanitized-write',
+        'http://server.test:8080',
+        'http://server.test:8080/x',
+      ),
+    ).toBe(true);
+  });
+  it('встроенный чужой кадр на странице сервера и прочие разрешения — отказ', () => {
+    expect(
+      permissionAllowed(server, 'fullscreen', 'http://server.test:8080', 'https://foreign.test/'),
+    ).toBe(false);
+    expect(permissionAllowed(server, 'fullscreen', 'https://foreign.test/')).toBe(false);
+    expect(permissionAllowed(server, 'media', 'http://server.test:8080/')).toBe(false);
+    expect(permissionAllowed(server, 'fullscreen')).toBe(false);
+    expect(permissionAllowed(server, 'fullscreen', '', undefined)).toBe(false);
+    expect(permissionAllowed(null, 'fullscreen', 'http://server.test:8080/')).toBe(false);
   });
 });

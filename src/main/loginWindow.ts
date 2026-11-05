@@ -1,6 +1,49 @@
 import { BrowserWindow } from 'electron';
 import { PARTITION } from './mainWindow';
 import { isServerUrl } from './navigation';
+/**
+ * Повтор проверки входа на том же адресе. Не на странице входа — раз в 4 с: смена
+ * временного пароля на сайте не меняет адрес, и окно входа должно закрыться без
+ * заметной задержки. На странице входа вход ещё не выполнен — раз в 30 с.
+ */
+export const LOGIN_RECHECK_MS = 4_000;
+export const LOGIN_PAGE_RECHECK_MS = 30_000;
+const loginPage = (url: string) => {
+  try {
+    const path = new URL(url).pathname;
+    return path === '/login' || path.startsWith('/login/');
+  } catch {
+    return true;
+  }
+};
+/**
+ * Когда окну входа звать проверку входа (bootstrap): сразу — при переходе на адрес
+ * сервера, отличный от страницы входа; на том же адресе — не чаще LOGIN_RECHECK_MS;
+ * пока открыта страница входа, вход ещё не выполнен — только редкий страховочный повтор.
+ */
+export class LoginReadiness {
+  private lastUrl = '';
+  private lastAt = Number.NEGATIVE_INFINITY;
+  constructor(
+    private readonly server: URL,
+    private readonly now: () => number = () => performance.now(),
+  ) {}
+  shouldCheck(url: string): boolean {
+    if (!isServerUrl(url, this.server)) return false;
+    const at = this.now();
+    const changed = url !== this.lastUrl;
+    const login = loginPage(url);
+    const interval = login ? LOGIN_PAGE_RECHECK_MS : LOGIN_RECHECK_MS;
+    if (login && changed) {
+      // Первая загрузка страницы входа тоже проверяет: cookie могли остаться от прошлого входа.
+      this.lastUrl = url;
+      if (this.lastAt !== Number.NEGATIVE_INFINITY) return false;
+    } else if (!changed && at - this.lastAt < interval) return false;
+    this.lastUrl = url;
+    this.lastAt = at;
+    return true;
+  }
+}
 export class LoginWindow {
   private win?: BrowserWindow;
   private pulse?: NodeJS.Timeout;
@@ -33,19 +76,17 @@ export class LoginWindow {
       },
     });
     this.win = win;
+    const readiness = new LoginReadiness(this.server);
+    const check = (url: string) => {
+      if (this.win === win && !win.isDestroyed() && readiness.shouldCheck(url)) this.onReady();
+    };
+    // Опрос ловит смену адреса, о которой страница не сообщила событием навигации.
     this.pulse = setInterval(() => {
-      if (
-        this.win === win &&
-        !win.isDestroyed() &&
-        isServerUrl(win.webContents.getURL(), this.server)
-      )
-        this.onReady();
+      if (!win.isDestroyed()) check(win.webContents.getURL());
     }, 2000);
-    win.webContents.on('did-finish-load', () => {
-      if (this.win === win && isServerUrl(win.webContents.getURL(), this.server)) this.onReady();
-    });
+    win.webContents.on('did-finish-load', () => check(win.webContents.getURL()));
     win.webContents.on('did-navigate-in-page', (_e, url, mainFrame) => {
-      if (mainFrame && this.win === win && isServerUrl(url, this.server)) this.onReady();
+      if (mainFrame) check(url);
     });
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', (e) => {

@@ -115,7 +115,8 @@ async function sample(stage) {
 try {
   app = await electron.launch({
     executablePath: executable,
-    args: ['--hidden'],
+    // Упакованная сборка не читает SCHEMA_TEAMS_*: отдельный профиль — ключом Chromium.
+    args: ['--hidden', `--user-data-dir=${profile}`],
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: '' },
   });
   const page = await app.firstWindow();

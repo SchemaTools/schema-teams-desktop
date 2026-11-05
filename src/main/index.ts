@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { readBuildConfig, resolveServerUrl } from './config';
 import { Logger } from './logger';
 import { MainWindow, PARTITION } from './mainWindow';
-import { isServerUrl } from './navigation';
+import { permissionAllowed } from './navigation';
 import { SettingsStore } from './settings';
 import { createTray } from './tray';
 import { ClientHost } from './clientHost';
@@ -29,8 +29,15 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'schema-attachment', privileges: { standard: true, secure: true } },
 ]);
 
+// Переменные разработки и сквозных тестов действуют только в неупакованной сборке:
+// у установленного приложения адрес сервера и профиль окружением не подменить.
+const devEnv = (name: 'SCHEMA_TEAMS_SERVER_URL' | 'SCHEMA_TEAMS_USER_DATA') =>
+  app.isPackaged ? undefined : process.env[name];
 // отдельная папка данных — для сквозных тестов, чтобы не трогать настоящий профиль
-if (process.env.SCHEMA_TEAMS_USER_DATA) app.setPath('userData', process.env.SCHEMA_TEAMS_USER_DATA);
+const devUserData = devEnv('SCHEMA_TEAMS_USER_DATA');
+if (devUserData) app.setPath('userData', devUserData);
+/** Отдельный профиль (тесты, замер памяти упакованной сборки через --user-data-dir) — без автозапуска. */
+const isolatedProfile = devUserData || app.commandLine.getSwitchValue('user-data-dir') || undefined;
 
 const log = new Logger({ dir: join(app.getPath('userData'), 'logs') });
 
@@ -56,7 +63,7 @@ function start(): void {
   const settings = new SettingsStore(join(app.getPath('userData'), 'settings.json'));
   const build = readBuildConfig(join(app.getAppPath(), 'dist', 'build-config.json'));
   const server = resolveServerUrl({
-    env: process.env.SCHEMA_TEAMS_SERVER_URL,
+    env: devEnv('SCHEMA_TEAMS_SERVER_URL'),
     settings: settings.get().serverUrl,
     build: build.serverUrl,
   });
@@ -72,8 +79,7 @@ function start(): void {
     server: server?.origin ?? null,
   });
 
-  const setAutostart = (enabled: boolean) =>
-    applyAutostart(app, enabled, process.env.SCHEMA_TEAMS_USER_DATA);
+  const setAutostart = (enabled: boolean) => applyAutostart(app, enabled, isolatedProfile);
   if (settings.get().onboardingComplete) setAutostart(settings.get().autostart);
 
   tray = createTray({
@@ -83,13 +89,13 @@ function start(): void {
     onQuit: () => app.quit(),
     onMenu: (bounds) => client?.showMenu(bounds),
   });
-  const environmentServer = parseServerUrl(process.env.SCHEMA_TEAMS_SERVER_URL);
+  const environmentServer = parseServerUrl(devEnv('SCHEMA_TEAMS_SERVER_URL'));
   function mount(notice?: string): void {
     if (quitting || !tray) return;
     desktopShutdown.assertMayReplace();
     const previous = main;
     const selected = resolveServerUrl({
-      env: process.env.SCHEMA_TEAMS_SERVER_URL,
+      env: devEnv('SCHEMA_TEAMS_SERVER_URL'),
       settings: settings.get().serverUrl,
       build: build.serverUrl,
     });
@@ -147,7 +153,7 @@ function start(): void {
         });
       },
       applyAutostart: setAutostart,
-      autostartAvailable: autostartAvailable(app, process.env.SCHEMA_TEAMS_USER_DATA),
+      autostartAvailable: autostartAvailable(app, isolatedProfile),
       openLogs: () => shell.openPath(join(app.getPath('userData'), 'logs')),
     });
     previous?.destroy();
@@ -187,12 +193,21 @@ app.on('before-quit', (e) => {
 /**
  * Разрешения страницам: только копирование в буфер и полный экран, и только серверу.
  * Камера, микрофон, геопозиция и прочее — запрещены. Уведомления — через мост (шаг Д3).
+ * Источник — сам запрос (кадр, который спрашивает), а не адрес окна: встроенный
+ * кадр чужого сайта на странице сервера разрешения не получает.
  */
 function restrictPermissions(server: URL | null, partition = PARTITION): void {
   const ses = session.fromPartition(partition);
-  const allowed = new Set(['clipboard-sanitized-write', 'fullscreen']);
-  const ok = (perm: string, origin: string) =>
-    allowed.has(perm) && server !== null && isServerUrl(origin, server);
-  ses.setPermissionRequestHandler((wc, perm, cb) => cb(ok(perm, wc.getURL())));
-  ses.setPermissionCheckHandler((_wc, perm, origin) => ok(perm, origin));
+  ses.setPermissionRequestHandler((_wc, perm, cb, details) =>
+    cb(permissionAllowed(server, perm, details.requestingUrl)),
+  );
+  ses.setPermissionCheckHandler((_wc, perm, origin, details) =>
+    permissionAllowed(server, perm, origin, details.requestingUrl),
+  );
+  // Окно входа и API не скачивают файлы через раздел cookie: вложения читает main сам.
+  ses.removeAllListeners('will-download');
+  ses.on('will-download', (event, item) => {
+    event.preventDefault();
+    item.cancel();
+  });
 }

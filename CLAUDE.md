@@ -35,7 +35,7 @@
 - `npm run dist` — установщик `release/Schema Teams Setup <версия>.exe`; адрес сервера — из `SERVER_URL` или `.env`.
 - Тихая установка для проверки — установщик с ключом `/S`; удаление — `%LOCALAPPDATA%\Programs\Schema Teams\Uninstall Schema Teams.exe /S`.
 
-Переменные для разработки и тестов: `SCHEMA_TEAMS_SERVER_URL` — адрес сервера, `SCHEMA_TEAMS_USER_DATA` — отдельная папка профиля (настройки, cookie, журнал).
+Переменные для разработки и тестов: `SCHEMA_TEAMS_SERVER_URL` — адрес сервера, `SCHEMA_TEAMS_USER_DATA` — отдельная папка профиля (настройки, cookie, журнал). Действуют только в неупакованной сборке (`npm start`, сквозные тесты); упакованной отдельный профиль задаётся ключом `--user-data-dir=<папка>`.
 
 ## Устройство
 
