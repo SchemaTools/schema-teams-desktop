@@ -4,7 +4,8 @@
 import type { ApiResult } from '../../shared/client';
 import { rasterMime } from './service';
 
-export const AVATAR_URL = /^schema-attachment:\/\/avatar\/([1-9]\d{0,15})$/;
+/** Фото (`avatar`) и картинка стикера (`sticker`) — одинаково: картинка до 5 МиБ по ид файла. */
+export const AVATAR_URL = /^schema-attachment:\/\/(?:avatar|sticker)\/([1-9]\d{0,15})$/;
 /** Сколько фото держать в памяти: чатов и участников в бюро — десятки. */
 const MAX_ENTRIES = 300;
 /** Не найдено или не картинка — не спрашивать снова раньше, чем через 10 минут. */

@@ -35,6 +35,8 @@ export interface FixtureCall {
 export interface FixtureState {
   /** Фото пользователей: ид пользователя → ид файла в `files` (личный чат, участники, профиль). */
   userPhotos: Map<number, number>;
+  /** Набор стикеров и своих эмодзи бюро (`GET /api/chat-stickers`); картинки — в `files`. */
+  stickers: import('../../src/shared/client').ChatSticker[];
   pluginCatalog: import('../../src/shared/plugins').PluginCatalog;
   pluginCatalogStatus: number | null;
   pluginCatalogDelayMs: number;
@@ -167,6 +169,7 @@ export async function startClientStub(
   const files = new Map<number, { bytes: Buffer; mime: string; status?: number }>();
   const state: FixtureState = {
     userPhotos: new Map(),
+    stickers: [],
     desktopConfig: null,
     pluginCatalog: { tester: false, plugins: [] },
     pluginCatalogStatus: null,
@@ -440,6 +443,10 @@ export async function startClientStub(
       denied(res, 'unauthenticated');
       return;
     }
+    if (path === '/api/chat-stickers' && method === 'GET' && user) {
+      json(res, 200, state.stickers);
+      return;
+    }
     if (path === '/api/profile' && method === 'GET' && user) {
       json(res, 200, { id: user, photoFileId: state.userPhotos.get(user) ?? null });
       return;
@@ -482,7 +489,8 @@ export async function startClientStub(
           .get(chatOf(user))
           ?.some((m) => !m.deleted && m.files.some((f) => f.fileId === id)) ||
         uploads.get(id)?.userId === user ||
-        [...state.userPhotos.values()].includes(id);
+        [...state.userPhotos.values()].includes(id) ||
+        state.stickers.some((s) => s.fileId === id);
       if (!file || !accessible) {
         denied(res, 'not_found', 404);
         return;
@@ -1169,13 +1177,23 @@ export async function startClientStub(
         const requestId =
           typeof req.headers['idempotency-key'] === 'string' ? req.headers['idempotency-key'] : '';
         const fileIds = body?.fileIds ?? [];
+        // стикер — отдельным сообщением без текста и файлов, как на сервере (0.9.0, п. 4.4)
+        const stickerId = body?.stickerId ?? null;
+        const sticker =
+          stickerId === null
+            ? null
+            : state.stickers.find((s) => s.id === stickerId && s.kind === 'sticker');
         const replyTarget =
           body?.replyTo === undefined ? null : messages.find((m) => m.id === body.replyTo);
         if (
           !requestId ||
           (body?.replyTo !== undefined && !replyTarget) ||
           typeof body?.text !== 'string' ||
-          (!body.text.trim() && !(Array.isArray(fileIds) && fileIds.length > 0)) ||
+          (stickerId !== null &&
+            (!sticker || !!body.text.trim() || (Array.isArray(fileIds) && fileIds.length > 0))) ||
+          (stickerId === null &&
+            !body.text.trim() &&
+            !(Array.isArray(fileIds) && fileIds.length > 0)) ||
           body.text.length > 4000 ||
           !Array.isArray(fileIds) ||
           fileIds.length > 10 ||
@@ -1195,6 +1213,7 @@ export async function startClientStub(
         let message = idempotency.get(key);
         if (!message) {
           message = fixtureMessage(nextId++, id, body.text, user);
+          if (sticker) message.sticker = { id: sticker.id, fileId: sticker.fileId };
           if (replyTarget)
             message.replyTo = {
               id: replyTarget.id,
@@ -1273,6 +1292,13 @@ export async function startClientStub(
     files,
     supportFiles,
     notifications: events,
+    /** Набор стикеров бюро изменился — как событие сервера `chat:stickers`. */
+    stickersChanged: () => io.emit('chat:stickers'),
+    /** Новое сообщение уже готовым объектом (стикер, карточки) — событием пользователю 1. */
+    pushMessage: (message: ChatMessage) => {
+      conversations.get(message.chatId)?.push(message);
+      io.to('user:1').emit('chat:message', { ...message, quiet: false });
+    },
     messages: (chatId = 4) => conversations.get(chatId) ?? [],
     push: (text: string, chatId = 4, emit = true) => {
       const message = fixtureMessage(nextId++, chatId, text, chatId === 4 ? 2 : 1);

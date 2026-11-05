@@ -428,9 +428,9 @@ export function MessageBubble({
 }) {
   const own = message.author?.id === ownId;
   const name = message.author?.shortName ?? R.unknownAuthor;
-  const hasRich =
-    !message.deleted &&
-    (message.cards.length > 0 || message.sticker !== null || message.poll !== null);
+  const hasRich = !message.deleted && (message.cards.length > 0 || message.poll !== null);
+  // стикер — отдельным сообщением без «облачка» (постановка Teams 0.9.0, п. 4.4)
+  const sticker = !message.deleted && !hasRich ? message.sticker : null;
   const openWeb = async () => {
     const result = await request({
       kind: 'open.site',
@@ -451,7 +451,9 @@ export function MessageBubble({
         ) : (
           <span className="avatar-gap" aria-hidden="true" />
         ))}
-      <div className={`message-bubble${!message.deleted ? ' message-with-reactions' : ''}`}>
+      <div
+        className={`message-bubble${!message.deleted ? ' message-with-reactions' : ''}${sticker ? ' sticker-message' : ''}`}
+      >
         {!own && firstInGroup && (
           <span className={`message-author ${colorClass(message.author?.id ?? 0)}`}>{name}</span>
         )}
@@ -468,11 +470,13 @@ export function MessageBubble({
             </blockquote>
           </button>
         )}
-        <MessageText
-          text={message.deleted ? R.deleted : message.text}
-          epoch={epoch}
-          onError={onError}
-        />
+        {!(sticker && !message.text) && (
+          <MessageText
+            text={message.deleted ? R.deleted : message.text}
+            epoch={epoch}
+            onError={onError}
+          />
+        )}
         {!message.deleted &&
           message.files.map((file) => (
             <Attachment
@@ -481,6 +485,17 @@ export function MessageBubble({
               epoch={epoch}
               chatId={message.chatId}
               messageId={message.id}
+            />
+          ))}
+        {sticker &&
+          (sticker.fileId === null ? (
+            <span className="sticker-deleted">{R.stickerDeleted}</span>
+          ) : (
+            <img
+              className="message-sticker"
+              src={`schema-attachment://sticker/${sticker.fileId}`}
+              alt={R.sticker}
+              draggable={false}
             />
           ))}
         {hasRich && (

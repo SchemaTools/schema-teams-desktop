@@ -36,6 +36,7 @@ import type {
   ChatDetail,
   ChatFile,
   ChatMessage,
+  ChatSticker,
   ChatSummary,
   NotificationItem,
   ApiResult,
@@ -682,6 +683,50 @@ export function App() {
         error: result.uncertain ? R.uncertain : result.error,
         uncertain: result.uncertain === true,
       }));
+  }
+
+  /** Стикер уходит сразу отдельным сообщением; черновик в поле ввода не трогается. */
+  async function sendSticker(sticker: ChatSticker) {
+    const captured = snapshotRef.current;
+    const chatId = selectionRef.current;
+    if (
+      captured.epoch !== snapshot.epoch ||
+      typeof chatId !== 'number' ||
+      !captured.user ||
+      captured.connection !== 'online' ||
+      shownDetail?.canWrite !== true ||
+      shownDetail.chat.id !== chatId
+    )
+      return;
+    const result = await request({
+      kind: 'chat.send',
+      epoch: captured.epoch,
+      chatId,
+      text: '',
+      requestId: crypto.randomUUID(),
+      stickerId: sticker.id,
+    });
+    if (
+      captured.epoch !== snapshotRef.current.epoch ||
+      captured.user.id !== snapshotRef.current.user?.id
+    )
+      return;
+    if (!result.ok) {
+      patchDraft(chatId, (old) => ({
+        ...old,
+        error: result.uncertain ? R.uncertain : result.error,
+      }));
+      return;
+    }
+    if (selectionRef.current === chatId) {
+      const gap = readCap.current !== null;
+      if (!gap) setMessages((old) => mergeMessages(old, [result.data]));
+      if (aroundRef.current?.chatId === chatId || gap) {
+        aroundRef.current = null;
+        setSelectionRevision((value) => value + 1);
+      }
+      requestAnimationFrame(() => bottom.current?.scrollIntoView({ block: 'end' }));
+    }
   }
 
   async function uploadFiles(kind: 'pick' | 'paste') {
@@ -1871,6 +1916,9 @@ export function App() {
                           />
                           <EmojiPicker
                             key={`${owner}:${selectedChat.id}`}
+                            epoch={snapshot.epoch}
+                            stickersRevision={snapshot.stickersRevision ?? 0}
+                            onSticker={(sticker) => void sendSticker(sticker)}
                             disabled={!online || draft.pending || shownDetail?.canWrite !== true}
                             onPick={(emoji) => {
                               if (snapshotRef.current.epoch !== snapshot.epoch) return;

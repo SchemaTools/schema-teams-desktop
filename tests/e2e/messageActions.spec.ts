@@ -94,7 +94,7 @@ test('эмодзи вставляется в текст, а группа одн�
   await expect(row(page, 102).locator('.avatar')).toHaveCount(1);
   await input(page).fill('Привет');
   await input(page).evaluate((el) => (el as HTMLTextAreaElement).setSelectionRange(6, 6));
-  await page.getByRole('button', { name: 'Эмодзи', exact: true }).click();
+  await page.getByRole('button', { name: 'Эмодзи и стикеры', exact: true }).click();
   await page.getByRole('button', { name: 'Вставить эмодзи «Сердце»', exact: true }).click();
   await expect(input(page)).toHaveValue('Привет❤️');
   await input(page).press('Enter');

@@ -101,6 +101,16 @@ export interface ChatPoll {
   total: number;
   canManage: boolean;
 }
+/** Стикер или свой эмодзи из общего набора бюро (`GET /api/chat-stickers`). */
+export interface ChatSticker {
+  id: number;
+  kind: 'sticker' | 'emoji';
+  /** Код эмодзи без двоеточий; у стикера — пусто. */
+  name: string;
+  fileId: number;
+  /** Кто добавил. */
+  author: PersonRef | null;
+}
 export interface ChatMessage {
   id: number;
   chatId: number;

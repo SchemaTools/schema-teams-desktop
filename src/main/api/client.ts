@@ -7,6 +7,7 @@ import type {
   ChatFile,
   ChatList,
   ChatMessage,
+  ChatSticker,
   ChatReaction,
   ChatSummary,
   FocusState,
@@ -595,13 +596,16 @@ export class TeamsApi {
     requestId: string,
     fileIds: number[] = [],
     replyTo?: number,
+    /** Стикер уходит отдельным сообщением: без текста и файлов (постановка Teams 0.9.0, п. 4.4). */
+    stickerId?: number,
   ): Promise<ApiResult<ChatMessage>> {
     if (
       !this.validId(chatId) ||
       (replyTo !== undefined && !this.validId(replyTo)) ||
       !Array.isArray(fileIds) ||
       typeof text !== 'string' ||
-      (!text.trim() && fileIds.length === 0) ||
+      (stickerId !== undefined && (!this.validId(stickerId) || !!text.trim() || fileIds.length)) ||
+      (stickerId === undefined && !text.trim() && fileIds.length === 0) ||
       text.trim().length > 4000 ||
       typeof requestId !== 'string' ||
       !/^[A-Za-z0-9._:-]{8,100}$/.test(requestId) ||
@@ -623,6 +627,7 @@ export class TeamsApi {
           value.text !== expectedText ||
           value.author?.id !== owner ||
           (value.replyTo?.id ?? null) !== (replyTo ?? null) ||
+          (value.sticker?.id ?? null) !== (stickerId ?? null) ||
           value.files.length !== expectedFiles.length ||
           value.files
             .map((f) => f.fileId)
@@ -636,6 +641,7 @@ export class TeamsApi {
         text: expectedText,
         ...(fileIds.length > 0 && { fileIds: [...fileIds] }),
         ...(replyTo !== undefined && { replyTo }),
+        ...(stickerId !== undefined && { stickerId }),
       },
       true,
       [200, 201],
@@ -855,6 +861,10 @@ export class TeamsApi {
           parse.unread,
         )
       : Promise.resolve(failure('validation'));
+  }
+  /** Набор стикеров и своих эмодзи бюро. */
+  stickers(): Promise<ApiResult<ChatSticker[]>> {
+    return this.request('/api/chat-stickers', 'GET', parse.stickers);
   }
   /** Фото текущего пользователя для шапки меню трея; null — фото нет. */
   profilePhoto(): Promise<ApiResult<number | null>> {

@@ -6,6 +6,7 @@ import type {
   ChatMessageEvent,
   ChatPoll,
   ChatReaction,
+  ChatSticker,
   ChatSummary,
   FocusState,
   FocusSummary,
@@ -25,7 +26,8 @@ import { isoDay } from '../../shared/time';
 
 export class InvalidData extends Error {}
 /** Что пропущено при мягком разборе (ТЗ 3.3): вид элемента, без содержимого. */
-export type SkippedKind = 'chat' | 'message' | 'reaction' | 'file' | 'link' | 'card' | 'mention';
+export type SkippedKind =
+  'chat' | 'message' | 'reaction' | 'file' | 'link' | 'card' | 'mention' | 'sticker';
 let skipped: ((kind: SkippedKind) => void) | undefined;
 /** Владелец журнала подписывается один раз; сам разбор не знает о журнале. */
 export function onSkipped(listener: ((kind: SkippedKind) => void) | undefined): void {
@@ -98,6 +100,24 @@ const date = (v: unknown): string => {
 };
 const nullable = <T>(value: unknown, parse: (v: unknown) => T): T | null =>
   value === null ? null : parse(value);
+/** `GET /api/chat-stickers` — набор бюро; незнакомый вид или негодная запись пропускается. */
+export const stickers = (v: unknown): ChatSticker[] =>
+  tolerant(
+    v,
+    (item) => {
+      const x = object(item);
+      if (x.kind !== 'sticker' && x.kind !== 'emoji') throw new InvalidData();
+      return {
+        id: id(x.id),
+        kind: x.kind,
+        name: text(x.name ?? '', 64),
+        fileId: id(x.fileId),
+        author: nullable(x.author ?? null, person),
+      };
+    },
+    'sticker',
+    1000,
+  );
 /** `GET /api/profile` — из профиля приложению нужно только фото (шапка меню трея). */
 export const profilePhoto = (v: unknown): number | null => {
   const photo = object(v).photoFileId;

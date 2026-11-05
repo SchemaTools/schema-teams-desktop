@@ -216,6 +216,7 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     case 'window.hide':
     case 'app.quit':
     case 'chat.list':
+    case 'chat.stickers':
       return only();
     case 'window.show':
       return (
@@ -248,16 +249,22 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       );
     case 'chat.send':
       return (
-        only('chatId', 'text', 'requestId', 'fileIds', 'replyTo') &&
+        only('chatId', 'text', 'requestId', 'fileIds', 'replyTo', 'stickerId') &&
         id(r.chatId) &&
         (r.replyTo === undefined || id(r.replyTo)) &&
         text(r.text, 4000) &&
+        // стикер — отдельным сообщением: без текста и файлов
+        (r.stickerId === undefined ||
+          (id(r.stickerId) &&
+            (r.text as string).trim().length === 0 &&
+            (r.fileIds === undefined || (Array.isArray(r.fileIds) && r.fileIds.length === 0)))) &&
         (r.fileIds === undefined ||
           (Array.isArray(r.fileIds) &&
             r.fileIds.length <= 10 &&
             r.fileIds.every(id) &&
             new Set(r.fileIds).size === r.fileIds.length)) &&
-        ((r.text as string).trim().length > 0 ||
+        (r.stickerId !== undefined ||
+          (r.text as string).trim().length > 0 ||
           (Array.isArray(r.fileIds) && r.fileIds.length > 0)) &&
         typeof r.requestId === 'string' &&
         /^[A-Za-z0-9._:-]{8,100}$/.test(r.requestId)

@@ -4,6 +4,7 @@ import type {
   ChatFile,
   ChatReaction,
   ChatList,
+  ChatSticker,
   ChatMessage,
   ChatSummary,
   FocusState,
@@ -46,6 +47,8 @@ export interface ClientSnapshot {
   user: SafeUser | null;
   /** Фото текущего пользователя (шапка меню трея); null — буквы. */
   userPhotoFileId?: number | null;
+  /** Растёт, когда набор стикеров бюро изменился (`chat:stickers`): окно перечитывает набор. */
+  stickersRevision?: number;
   serverVersion: string;
   appVersion: string;
   bureau?: DesktopConfig['bureau'] | null;
@@ -168,6 +171,7 @@ export type DesktopRequest =
         }
       | { kind: 'window.show'; target?: 'events'; chatId?: number; messageId?: number }
       | { kind: 'chat.list' }
+      | { kind: 'chat.stickers' }
       | { kind: 'chat.detail'; chatId: number }
       | { kind: 'chat.objectInfo'; chatId: number }
       | { kind: 'chat.search'; chatId: number; q: string }
@@ -180,6 +184,7 @@ export type DesktopRequest =
           requestId: string;
           fileIds?: number[];
           replyTo?: number;
+          stickerId?: number;
         }
       | { kind: 'chat.edit'; chatId: number; messageId: number; text: string }
       | { kind: 'chat.delete'; chatId: number; messageId: number }
@@ -268,6 +273,7 @@ export interface DesktopResponseMap {
   'window.hide': null;
   'app.quit': null;
   'chat.list': ChatList;
+  'chat.stickers': ChatSticker[];
   'chat.detail': ChatDetail;
   'chat.objectInfo': ObjectInfo;
   'chat.search': ChatMessage[];

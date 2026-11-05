@@ -117,7 +117,8 @@ test('вход изолирован от bridge, cookie/CSRF остаются в
       }
     }, stub.url),
   ).toBe('blocked');
-  expect(stub.state.calls).toHaveLength(before);
+  // запрос окна до сервера не дошёл; фоновые запросы главного процесса (таймер) сюда не считаются
+  expect(stub.state.calls.slice(before).filter((call) => call.path === '/api/auth/me')).toEqual([]);
   expect(stub.state.socketConnections).toBeGreaterThan(0);
   expect(
     stub.state.socketCookies.every((cookie) => /^st_session=fixture-session-/.test(cookie)),

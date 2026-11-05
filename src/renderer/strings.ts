@@ -66,6 +66,17 @@ export const R = {
   openChatWeb: 'Открыть чат на сайте',
   openMessageWeb: 'Открыть сообщение в Teams',
   richMessage: 'В сообщении есть вложение или дополнительное содержимое.',
+  // стикеры бюро (постановка Teams 0.9.0, п. 4.4)
+  emojiAndStickers: 'Эмодзи и стикеры',
+  emojiTab: 'Эмодзи',
+  stickersTab: 'Стикеры бюро',
+  noStickers: 'В наборе бюро пока нет стикеров. Добавить можно на сайте Teams.',
+  loadingStickers: 'Загрузка стикеров…',
+  sendSticker: (author: string | null) =>
+    author ? `Отправить стикер (добавил ${author})` : 'Отправить стикер',
+  stickerAuthor: (author: string) => `Добавил ${author}`,
+  sticker: 'Стикер',
+  stickerDeleted: 'Стикер удалён',
   download: 'Скачать',
   attachmentLoading: 'Загрузка файла…',
   attachmentSaved: 'Файл сохранён',

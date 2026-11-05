@@ -273,7 +273,8 @@
   bottom: 42px;
   right: 0;
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px;
   z-index: 20;
   border: 1px solid var(--line);
@@ -334,4 +335,74 @@ html[data-theme='dark'] .message-author.color-4 {
 }
 html[data-theme='dark'] .message-author.color-5 {
   color: #a1bbff;
+}
+
+/* вкладки «Эмодзи» и «Стикеры бюро» (постановка Teams 0.9.0, п. 4.4) */
+.emoji-picker-tabs {
+  display: flex;
+  gap: 4px;
+}
+.emoji-picker-panel .emoji-picker-tabs button {
+  width: auto;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 14px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.emoji-picker-panel .emoji-picker-tabs button[aria-selected='true'] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+.emoji-picker-grid {
+  display: flex;
+  gap: 4px;
+}
+.sticker-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 72px);
+  gap: 4px;
+  max-height: 248px;
+  overflow-y: auto;
+}
+.emoji-picker-panel .sticker-choice {
+  width: 72px;
+  height: 72px;
+  padding: 4px;
+}
+.emoji-picker-panel .sticker-choice img {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+}
+.sticker-picker-note {
+  grid-column: 1 / -1;
+  width: 300px;
+  margin: 8px 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+/* стикер в ленте — без «облачка», время и реакции остаются */
+.message-row .message-bubble.sticker-message {
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.message-sticker {
+  display: block;
+  width: 160px;
+  height: 160px;
+  object-fit: contain;
+}
+.sticker-deleted {
+  display: inline-block;
+  padding: 8px 11px;
+  border-radius: 14px;
+  background: var(--incoming);
+  color: var(--muted);
+  font-style: italic;
 }

@@ -58,7 +58,7 @@ import { WindowsNotificationPolicy } from './desktop/notificationState';
 import { PathService } from './paths/service';
 import { confirmForeignHost } from './paths/dialog';
 import { uncHostTrusted } from './paths/validate';
-import { AvatarService } from './files/avatars';
+import { AVATAR_URL, AvatarService } from './files/avatars';
 import { AttachmentService } from './files/service';
 import { UploadService } from './files/uploads';
 import { statusBitmap, badgeBitmap } from './desktop/statusBitmap';
@@ -519,9 +519,7 @@ export class ClientHost {
     });
     this.avatars = new AvatarService({ api: this.api });
     this.fileSession.protocol.handle('schema-attachment', (request) =>
-      request.url.startsWith('schema-attachment://avatar/')
-        ? this.avatars.response(request)
-        : this.files.response(request),
+      AVATAR_URL.test(request.url) ? this.avatars.response(request) : this.files.response(request),
     );
     this.uploads = new UploadService({
       api: this.api,
@@ -2067,6 +2065,11 @@ export class ClientHost {
       return;
     }
     if (name === 'chat:presence') return;
+    if (name === 'chat:stickers') {
+      this.state.stickersRevision = (this.state.stickersRevision ?? 0) + 1;
+      this.publish();
+      return;
+    }
     if (name === 'chat:read') {
       try {
         const read = parse.object(data);
@@ -3011,6 +3014,8 @@ export class ClientHost {
         return this.api.timerValidateRows(r.preparedRequestId, r.rows);
       case 'chat.list':
         return this.api.listChats();
+      case 'chat.stickers':
+        return this.api.stickers();
       case 'chat.detail':
         return this.api.detail(r.chatId);
       case 'chat.messages':
@@ -3020,7 +3025,14 @@ export class ClientHost {
           ...(r.around && { around: r.around }),
         });
       case 'chat.send': {
-        const result = await this.api.send(r.chatId, r.text, r.requestId, r.fileIds, r.replyTo);
+        const result = await this.api.send(
+          r.chatId,
+          r.text,
+          r.requestId,
+          r.fileIds,
+          r.replyTo,
+          r.stickerId,
+        );
         if (result.ok) this.scheduleRefresh();
         return result;
       }
