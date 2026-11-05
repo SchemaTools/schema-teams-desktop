@@ -857,6 +857,7 @@ export function App() {
           <Avatar
             name={chat.kind === 'object' ? chat.objectCode || title : title}
             id={chat.peer?.id ?? chat.id}
+            photo={chat.photoFileId}
             object={chat.kind === 'object'}
           />
           <span className="row-copy">
@@ -1473,6 +1474,7 @@ export function App() {
                     <Avatar
                       name={chatTitle(selectedChat)}
                       id={selectedChat.peer?.id ?? selectedChat.id}
+                      photo={selectedChat.photoFileId}
                       object={selectedChat.kind === 'object'}
                       small
                     />
@@ -1626,6 +1628,11 @@ export function App() {
                               )}
                               <MessageBubble
                                 message={message}
+                                authorPhoto={
+                                  shownDetail?.members.find(
+                                    (member) => member.user.id === message.author?.id,
+                                  )?.photoFileId ?? null
+                                }
                                 firstInGroup={
                                   !message.author ||
                                   shownMessages[index - 1]?.author?.id !== message.author.id ||

@@ -31,25 +31,52 @@ export function SchemaLogo({ className = '' }: { className?: string }) {
   );
 }
 
+/** Фото уже не загрузилось в этом окне — не просить снова (буквы до перезапуска окна). */
+const failedPhotos = new Set<number>();
+
 export function Avatar({
   name,
   id,
+  photo = null,
   object = false,
   bot = false,
   small = false,
 }: {
   name: string;
   id: number;
+  /** Фото профиля или логотип бюро (`photoFileId`); null — буквы. */
+  photo?: number | null;
   object?: boolean;
   bot?: boolean;
   small?: boolean;
 }) {
+  const [failed, setFailed] = useState(() => photo !== null && failedPhotos.has(photo));
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    setFailed(photo !== null && failedPhotos.has(photo));
+    setLoaded(false);
+  }, [photo]);
+  const showPhoto = photo !== null && !failed;
   return (
     <span
-      className={`avatar ${colorClass(id)}${object ? ' object-avatar' : ''}${bot ? ' bot-avatar' : ''}${small ? ' small' : ''}`}
+      className={`avatar ${colorClass(id)}${object ? ' object-avatar' : ''}${bot ? ' bot-avatar' : ''}${small ? ' small' : ''}${showPhoto && loaded ? ' with-photo' : ''}`}
       aria-hidden="true"
     >
-      {bot ? <SchemaLogo /> : initials(name)}
+      {/* буквы видны, пока фото грузится или если его нет */}
+      {!(showPhoto && loaded) && (bot ? <SchemaLogo /> : initials(name))}
+      {showPhoto && (
+        <img
+          className="avatar-photo"
+          src={`schema-attachment://avatar/${photo}`}
+          alt=""
+          draggable={false}
+          onLoad={() => setLoaded(true)}
+          onError={() => {
+            failedPhotos.add(photo);
+            setFailed(true);
+          }}
+        />
+      )}
     </span>
   );
 }
@@ -362,6 +389,7 @@ function Attachment({
 }
 
 export function MessageBubble({
+  authorPhoto = null,
   message,
   epoch,
   ownId,
@@ -379,6 +407,8 @@ export function MessageBubble({
   firstInGroup = true,
   lastInGroup = true,
 }: {
+  /** Фото автора — из участников чата (у сообщения своего фото нет). */
+  authorPhoto?: number | null;
   message: ChatMessage;
   epoch: number;
   ownId: number;
@@ -417,7 +447,7 @@ export function MessageBubble({
     >
       {!own &&
         (lastInGroup ? (
-          <Avatar name={name} id={message.author?.id ?? 0} small />
+          <Avatar name={name} id={message.author?.id ?? 0} photo={authorPhoto} small />
         ) : (
           <span className="avatar-gap" aria-hidden="true" />
         ))}

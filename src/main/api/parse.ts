@@ -98,6 +98,11 @@ const date = (v: unknown): string => {
 };
 const nullable = <T>(value: unknown, parse: (v: unknown) => T): T | null =>
   value === null ? null : parse(value);
+/** `GET /api/profile` — из профиля приложению нужно только фото (шапка меню трея). */
+export const profilePhoto = (v: unknown): number | null => {
+  const photo = object(v).photoFileId;
+  return photo === undefined ? null : nullable(photo, id);
+};
 const array = <T>(value: unknown, parse: (v: unknown) => T, max = 10000): T[] => {
   if (!Array.isArray(value) || value.length > max) throw new InvalidData();
   return value.map(parse);

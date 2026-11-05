@@ -33,6 +33,8 @@ export interface FixtureCall {
   bytes?: number;
 }
 export interface FixtureState {
+  /** Фото пользователей: ид пользователя → ид файла в `files` (личный чат, участники, профиль). */
+  userPhotos: Map<number, number>;
   pluginCatalog: import('../../src/shared/plugins').PluginCatalog;
   pluginCatalogStatus: number | null;
   pluginCatalogDelayMs: number;
@@ -164,6 +166,7 @@ export async function startClientStub(
 ) {
   const files = new Map<number, { bytes: Buffer; mime: string; status?: number }>();
   const state: FixtureState = {
+    userPhotos: new Map(),
     desktopConfig: null,
     pluginCatalog: { tester: false, plugins: [] },
     pluginCatalogStatus: null,
@@ -307,7 +310,7 @@ export async function startClientStub(
         : null,
       unread: unread.get(chatId) ?? 0,
       mentioned: false,
-      photoFileId: null,
+      photoFileId: isObject ? null : (state.userPhotos.get(user === 1 ? 2 : 1) ?? null),
       ...(!state.legacyChatFields && {
         top: tops.get(user)?.has(chatId) ?? false,
         myActiveTasks: isObject ? 1 : 0,
@@ -437,6 +440,10 @@ export async function startClientStub(
       denied(res, 'unauthenticated');
       return;
     }
+    if (path === '/api/profile' && method === 'GET' && user) {
+      json(res, 200, { id: user, photoFileId: state.userPhotos.get(user) ?? null });
+      return;
+    }
     if (path === '/api/auth/me') {
       json(res, 200, {
         user: {
@@ -474,7 +481,8 @@ export async function startClientStub(
         conversations
           .get(chatOf(user))
           ?.some((m) => !m.deleted && m.files.some((f) => f.fileId === id)) ||
-        uploads.get(id)?.userId === user;
+        uploads.get(id)?.userId === user ||
+        [...state.userPhotos.values()].includes(id);
       if (!file || !accessible) {
         denied(res, 'not_found', 404);
         return;
@@ -1080,8 +1088,16 @@ export async function startClientStub(
         json(res, 200, {
           chat: summary(id, user),
           members: [
-            { user: { id: 1, shortName: names[1] }, readUpTo: 1, photoFileId: null },
-            { user: { id: 2, shortName: names[2] }, readUpTo: 1, photoFileId: null },
+            {
+              user: { id: 1, shortName: names[1] },
+              readUpTo: 1,
+              photoFileId: state.userPhotos.get(1) ?? null,
+            },
+            {
+              user: { id: 2, shortName: names[2] },
+              readUpTo: 1,
+              photoFileId: state.userPhotos.get(2) ?? null,
+            },
           ],
           canManageMembers: false,
           canLeave: false,

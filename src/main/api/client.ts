@@ -71,6 +71,8 @@ const REACTIONS = new Set<string>(REACTION_KINDS);
 const DEADLINE = 15000;
 const BODY_LIMIT = 2 * 1024 * 1024;
 export const FILE_LIMIT = 50 * 1024 * 1024;
+/** Фото профиля и логотип бюро: больше — не показываем, рисуем буквы. */
+export const PHOTO_LIMIT = 5 * 1024 * 1024;
 const MUTATIONS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const ERROR_TEXT: Record<string, string> = {
   no_support_chat: 'Чат поддержки не настроен. Сохраните архив и передайте его администратору.',
@@ -854,6 +856,42 @@ export class TeamsApi {
         )
       : Promise.resolve(failure('validation'));
   }
+  /** Фото текущего пользователя для шапки меню трея; null — фото нет. */
+  profilePhoto(): Promise<ApiResult<number | null>> {
+    return this.request('/api/profile', 'GET', parse.profilePhoto);
+  }
+  /**
+   * Фото пользователя или логотип бюро (`/api/files/:id`). Размер заранее неизвестен —
+   * ограничен PHOTO_LIMIT, а не сверяется точно, как у вложений.
+   */
+  async photo(fileId: number): Promise<ApiResult<{ bytes: Uint8Array; mime: string }>> {
+    if (!this.validId(fileId)) return failure('validation');
+    if (!this.user || !this.csrf) return failure('unauthenticated');
+    if (this.user.mustChangePassword) return failure('password_change_required');
+    const epoch = this.epoch;
+    const result = await this.raw(
+      `/api/files/${fileId}`,
+      'GET',
+      undefined,
+      epoch,
+      null,
+      undefined,
+      PHOTO_LIMIT,
+      undefined,
+      false,
+    );
+    if (epoch !== this.epoch) return failure('stale_session');
+    if (!result.ok) return result;
+    const { status, body } = result.data;
+    if (status === 401) {
+      this.authLost(epoch);
+      return failure('unauthenticated');
+    }
+    if (status === 403) return failure('forbidden');
+    if (status === 404) return failure('not_found');
+    if (status !== 200) return failure(status >= 500 ? 'server_error' : 'invalid_data');
+    return { ok: true, data: body as { bytes: Uint8Array; mime: string } };
+  }
   focus(): Promise<ApiResult<FocusState>> {
     return this.request('/api/focus', 'GET', parse.focus);
   }
@@ -980,6 +1018,8 @@ export class TeamsApi {
     requestId?: string,
     fileSize?: number,
     upload?: UploadBody,
+    /** false — fileSize только предел (фото), true — точный размер (вложения) */
+    exactSize = true,
   ): Promise<ApiResult<Raw>> {
     const mutation = MUTATIONS.has(method);
     if (mutation && this.allowMutation) {
@@ -1079,7 +1119,8 @@ export class TeamsApi {
           offset += chunk.byteLength;
         }
         if (fileSize !== undefined) {
-          if (total !== fileSize) throw new TransportError('invalid_file');
+          if (exactSize ? total !== fileSize : total === 0)
+            throw new TransportError('invalid_file');
           return {
             status: response.status,
             body: {

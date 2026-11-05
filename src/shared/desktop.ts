@@ -44,6 +44,8 @@ export interface ClientSnapshot {
     | 'incompatible'
     | 'noServer';
   user: SafeUser | null;
+  /** Фото текущего пользователя (шапка меню трея); null — буквы. */
+  userPhotoFileId?: number | null;
   serverVersion: string;
   appVersion: string;
   bureau?: DesktopConfig['bureau'] | null;

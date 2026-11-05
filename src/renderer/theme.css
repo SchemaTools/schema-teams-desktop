@@ -328,6 +328,23 @@ button svg {
   height: 34px;
   font-size: 13px;
 }
+/* фото профиля: занимает весь значок той же формы; пока грузится — скрыто, видны буквы */
+.avatar {
+  position: relative;
+  overflow: hidden;
+}
+.avatar .avatar-photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  opacity: 0;
+}
+.avatar.with-photo .avatar-photo {
+  opacity: 1;
+}
 .avatar .schema-logo {
   width: 26px;
   height: 26px;

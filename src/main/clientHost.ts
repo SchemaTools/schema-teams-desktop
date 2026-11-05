@@ -58,6 +58,7 @@ import { WindowsNotificationPolicy } from './desktop/notificationState';
 import { PathService } from './paths/service';
 import { confirmForeignHost } from './paths/dialog';
 import { uncHostTrusted } from './paths/validate';
+import { AvatarService } from './files/avatars';
 import { AttachmentService } from './files/service';
 import { UploadService } from './files/uploads';
 import { statusBitmap, badgeBitmap } from './desktop/statusBitmap';
@@ -170,6 +171,7 @@ export class ClientHost {
   private readonly login?: LoginWindow;
   private readonly paths: PathService;
   private readonly files: AttachmentService;
+  private readonly avatars: AvatarService;
   private readonly uploads: UploadService;
   private readonly fileSession = session.fromPartition('client-ui');
   private readonly policy = new WindowsNotificationPolicy();
@@ -464,6 +466,7 @@ export class ClientHost {
     this.state = {
       connection: o.server ? 'connecting' : 'noServer',
       user: null,
+      userPhotoFileId: null,
       serverVersion: '',
       appVersion: app.getVersion(),
       epoch: 0,
@@ -514,8 +517,11 @@ export class ClientHost {
       openPath: (path) => shell.openPath(path),
       reveal: (path) => shell.showItemInFolder(path),
     });
+    this.avatars = new AvatarService({ api: this.api });
     this.fileSession.protocol.handle('schema-attachment', (request) =>
-      this.files.response(request),
+      request.url.startsWith('schema-attachment://avatar/')
+        ? this.avatars.response(request)
+        : this.files.response(request),
     );
     this.uploads = new UploadService({
       api: this.api,
@@ -786,6 +792,7 @@ export class ClientHost {
     this.realtime?.stop();
     this.paths.reset();
     this.files.reset();
+    this.avatars.reset();
     this.uploads.reset();
     this.toasts.clear();
     this.counts.clear();
@@ -797,6 +804,7 @@ export class ClientHost {
       ...this.state,
       epoch: this.api.epoch,
       user: null,
+      userPhotoFileId: null,
       chats: [],
       unread: 0,
       notifications: [],
@@ -841,6 +849,7 @@ export class ClientHost {
     this.realtime?.stop();
     this.paths.reset();
     this.files.reset();
+    this.avatars.reset();
     this.uploads.reset();
     this.toasts.clear();
     this.activeChat = null;
@@ -848,6 +857,7 @@ export class ClientHost {
       ...this.state,
       epoch: this.api.epoch,
       user: null,
+      userPhotoFileId: null,
       chats: [],
       unread: 0,
       notifications: [],
@@ -876,6 +886,13 @@ export class ClientHost {
     });
     this.bootFlight = flight;
     return flight;
+  }
+  /** Фото для шапки меню трея; без фото — буквы, вход от этого не зависит. */
+  private async loadUserPhoto(boot: number): Promise<void> {
+    const photo = await this.api.profilePhoto();
+    if (this.destroyed || boot !== this.boot) return;
+    // состояние уйдёт в окно вместе с «в сети» — отдельной публикации не нужно
+    this.state.userPhotoFileId = photo.ok ? photo.data : null;
   }
   private async bootstrapNow(): Promise<void> {
     if (!this.o.server || this.destroyed) return;
@@ -933,6 +950,7 @@ export class ClientHost {
       this.toasts.clear();
       this.paths.reset();
       this.files.reset();
+      this.avatars.reset();
       this.uploads.reset();
       this.counts.clear();
       this.readThrough.clear();
@@ -950,7 +968,8 @@ export class ClientHost {
       return;
     }
     this.login?.close();
-    const config = await this.api.readDesktopConfig();
+    // фото — вместе с настройками бюро, до «в сети»: без фото вход не задерживается дольше этого
+    const [config] = await Promise.all([this.api.readDesktopConfig(), this.loadUserPhoto(boot)]);
     if (this.destroyed || boot !== this.boot) return;
     this.configEpoch = config.ok ? this.api.epoch : -1;
     this.state.bureau = config.ok ? config.data.bureau : null;
@@ -3470,6 +3489,7 @@ export class ClientHost {
     this.toasts.destroy();
     this.paths.destroy();
     this.files.destroy();
+    this.avatars.stop();
     this.uploads.destroy();
     this.fileSession.protocol.unhandle('schema-attachment');
     parse.onSkipped(undefined);

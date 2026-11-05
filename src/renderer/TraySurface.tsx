@@ -204,7 +204,11 @@ export function TraySurface() {
       }}
     >
       <header className="tray-user">
-        <Avatar name={snapshot?.user?.shortName ?? R.appName} id={snapshot?.user?.id ?? 0} />
+        <Avatar
+          name={snapshot?.user?.shortName ?? R.appName}
+          id={snapshot?.user?.id ?? 0}
+          photo={snapshot?.userPhotoFileId ?? null}
+        />
         <div>
           <b>{snapshot?.user?.shortName ?? R.appName}</b>
           <small>
@@ -383,6 +387,7 @@ export function TraySurface() {
             <Avatar
               name={chatTitle(latest)}
               id={latest.peer?.id ?? latest.id}
+              photo={latest.photoFileId}
               object={latest.kind === 'object'}
               small
             />
