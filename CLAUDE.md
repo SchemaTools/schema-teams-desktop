@@ -32,15 +32,31 @@
 - `npm test` — модульные тесты; `npm run test:e2e` — сквозные (Playwright `_electron`, заглушка сервера `tests/e2e/stub.ts`).
 - `npm run typecheck`, `npm run lint` (ESLint и Prettier), `npm run format`.
 - `npm run check` — всё перед PR: типы, линт, модульные и сквозные тесты.
-- `npm run dist` — установщик `release/Schema Teams Setup <версия>.exe`; адрес сервера — из `SERVER_URL` или `.env`.
+- `npm run dist` — установщик `release/Schema Teams Setup <версия>.exe`.
+- `npm run build` на Windows собирает помощники `native/*.cs` компилятором `csc.exe` из .NET Framework 4 (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319`). CI — на Ubuntu и Windows (`.github/workflows/checks.yml`); сквозные тесты и сборка — в Windows-job.
 - Тихая установка для проверки — установщик с ключом `/S`; удаление — `%LOCALAPPDATA%\Programs\Schema Teams\Uninstall Schema Teams.exe /S`.
 
 Переменные для разработки и тестов: `SCHEMA_TEAMS_SERVER_URL` — адрес сервера, `SCHEMA_TEAMS_USER_DATA` — отдельная папка профиля (настройки, cookie, журнал). Действуют только в неупакованной сборке (`npm start`, сквозные тесты); упакованной отдельный профиль задаётся ключом `--user-data-dir=<папка>`.
 
+Переменные сборки: `SERVER_URL` — адрес сервера, `UNC_HOSTS` — серверы бюро для путей `\\сервер\…` через запятую (к остальным — только после подтверждения). Берутся из окружения или закрытого `.env` (образец — `.env.example`) и записываются в `dist/build-config.json` при `npm run build` и `npm run dist`.
+
 ## Устройство
 
-- `src/main/index.ts` — запуск: один экземпляр, журнал, разрешения, автозапуск, окно, трей.
-- `mainWindow.ts` — окно Teams: переходы только в пределах сервера, ✕ и «Свернуть» — в трей, страница «Нет связи» с повтором, масштаб, положение окна.
-- `tray.ts`, `icons.ts`, `mark.ts`, `png.ts` — значок: знак Schema рисуется на лету.
-- `navigation.ts`, `windowState.ts`, `settings.ts`, `logger.ts`, `config.ts` — логика без Electron, покрыта модульными тестами.
-- `strings.ts` — тексты интерфейса.
+- `src/main/index.ts` — запуск: один экземпляр, журнал, разрешения, автозапуск, окно, трей; создаёт `ClientHost`.
+- `clientHost.ts` — свой клиент (ТЗ v4, 2.2): вход и поколение входа, чаты и лента, уведомления и быстрый ответ, «Фокус», таймер и автопауза, плагины, обновление, «Сообщить о проблеме», настройки; проверка запросов окна (IPC) и снимок состояния для окна.
+- `api/` — REST по cookie раздела `persist:teams` с CSRF и ключом повтора; мягкий разбор ответов (`parse.ts`).
+- `realtime/` — Socket.IO (WebSocket с запасным long-polling), разбор событий.
+- `notifications/` — свои окна уведомлений без рамки, утренняя сводка; когда показывать — `desktop/notificationPolicy.ts`, `notificationState.ts` (тихие часы, «Не беспокоить» Windows).
+- `timer/` — очередь паузы при блокировке, сне и заставке, «пауза подтверждена», напоминание 18:30; датчик заставки — `desktop/screenSaver*.ts`.
+- `plugins/` — плагины Revit (ТЗ 8): `catalog`, `download`, `archive`, `addin`, проверки `signature` и `safety`, `installer` (папка версии, журнал операции, «Вернуть»), `updater` (ожидание закрытия Revit), `production` (пин издателя).
+- `paths/` — пути `\\сервер\…`: правила, проверка доступности в отдельном процессе, окно «Папка недоступна», подтверждение чужого сервера.
+- `files/` — вложения: скачивание, отправка файлов и картинок из буфера.
+- `desktop/` — новая версия приложения (`updateChecker`, `downloadDesktop`, `updateTrust`, `updateController`, `updateShutdown`), смена сервера, автозапуск, подсказка и значок трея, папки Revit.
+- `diagnostics/` — «Сообщить о проблеме»: журналы, архив ZIP, книга отправки в чат поддержки.
+- `mainWindow.ts` — локальное окно клиента; `loginWindow.ts` — отдельное окно входа на странице сервера; `tray.ts`, `icons.ts`, `mark.ts`, `png.ts` — значок, знак Schema рисуется на лету.
+- `settings.ts`, `windowState.ts`, `navigation.ts`, `config.ts`, `logger.ts`, `logPolicy.ts` (что можно писать в журнал), `localData.ts` (папка в `%LOCALAPPDATA%`), `quarantine.ts` (испорченные файлы состояния) — логика, покрыта модульными тестами.
+- `strings.ts` — тексты интерфейса главного процесса.
+- `src/preload/` — мосты окон: `client.ts` (окно клиента), `customToast.ts` (уведомление), `pathDialog.ts` (окно пути); только узкие команды, Node в окно не выдаётся.
+- `src/renderer/` — окно на React: чат, служебный чат, таймер, плагины, настройки, диагностика, меню трея; тексты — `strings.ts` и `*Strings.ts`.
+- `src/shared/` — общие типы главного процесса и окна.
+- `native/*.cs` — помощники Windows только для чтения: состояние уведомлений, подпись и безопасность плагинов, заставка.
