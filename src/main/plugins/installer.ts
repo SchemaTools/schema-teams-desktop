@@ -10,7 +10,7 @@ import {
   stat,
   unlink,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pluginCode, pluginVersion } from '../../shared/plugins';
 import {
   discardExtractedArchive,
@@ -526,8 +526,10 @@ export class PluginInstaller {
         if (!assemblies.length || assemblies.some((a) => !a))
           fail('addin_conflict', displayName(name));
         let ours = own;
-        for (const assembly of assemblies as string[]) {
-          const target = isAbsolute(assembly) ? resolve(assembly) : resolve(userDir, assembly),
+        for (const raw of assemblies as string[]) {
+          // В .addin путь записан по-windowsовски; на других системах (CI) «\» — не разделитель.
+          const assembly = raw.replace(/[\\/]/g, sep),
+            target = isAbsolute(assembly) ? resolve(assembly) : resolve(userDir, assembly),
             inside = relative(resolve(this.o.root), target);
           if (!inside || inside.startsWith('..') || isAbsolute(inside)) ours = false;
           let hash: { sha256: string };
