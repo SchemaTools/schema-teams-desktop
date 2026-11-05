@@ -8,6 +8,7 @@ import {
   attachmentCanOpen,
   attachmentName,
   rasterMime,
+  safeFileName,
   type FileTarget,
 } from '../../src/main/files/service';
 import type { ChatFile, ChatMessage } from '../../src/shared/client';
@@ -151,6 +152,37 @@ describe('Attachment names and local open policy', () => {
   });
 
   it.each([
+    ['скриншот 13:09.png', 'скриншот 13_09.png'],
+    ['План объекта А.pdf', 'План объекта А.pdf'],
+    ['../other.pdf', '.._other.pdf'],
+    [String.raw`..\other.pdf`, '.._other.pdf'],
+    [String.raw`C:\other.pdf`, 'C__other.pdf'],
+    [String.raw`\\server\share\other.pdf`, '__server_share_other.pdf'],
+    ['report.pdf:payload.exe', 'report.pdf_payload.exe'],
+    ['a<b>c"d|e?f*g.txt', 'a_b_c_d_e_f_g.txt'],
+    [' report.pdf ', 'report.pdf'],
+    ['report.pdf. . ', 'report.pdf'],
+    ['', '_'],
+    ['.', '_'],
+    ['..', '_'],
+    ['CON', '_CON'],
+    ['nul.txt', '_nul.txt'],
+    ['LPT1 .pdf', '_LPT1 .pdf'],
+    ['name\u0000.pdf', 'name_.pdf'],
+    ['name\u202Efdp.exe', 'name_fdp.exe'],
+  ])('приводит имя с сервера %j к допустимому имени Windows', (name, expected) => {
+    expect(safeFileName(name)).toBe(expected);
+    expect(attachmentName(safeFileName(name))).toBe(expected);
+  });
+
+  it('укорачивает длинное имя, сохраняя расширение', () => {
+    const safe = safeFileName(`${'а'.repeat(300)}.pdf`);
+    expect(safe).toHaveLength(240);
+    expect(safe.endsWith('.pdf')).toBe(true);
+    expect(attachmentName(safe)).toBe(safe);
+  });
+
+  it.each([
     'script.exe',
     'script.bat',
     'script.ps1',
@@ -215,20 +247,24 @@ describe('AttachmentService: current membership and downloads', () => {
     expect(await readdir(h.dir)).toEqual([]);
   });
 
-  it.each(['invalid-name', 'oversize'] as const)(
-    'не скачивает неподходящие метаданные: %s',
-    async (kind) => {
-      const h = await harness();
-      if (kind === 'invalid-name') h.file.fileName = '../outside.pdf';
-      else h.file.size = FILE_LIMIT + 1;
-      await expect(h.service.action(h.target, 'save')).resolves.toMatchObject({
-        ok: false,
-        code: 'invalid_file',
-      });
-      expect(h.state.getFile).not.toHaveBeenCalled();
-      expect(await readdir(h.dir)).toEqual([]);
-    },
-  );
+  it('не скачивает неподходящие метаданные: oversize', async () => {
+    const h = await harness();
+    h.file.size = FILE_LIMIT + 1;
+    await expect(h.service.action(h.target, 'save')).resolves.toMatchObject({
+      ok: false,
+      code: 'invalid_file',
+    });
+    expect(h.state.getFile).not.toHaveBeenCalled();
+    expect(await readdir(h.dir)).toEqual([]);
+  });
+
+  it('имя с обходом пути сохраняется только внутри папки загрузок', async () => {
+    const h = await harness();
+    h.file.fileName = '../outside.pdf';
+    await expect(h.service.action(h.target, 'save')).resolves.toEqual({ ok: true, data: 'saved' });
+    expect(await readdir(h.dir)).toEqual(['.._outside.pdf']);
+    expect(await readdir(join(h.dir, '..'))).not.toContain('outside.pdf');
+  });
 
   it('повторно проверяет серверный доступ к байтам и не сохраняет тело ошибки', async () => {
     const h = await harness();
@@ -446,15 +482,46 @@ describe('AttachmentService: private preview capabilities', () => {
   });
 });
 
+describe('AttachmentService: имя с недопустимыми для Windows знаками', () => {
+  it('показывает фото «скриншот 13:09.png» и сохраняет его под безопасным именем', async () => {
+    const h = await harness({
+      fileName: 'скриншот 13:09.png',
+      bytes: png,
+      mime: 'image/png',
+      isImage: true,
+    });
+    const preview = await h.service.preview(h.target);
+    expect(preview.ok).toBe(true);
+    await expect(h.service.action(h.target, 'save')).resolves.toEqual({ ok: true, data: 'saved' });
+    const files = (await readdir(h.dir)).filter((name) => !name.includes('Zone.Identifier'));
+    expect(files).toEqual(['скриншот 13_09.png']);
+    expect(new Uint8Array(await readFile(join(h.dir, files[0] ?? '')))).toEqual(png);
+  });
+
+  it.each(['../../escape.pdf', String.raw`..\..\escape.pdf`, String.raw`C:\escape.pdf`])(
+    'не выходит из папки загрузок: %j',
+    async (fileName) => {
+      const h = await harness({ fileName });
+      await expect(h.service.action(h.target, 'save')).resolves.toEqual({
+        ok: true,
+        data: 'saved',
+      });
+      const files = await readdir(h.dir);
+      expect(files).toHaveLength(1);
+      expect(files[0]).not.toMatch(/[\\/:]/);
+      expect(files[0]?.endsWith('escape.pdf')).toBe(true);
+    },
+  );
+});
+
 describe('Safe static attachment failure stages', () => {
-  it('distinguishes unsafe name, byte-count mismatch, and unsupported raster without raw names', async () => {
+  it('distinguishes byte-count mismatch and unsupported raster; unsafe name is normalized', async () => {
     const h = await harness({ fileName: 'Фото.png', bytes: png, mime: 'image/png', isImage: true });
     h.file.fileName = '../private.png';
     let result = await h.service.preview(h.target);
-    expect(result).toMatchObject({
-      code: 'invalid_file',
-      error: expect.stringContaining('Имя вложения'),
-    });
+    // По замечанию руководителя 05.11: имя приводится к допустимому, а не отвергается;
+    // в ответ окну имя не попадает.
+    expect(result.ok).toBe(true);
     expect(JSON.stringify(result)).not.toContain('private');
     h.file.fileName = 'Фото.png';
     h.file.size = png.length + 1;

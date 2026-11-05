@@ -55,6 +55,7 @@ const OPEN_EXTENSIONS = new Set([
 ]);
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const keyOf = (t: FileTarget) => `${t.epoch}:${t.chatId}:${t.messageId}:${t.fileId}`;
+const RESERVED_DEVICE = /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]|CONIN\$|CONOUT\$)$/iu;
 export function attachmentName(name: string): string | null {
   if (
     !name ||
@@ -64,12 +65,32 @@ export function attachmentName(name: string): string | null {
     /[<>:"/\\|?*\p{Cc}\p{Cf}\p{Cs}]/u.test(name) ||
     name === '.' ||
     name === '..' ||
-    /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]|CONIN\$|CONOUT\$)$/iu.test(
-      (name.split('.')[0] ?? '').trimEnd(),
-    )
+    RESERVED_DEVICE.test((name.split('.')[0] ?? '').trimEnd())
   )
     return null;
   return name;
+}
+/**
+ * Имя файла с сервера → допустимое имя Windows для «Загрузок». Сервер принимает любое имя
+ * («скриншот 13:09.png»), поэтому оно не отвергается, а приводится: запрещённые знаки
+ * `\ / : * ? " < > |` и управляющие символы — «_», без пробелов по краям и точек в конце,
+ * имя устройства (CON, LPT1…) — с «_» впереди, длина — не больше 240 знаков с расширением.
+ * Разделителей пути в результате нет — выйти из папки нельзя; итог ещё раз проверяет
+ * attachmentName.
+ */
+export function safeFileName(name: string): string {
+  let safe = name
+    .replace(/[<>:"/\\|?*\p{Cc}\p{Cf}\p{Cs}]/gu, '_')
+    .trim()
+    .replace(/[. ]+$/u, '');
+  if (!safe || /^\.+$/u.test(safe)) safe = '_';
+  if (RESERVED_DEVICE.test((safe.split('.')[0] ?? '').trimEnd())) safe = `_${safe}`;
+  if (safe.length > 240) {
+    const ext = extname(safe);
+    const tail = ext.length <= 20 ? ext : '';
+    safe = `${safe.slice(0, 240 - tail.length).trimEnd()}${tail}`;
+  }
+  return attachmentName(safe) ?? 'file';
 }
 export function rasterMime(bytes: Uint8Array): string | null {
   const b = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -172,15 +193,10 @@ export class AttachmentService {
     const message = page.data.items.find(
       (m) => m.id === t.messageId && m.chatId === t.chatId && !m.deleted,
     );
-    const file = message?.files.find((f) => f.fileId === t.fileId);
-    if (!file) return failure('not_found');
-    if (!attachmentName(file.fileName))
-      return {
-        ok: false,
-        code: 'invalid_file',
-        retryable: false,
-        error: 'Имя вложения не прошло проверку. Повторите загрузку из актуального сообщения.',
-      };
+    const found = message?.files.find((f) => f.fileId === t.fileId);
+    if (!found) return failure('not_found');
+    // Имя с сервера не отвергается, а приводится к допустимому имени Windows.
+    const file = { ...found, fileName: safeFileName(found.fileName) };
     if (file.size > FILE_LIMIT)
       return {
         ok: false,
