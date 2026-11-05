@@ -143,14 +143,15 @@ async function fixture(mode = 'good', payload = data) {
       return;
     }
     if (mode === 'trickle') {
-      // Медленно, но без простоя: четыре порции с паузой 40 мс.
-      const step = Math.ceil(payload.length / 4);
+      // Медленно, но без простоя: восемь порций с паузой 80 мс — вся загрузка ~560 мс,
+      // дольше тайм-аута простоя (400 мс), а каждая пауза в 5 раз короче его (запас на нагрузку CI).
+      const step = Math.ceil(payload.length / 8);
       let offset = 0;
       const next = () => {
         res.write(payload.subarray(offset, offset + step));
         offset += step;
         if (offset >= payload.length) res.end();
-        else setTimeout(next, 40);
+        else setTimeout(next, 80);
       };
       next();
       return;
@@ -327,9 +328,9 @@ describe('Desktop public download — real local HTTP and temp filesystem', () =
     const started = performance.now();
     const receipt = await downloadDesktopRelease(release(), {
       ...options(directory, f.origin),
-      idleTimeoutMs: 100,
+      idleTimeoutMs: 400,
     });
-    expect(performance.now() - started).toBeGreaterThan(100);
+    expect(performance.now() - started).toBeGreaterThan(400);
     expect(await readFile(receipt.file)).toEqual(data);
   });
   it('по умолчанию простой 60 с и потолок 30 минут; негодные значения отклоняются', async () => {
