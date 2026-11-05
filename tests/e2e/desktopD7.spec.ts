@@ -478,7 +478,16 @@ test('morning zero does not consume day; positive server-working Saturday shows 
   await expect(popup.locator('.body')).toHaveText('Сроки сегодня: 2 · Новых замечаний: 3');
   await expect.poll(() => morningSeen().length).toBe(1);
   await popup.screenshot({ path: test.info().outputPath('morning-positive.png') });
-  await popup.locator('#close').click();
+  // Кнопка закрывает собственное окно: окно может исчезнуть, пока Playwright ещё
+  // завершает щелчок («Target page … has been closed»). Это успех, а не сбой.
+  const closed = popup.waitForEvent('close');
+  await popup
+    .locator('#close')
+    .click()
+    .catch((error: unknown) => {
+      if (!popup.isClosed()) throw error;
+    });
+  await closed;
   const before = calls('/api/desktop/morning').length;
   await app.close();
   app = undefined;
