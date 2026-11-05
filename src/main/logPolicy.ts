@@ -22,7 +22,12 @@ export const LOG_MESSAGES = [
   'событие исключено',
   'плагины',
   'ошибка обновления',
+  'пропущены данные сервера',
+  'тихие часы не проверены',
 ] as const;
+// Мягкий разбор (ТЗ 3.3): только вид пропущенного элемента, без содержимого.
+const SKIPPED = new Set(['chat', 'message', 'reaction', 'file', 'link', 'card', 'mention']);
+const QUIET_REASONS = new Set(['settings_unavailable', 'no_timezone', 'invalid_settings']);
 const states = new Set([
   'noServer',
   'connecting',
@@ -150,6 +155,10 @@ export function projectLog(message: string, raw?: Record<string, unknown>): LogP
         details.code =
           UPDATE_CODE.test(raw.code) || raw.code === 'stale_update' ? raw.code : 'update_failed';
     }
+    if (raw && safeMessage === 'пропущены данные сервера' && SKIPPED.has(String(raw.kind)))
+      details.kind = String(raw.kind);
+    if (raw && safeMessage === 'тихие часы не проверены' && QUIET_REASONS.has(String(raw.reason)))
+      details.reason = String(raw.reason);
     if (
       raw &&
       safeMessage === 'событие клиента' &&

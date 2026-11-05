@@ -201,44 +201,33 @@ describe('D4 chat contracts', () => {
 });
 
 describe('Live popup watermarks', () => {
-  it('never evicts seen/quiet IDs at capacity, and only fresh covering history reopens the gate', () => {
+  // Поведение изменено 05.11.2026 (ревью PR #6): переполнение множества виденных ID
+  // больше не закрывает шлюз до свежей истории — старейший ID вытесняется с подъёмом
+  // порога, новое уведомление не теряется, вытесненное не всплывает повторно.
+  it('at capacity evicts the oldest seen ID behind a raised floor and keeps delivering new IDs', () => {
     const gate = new LiveNoticeGate(2);
     gate.prime([], []);
     expect(gate.message(4, 101)).toBe(true);
     expect(gate.message(4, 102)).toBe(true);
-    expect(gate.message(4, 103)).toBe(false);
+    expect(gate.message(4, 103)).toBe(true);
     expect(gate.message(4, 101)).toBe(false);
+    expect(gate.message(4, 102)).toBe(false);
+    expect(gate.message(4, 103)).toBe(false);
+    for (let id = 104; id < 120; id++) expect(gate.message(4, id)).toBe(true);
+    for (let id = 101; id < 120; id++) expect(gate.message(4, id)).toBe(false);
     gate.reconnect();
     gate.prime([], []);
-    expect(gate.message(4, 104)).toBe(false);
-    gate.prime([], [], true);
-    expect(gate.message(4, 101)).toBe(false);
-    gate.prime(
-      [
-        chat(4, {
-          last: {
-            id: 104,
-            at: message.at,
-            authorId: 2,
-            authorShortName: 'Тест',
-            preview: '',
-            deleted: false,
-          },
-        }),
-      ],
-      [],
-      true,
-    );
-    expect(gate.message(4, 103)).toBe(false);
-    expect(gate.message(4, 105)).toBe(true);
+    expect(gate.message(4, 118)).toBe(false);
+    expect(gate.message(4, 120)).toBe(true);
     const notifications = new LiveNoticeGate(2);
     notifications.prime([], []);
     expect(notifications.notification(501)).toBe(true);
     expect(notifications.notification(502)).toBe(true);
-    expect(notifications.notification(503)).toBe(false);
+    expect(notifications.notification(503)).toBe(true);
     expect(notifications.notification(501)).toBe(false);
-    notifications.prime([], [item(503)], true);
+    expect(notifications.notification(502)).toBe(false);
     expect(notifications.notification(503)).toBe(false);
+    notifications.prime([], [item(503)]);
     expect(notifications.notification(504)).toBe(true);
   });
   it('accepts concurrent live IDs out of order above a separate history baseline exactly once', () => {

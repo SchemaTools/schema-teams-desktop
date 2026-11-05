@@ -25,6 +25,7 @@ export const S = {
   customToastKeys: 'Enter — отправить · Shift+Enter — новая строка',
   customToastSent: (chat: string) => `Отправлено в «${chat}»`,
   customToastFailed: (error: string) => `Не отправлено: ${error}`,
+  customToastTooLong: `сообщение длиннее 4000 знаков. Сократите текст или отправьте из окна чата.`,
   customToastUnavailable: 'не удалось связаться с сервером. Повторите отправку.',
   customToastMenu: 'Свои окна: Enter / Shift+Enter',
   nativeToastMenu: 'Родные уведомления Windows (сравнение)',

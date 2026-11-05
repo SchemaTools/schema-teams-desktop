@@ -3,6 +3,7 @@ import { ipcRenderer } from 'electron';
 
 const CHANNEL = 'desktop:toast';
 const RESULT = 'desktop:toast-result';
+const UPDATE = 'desktop:toast-update';
 
 window.addEventListener('DOMContentLoaded', () => {
   const input = document.getElementById('reply') as HTMLTextAreaElement | null;
@@ -75,6 +76,13 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') ipcRenderer.send(CHANNEL, { action: 'close' });
+  });
+  // Только текст: обновление счётчика «N новых сообщений» без перезагрузки окна.
+  ipcRenderer.on(UPDATE, (_event, raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) return;
+    const body = (raw as Record<string, unknown>).body;
+    const target = document.querySelector('.body');
+    if (typeof body === 'string' && body.length <= 32000 && target) target.textContent = body;
   });
   ipcRenderer.on(RESULT, (_event, raw: unknown) => {
     if (typeof raw !== 'object' || raw === null) return;

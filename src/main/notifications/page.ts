@@ -1,7 +1,7 @@
 // Локальная страница опыта Д2: оформление Д-У-0 из согласованного макета.
 // Данные — только текст, скриптов страницы нет; ввод обрабатывает изолированный preload.
 import { S } from '../strings';
-import type { ToastSpec } from './types';
+import { REPLY_LIMIT, type ToastSpec } from './types';
 import { closeGlyph, sendGlyph } from './glyphs';
 
 function esc(text: string): string {
@@ -40,7 +40,7 @@ border:1px solid #626e79;border-radius:6px;padding:7px 8px;font:inherit;backgrou
 <div id="message" role="button" tabindex="0" aria-label="${esc(S.menuOpen)}"><h1>${esc(spec.title)}</h1><p class="body">${esc(spec.body)}</p></div>
 ${
   spec.hasReply
-    ? `<div id="reply-box"><div class="reply-row"><textarea id="reply" rows="2" maxlength="32000" aria-label="${esc(S.customToastReply)}" placeholder="${esc(S.customToastReply)}"></textarea><button id="send" aria-label="${esc(S.customToastSend)}" title="${esc(S.customToastSend)}">${sendGlyph}</button></div><div class="hint">${esc(S.customToastKeys)}</div></div>`
+    ? `<div id="reply-box"><div class="reply-row"><textarea id="reply" rows="2" maxlength="${REPLY_LIMIT}" aria-label="${esc(S.customToastReply)}" placeholder="${esc(S.customToastReply)}"></textarea><button id="send" aria-label="${esc(S.customToastSend)}" title="${esc(S.customToastSend)}">${sendGlyph}</button></div><div class="hint">${esc(S.customToastKeys)}</div></div>`
     : ''
 }
 <p id="status" role="status" aria-live="polite"></p>

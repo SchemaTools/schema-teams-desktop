@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { notificationAllowed } from '../../src/main/api/notificationPrefs';
+import { notificationAllowed, quietDecision } from '../../src/main/api/notificationPrefs';
 import { notificationSettings } from '../../src/main/api/parse';
 import { TeamsApi } from '../../src/main/api/client';
 import type { NotificationSettings } from '../../src/shared/client';
@@ -39,14 +39,28 @@ describe('тихие часы обычных сообщений: время бю
       false,
     );
   });
-  it('unknown settings/TZ и неправильные часы не разрешают popup', () => {
-    expect(notificationAllowed(null)).toBe(false);
-    expect(notificationAllowed(base)).toBe(false);
-    expect(notificationAllowed(base, Date.now(), 'Not/A_Time_Zone')).toBe(false);
+  // Поведение изменено 05.11.2026 (ревью PR #6, Ч3): сбой проверки тишины не гасит
+  // уведомление молча — показываем и сообщаем причину для журнала.
+  it('unknown settings/TZ и неправильные часы показывают уведомление с причиной для журнала', () => {
+    expect(quietDecision(null)).toEqual({ allowed: true, warning: 'settings_unavailable' });
+    expect(quietDecision(base)).toEqual({ allowed: true, warning: 'no_timezone' });
+    expect(quietDecision(base, Date.now(), 'Not/A_Time_Zone')).toEqual({
+      allowed: true,
+      warning: 'no_timezone',
+    });
     expect(
-      notificationAllowed({ ...base, quiet: { from: '24:00', to: '08:00' } }, Date.now(), 'UTC'),
-    ).toBe(false);
-    expect(notificationAllowed(base, NaN, 'UTC')).toBe(false);
+      quietDecision({ ...base, quiet: { from: '24:00', to: '08:00' } }, Date.now(), 'UTC'),
+    ).toEqual({ allowed: true, warning: 'invalid_settings' });
+    expect(quietDecision(base, NaN, 'UTC')).toEqual({
+      allowed: true,
+      warning: 'invalid_settings',
+    });
+    expect(notificationAllowed(null)).toBe(true);
+  });
+  it('известная тишина подавляет без предупреждения', () => {
+    expect(quietDecision(base, Date.UTC(2026, 9, 28, 20, 0), 'Asia/Yekaterinburg')).toEqual({
+      allowed: false,
+    });
   });
   it('quiet:null означает выключенную тишину; default19–08 не подставляется', () => {
     expect(notificationAllowed({ ...base, quiet: null }, Date.UTC(2026, 9, 28, 23))).toBe(true);

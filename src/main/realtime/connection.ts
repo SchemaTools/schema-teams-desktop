@@ -14,7 +14,9 @@ export interface RealtimeSocket {
 }
 export interface RealtimeSocketOptions {
   path: '/socket.io';
-  transports: ['websocket'];
+  /** WebSocket, при его недоступности (прокси, фильтр) — HTTP long-polling. */
+  transports: ['websocket', 'polling'];
+  tryAllTransports: true;
   extraHeaders: { Cookie: string };
   reconnection: false;
   autoConnect: false;
@@ -159,7 +161,10 @@ export class RealtimeClient {
     try {
       const socket = (this.o.createSocket ?? createSocket)(this.o.server.origin, {
         path: '/socket.io',
-        transports: ['websocket'],
+        // Запасной транспорт: если прокси или фильтр бюро режет WebSocket, Socket.IO
+        // переходит на long-polling с тем же cookie в заголовке (Node-транспорт).
+        transports: ['websocket', 'polling'],
+        tryAllTransports: true,
         extraHeaders: { Cookie: `st_session=${value}` },
         reconnection: false,
         autoConnect: false,

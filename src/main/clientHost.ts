@@ -29,7 +29,13 @@ import {
   WindowsScreenSaverReader,
   type ScreenSaverSample,
 } from './desktop/screenSaverState';
-import type { ApiResult, ChatMessage, NotificationItem, FocusState } from '../shared/client';
+import type {
+  ApiResult,
+  ChatMessage,
+  NotificationItem,
+  NotificationSettings,
+  FocusState,
+} from '../shared/client';
 import type { ClientSnapshot, DesktopRequest } from '../shared/desktop';
 import { requestValid } from '../shared/requests';
 import { TeamsApi, failure } from './api/client';
@@ -39,7 +45,8 @@ import type { WorkTimer } from '../shared/time';
 import { TimerAbsence } from './timer/absence';
 import { TimerReminders, isReminderTime, type ReminderTicket } from './timer/reminders';
 import { elapsedAt, timerClock, matchesTimer, timerExpected, utcInstant } from '../shared/time';
-import { notificationAllowed } from './api/notificationPrefs';
+import { quietDecision } from './api/notificationPrefs';
+import { trayTooltip } from './desktop/trayTooltip';
 import { LiveNoticeGate } from './notifications/liveGate';
 import { RealtimeClient, type RealtimeEvent } from './realtime/connection';
 import { CLIENT_FILE, CLIENT_URL, PARTITION, guardLocal, type MainWindow } from './mainWindow';
@@ -128,7 +135,15 @@ interface Notice {
   ordinary: boolean;
   lastText?: string;
   requestId?: string;
+  /** Сервер уже применил тихие часы (`quiet` в событии): приложение их не дублирует (ТЗ 5.2 п.3). */
+  serverQuiet?: boolean;
 }
+/** Что перечитать после события сокета: всё, только список чатов или только колокольчик. */
+type RefreshScope = 'all' | 'chats' | 'notifications';
+const mergeScope = (a: RefreshScope | null, b: RefreshScope): RefreshScope =>
+  a === null || a === b ? b : 'all';
+/** Пачка «N новых сообщений» одного чата живёт минуту (ТЗ 5.3). */
+const COUNT_WINDOW = 60000;
 const ok = <T>(data: T): ApiResult<T> => ({ ok: true, data });
 export class ClientHost {
   get partition(): string {
@@ -310,6 +325,13 @@ export class ClientHost {
   private bootFlight?: Promise<void>;
   private bootEpoch = -1;
   private socketOnline = false;
+  private probing?: Promise<void>;
+  private onlineFallback?: NodeJS.Timeout;
+  private refreshScope: RefreshScope | null = null;
+  private againScope: RefreshScope | null = null;
+  private quietCache?: { epoch: number; settings: NotificationSettings };
+  private trayKey?: string;
+  private trayTip?: string;
   private loggingOut = false;
   private authCookie: string | null = null;
   private readonly tick: NodeJS.Timeout;
@@ -552,6 +574,14 @@ export class ClientHost {
       onTimerAudit: (audit) => o.log.info('команда таймера', { ...audit }),
       onPluginAudit: (audit) => o.log.info('плагины', { ...audit }),
     });
+    // Мягкий разбор (ТЗ 3.3): пропуск пишется в журнал видом элемента, не чаще раза в минуту.
+    const skippedAt = new Map<string, number>();
+    parse.onSkipped((kind) => {
+      const now = Date.now();
+      if (now - (skippedAt.get(kind) ?? -Infinity) < 60000) return;
+      skippedAt.set(kind, now);
+      o.log.warn('пропущены данные сервера', { kind });
+    });
     this.paths = new PathService({
       log: o.log,
       trusted: (host) => uncHostTrusted(host, o.uncHosts ?? [], o.server),
@@ -645,9 +675,14 @@ export class ClientHost {
           return;
         }
         if (index === 0) this.openNotice(n);
-        else if (n.chatId && n.messageId) void this.readChat(n.chatId, n.messageId);
-        else if (n.notificationId)
-          void this.api.readNotification(n.notificationId).then(() => this.scheduleRefresh());
+        else {
+          // «Прочитано» у упоминания гасит и сообщение в чате, и событие колокольчика.
+          if (n.chatId && n.messageId) void this.readChat(n.chatId, n.messageId);
+          if (n.notificationId)
+            void this.api
+              .readNotification(n.notificationId)
+              .then(() => this.scheduleRefresh('notifications'));
+        }
       },
       onOpen: (spec) => {
         const n = this.notices.get(spec);
@@ -731,13 +766,22 @@ export class ClientHost {
           if (online) this.liveNotices.prime(this.state.chats, this.state.notifications);
           this.socketOnline = online;
           if (!this.state.user || this.state.user.id !== this.api.owner) return;
-          this.state.connection = online ? 'online' : 'offline';
-          this.publish();
-          if (online) this.scheduleRefresh();
-          if (!online) {
-            this.configEpoch = -1;
-            this.timerEpoch = -1;
+          if (online) {
+            // «Нет связи» снимает только ответ сервера: сокет может подняться, когда
+            // REST ещё недоступен (например, сервер отвечает 503).
+            if (this.state.connection === 'offline') void this.probeServer();
+            else {
+              this.state.connection = 'online';
+              this.publish();
+            }
+            this.scheduleRefresh();
+            return;
           }
+          // Разрыв сокета — ещё не «Нет связи»: история и отправка идут через REST.
+          // Плашка — только если сервер не отвечает (проверка /api/health).
+          this.configEpoch = -1;
+          this.timerEpoch = -1;
+          void this.probeServer();
         },
       });
     }
@@ -989,10 +1033,23 @@ export class ClientHost {
     if (config.ok) this.observeServerTime(config.data.serverNow);
     this.state.timerControl = config.ok && (config.data.capabilities.timerControl ?? 0) >= 2;
     this.retry = 0;
-    this.state.connection = this.socketOnline ? 'online' : 'connecting';
+    // После «Нет связи» сервер снова ответил — сразу «в сети»; при входе коротко ждём сокет.
+    this.state.connection =
+      this.socketOnline || !this.realtime || this.state.connection === 'offline'
+        ? 'online'
+        : 'connecting';
     this.publish();
     await this.refresh();
-    if (boot === this.boot && !this.destroyed && this.api.owner) await this.realtime?.start();
+    if (boot !== this.boot || this.destroyed || !this.api.owner) return;
+    await this.realtime?.start();
+    // Сервер ответил по REST — история и отправка доступны и без сокета. Обычно сокет
+    // подключается за доли секунды; не подключился за 3 с (прокси режет WebSocket и
+    // long-polling ещё пробуется) — «в сети» по проверке /api/health, без ожидания сокета.
+    clearTimeout(this.onlineFallback);
+    this.onlineFallback = setTimeout(() => {
+      if (!this.destroyed && boot === this.boot && this.state.connection === 'connecting')
+        void this.probeServer();
+    }, 3000);
   }
   private offline(error: string): void {
     this.state.connection = 'offline';
@@ -1004,22 +1061,62 @@ export class ClientHost {
       void this.bootstrap();
     }, delay);
   }
-  private scheduleRefresh(): void {
-    if (this.destroyed || this.refreshTimer) return;
-    this.refreshTimer = setTimeout(() => {
-      this.refreshTimer = undefined;
-      void this.refresh();
-    }, 150);
+  /**
+   * События сокета перечитывают только затронутое (список чатов или колокольчик) и
+   * сливаются за 300 мс; полный дозапрос — по таймеру, показу окна, восстановлению связи.
+   */
+  private scheduleRefresh(scope: RefreshScope = 'all'): void {
+    if (this.destroyed) return;
+    this.refreshScope = mergeScope(this.refreshScope, scope);
+    if (this.refreshTimer) return;
+    this.refreshTimer = setTimeout(
+      () => {
+        this.refreshTimer = undefined;
+        const next = this.refreshScope ?? 'all';
+        this.refreshScope = null;
+        void this.refresh(next);
+      },
+      scope === 'all' ? 150 : 300,
+    );
   }
-  private async refresh(): Promise<void> {
+  /** Разрыв сокета или сбой REST: «Нет связи» — только если сервер не отвечает на /api/health. */
+  private probeServer(): Promise<void> {
+    if (this.probing) return this.probing;
+    const epoch = this.api.epoch;
+    const flight = this.api
+      .health()
+      .then((health) => {
+        if (this.destroyed || epoch !== this.api.epoch || !this.state.user) return;
+        if (!health.ok || health.data.status !== 'ok') {
+          this.offline(health.ok ? 'Сервер временно недоступен.' : health.error);
+          return;
+        }
+        // Сервер отвечает: остаёмся «в сети»; дозапрос — по таймеру 30 с или при
+        // восстановлении сокета (без цикла «сбой → проверка → дозапрос»).
+        if (this.state.connection === 'offline' || this.state.connection === 'connecting')
+          this.state.connection = 'online';
+        this.publish();
+      })
+      .finally(() => {
+        if (this.probing === flight) this.probing = undefined;
+      });
+    this.probing = flight;
+    return flight;
+  }
+  private async refresh(scope: RefreshScope = 'all'): Promise<void> {
     if (!this.api.owner || this.destroyed) return;
     if (this.refreshing) {
       this.again = true;
+      this.againScope = mergeScope(this.againScope, scope);
       return;
     }
     this.refreshing = true;
     const epoch = this.api.epoch;
     try {
+      if (scope !== 'all') {
+        await this.refreshPart(scope, epoch);
+        return;
+      }
       if (this.configEpoch !== epoch) {
         const auth = await this.api.authenticate();
         if (
@@ -1052,11 +1149,13 @@ export class ClientHost {
         this.state.notificationUnread = notifications.data.unread;
       }
       if (chats.ok && notifications.ok)
-        this.liveNotices.prime(chats.data.items, notifications.data.items, true);
+        this.liveNotices.prime(chats.data.items, notifications.data.items);
       if (focus.ok) this.updateFocus(focus.data);
       const bad = [chats, notifications, focus].find((r) => !r.ok);
       this.state.error = bad && !bad.ok ? bad.error : null;
       this.state.historyRevision = (this.state.historyRevision ?? 0) + 1;
+      if (this.unreachable(chats)) void this.probeServer();
+      else if (chats.ok && this.state.connection === 'offline') this.state.connection = 'online';
       this.publish();
       if (focus.ok) this.checkReminder();
       void this.checkMorning();
@@ -1068,9 +1167,40 @@ export class ClientHost {
       this.refreshing = false;
       if (this.again) {
         this.again = false;
-        this.scheduleRefresh();
+        const next = this.againScope ?? 'all';
+        this.againScope = null;
+        this.scheduleRefresh(next);
       }
     }
+  }
+  private unreachable(result: ApiResult<unknown>): boolean {
+    return !result.ok && ['network', 'timeout', 'server_error'].includes(result.code);
+  }
+  /** Точечное обновление после события сокета: один GET вместо полного дозапроса. */
+  private async refreshPart(scope: 'chats' | 'notifications', epoch: number): Promise<void> {
+    if (scope === 'chats') {
+      const chats = await this.api.listChats();
+      if (this.destroyed || epoch !== this.api.epoch) return;
+      if (chats.ok) {
+        this.state.chats = chats.data.items;
+        this.state.unread = chats.data.unreadTotal;
+        this.liveNotices.prime(chats.data.items, this.state.notifications);
+      }
+      this.state.error = chats.ok ? null : chats.error;
+      this.state.historyRevision = (this.state.historyRevision ?? 0) + 1;
+      if (this.unreachable(chats)) void this.probeServer();
+    } else {
+      const notifications = await this.api.notifications();
+      if (this.destroyed || epoch !== this.api.epoch) return;
+      if (notifications.ok) {
+        this.state.notifications = notifications.data.items;
+        this.state.notificationUnread = notifications.data.unread;
+        this.liveNotices.prime(this.state.chats, notifications.data.items);
+      }
+      this.state.error = notifications.ok ? null : notifications.error;
+      if (this.unreachable(notifications)) void this.probeServer();
+    }
+    this.publish();
   }
   private observeServerTime(value: unknown): void {
     if (utcInstant(value)) {
@@ -1857,7 +1987,8 @@ export class ClientHost {
             .slice(-99),
           { chatId: p.chatId, userId: p.userId, shortName: p.shortName, until: Date.now() + 5000 },
         ];
-        this.publish();
+        // «Печатает…» — только снимок окнам, без пересчёта плагинов и перерисовки значка.
+        this.sendState();
       } catch {
         /* Malformed presence data never reaches the renderer. */
       }
@@ -1882,8 +2013,7 @@ export class ClientHost {
       }
     }
     if (name === 'session') {
-      this.invalidate();
-      void this.bootstrap();
+      void this.sessionChanged();
       return;
     }
     if (name === 'chat:message') {
@@ -1892,7 +2022,7 @@ export class ClientHost {
         const fresh = this.liveNotices.message(message.chatId, message.id);
         const quietSupported = (this.api.desktopConfiguration?.capabilities.chatQuiet ?? 0) >= 1;
         if (fresh && message.quiet !== true && (!quietSupported || message.quiet === false))
-          this.messageNotice(message);
+          this.messageNotice(message, message.quiet === false);
       } catch {
         this.o.log.warn('неподдержанное событие чата');
       }
@@ -1913,6 +2043,43 @@ export class ClientHost {
         this.o.log.warn('неподдержанное уведомление');
       }
     }
+    this.scheduleRefresh(
+      name === 'notification' ? 'notifications' : name.startsWith('chat:') ? 'chats' : 'all',
+    );
+  }
+  /**
+   * Событие `session` — «права или вход изменились» (docs/server-api.md), а не выход.
+   * Перечитываем /api/auth/me: тот же пользователь и живая сессия — только обновляем
+   * данные и права (черновики, тосты быстрого ответа и epoch сохраняются). Полный сброс —
+   * при 401 (authLost → signedOut) или смене пользователя/временного пароля.
+   */
+  private async sessionChanged(): Promise<void> {
+    const epoch = this.api.epoch,
+      owner = this.api.owner;
+    if (!owner) {
+      void this.bootstrap();
+      return;
+    }
+    const auth = await this.api.authenticate();
+    if (this.destroyed) return;
+    if (!auth.ok) {
+      // 401 уже обработан через onAuthLost; сбой связи — не повод сбрасывать вход.
+      if (auth.code !== 'unauthenticated' && auth.code !== 'stale_session') void this.probeServer();
+      return;
+    }
+    if (
+      epoch !== this.api.epoch ||
+      auth.data.id !== owner ||
+      auth.data.mustChangePassword !== this.state.user?.mustChangePassword
+    ) {
+      this.invalidate();
+      void this.bootstrap();
+      return;
+    }
+    this.state.user = auth.data;
+    // Права и возможности перечитываются при следующем дозапросе (/api/desktop/config).
+    this.configEpoch = -1;
+    this.publish();
     this.scheduleRefresh();
   }
   private updateFocus(focus: FocusState): void {
@@ -1937,7 +2104,7 @@ export class ClientHost {
       );
     });
   }
-  private messageNotice(message: ChatMessage): void {
+  private messageNotice(message: ChatMessage, serverQuiet = false): void {
     const owner = this.api.owner;
     if (
       !owner ||
@@ -1947,9 +2114,9 @@ export class ClientHost {
     )
       return;
     if (message.id <= (this.readThrough.get(message.chatId) ?? 0)) return;
+    this.pruneCounts();
     const previous = this.counts.get(message.chatId);
-    const messages =
-      previous && Date.now() - previous.at < 60000 ? previous.messages : new Set<number>();
+    const messages = previous ? previous.messages : new Set<number>();
     if (messages.has(message.id)) return;
     messages.add(message.id);
     const count = messages.size;
@@ -1958,28 +2125,37 @@ export class ClientHost {
         ? previous.last
         : message;
     this.counts.set(message.chatId, { at: Date.now(), messages, last });
-    this.displayMessageNotice(last, count);
+    this.displayMessageNotice(last, count, serverQuiet);
   }
-  private displayMessageNotice(message: ChatMessage, count: number): void {
+  /** Записи пачек устаревают по времени: старая пачка не воскрешает уведомление. */
+  private pruneCounts(now = Date.now()): void {
+    for (const [chatId, entry] of this.counts)
+      if (now - entry.at >= COUNT_WINDOW) this.counts.delete(chatId);
+  }
+  /** Текст уведомления по ТЗ 5.3: в группе и чате объекта — «Фамилия И.О.: текст». */
+  private messageNoticeText(message: ChatMessage, count: number): string {
+    const kind = this.state.chats.find((c) => c.id === message.chatId)?.kind;
+    const text = message.text || 'Новое вложение';
+    const author = message.author?.shortName;
+    const line = kind && kind !== 'direct' && author ? `${author}: ${text}` : text;
+    return `${count > 1 ? `${count} новых сообщений\n` : ''}${line}`;
+  }
+  private displayMessageNotice(message: ChatMessage, count: number, serverQuiet = false): void {
     const owner = this.api.owner;
     if (!owner) return;
     const title =
       this.state.chats.find((c) => c.id === message.chatId)?.title ??
       message.author?.shortName ??
       'Новое сообщение';
-    this.showNotice(
-      `chat:${message.chatId}`,
-      title,
-      `${count > 1 ? `${count} новых сообщений\n` : ''}${message.text || 'Новое вложение'}`,
-      {
-        epoch: this.api.epoch,
-        owner,
-        chatId: message.chatId,
-        messageId: message.id,
-        mention: false,
-        ordinary: true,
-      },
-    );
+    this.showNotice(`chat:${message.chatId}`, title, this.messageNoticeText(message, count), {
+      epoch: this.api.epoch,
+      owner,
+      chatId: message.chatId,
+      messageId: message.id,
+      mention: false,
+      ordinary: true,
+      serverQuiet,
+    });
   }
   private async readChat(chatId: number, upTo: number): Promise<ApiResult<null>> {
     const epoch = this.api.epoch;
@@ -1993,16 +2169,20 @@ export class ClientHost {
   }
   private acceptRead(chatId: number, upTo: number): void {
     this.readThrough.set(chatId, Math.max(upTo, this.readThrough.get(chatId) ?? 0));
+    this.pruneCounts();
     const current = this.counts.get(chatId);
     if (!current) return;
     for (const id of current.messages) if (id <= upTo) current.messages.delete(id);
-    if (!current.messages.size) {
+    if (!current.messages.size || current.last.id <= upTo) {
       this.counts.delete(chatId);
       this.toasts.dismiss(`chat:${chatId}`);
-    } else {
-      this.toasts.dismiss(`chat:${chatId}`);
-      this.displayMessageNotice(current.last, current.messages.size);
-    }
+    } else if (this.o.settings.get().notifications.preview)
+      // Частично прочитано на другом устройстве: уже показанное уведомление только
+      // обновляет счётчик и текст — без нового всплытия и звука.
+      this.toasts.update(
+        `chat:${chatId}`,
+        this.messageNoticeText(current.last, current.messages.size),
+      );
   }
   private bellNotice(item: NotificationItem, pendingDeviceId?: string): void {
     const owner = this.api.owner;
@@ -2030,6 +2210,8 @@ export class ClientHost {
         ...(item.event === 'timer_stopped' && { timerStopped: true }),
         mention: item.event === 'chat_mention',
         ordinary: item.event === 'timer_stopped',
+        // Событие колокольчика всегда несёт серверный `quiet` (тихие часы, сводка, «Фокус»).
+        serverQuiet: true,
       },
     );
   }
@@ -2132,18 +2314,28 @@ export class ClientHost {
     if (desktopShutdown.locked) return false;
     const n = this.notices.get(spec);
     if (!n || !this.current(n)) return false;
-    if (n.ordinary || n.mention) {
+    // Тихие часы считает сервер (`quiet`, ТЗ 5.2 п.3); приложение проверяет их само только
+    // для событий без серверной отметки (старый сервер, локальная сводка «Фокуса»).
+    if ((n.ordinary || n.mention) && !n.serverQuiet) {
       const epoch = this.api.epoch;
       if (!this.preferencesFlight || this.preferencesEpoch !== epoch) {
         this.preferencesEpoch = epoch;
         const flight = this.api
           .notificationSettings()
-          .then(
-            (r) =>
-              epoch === this.api.epoch &&
-              r.ok &&
-              notificationAllowed(r.data, Date.now(), this.state.bureau?.timeZone ?? null),
-          )
+          .then((r) => {
+            if (epoch !== this.api.epoch) return false;
+            if (r.ok) this.quietCache = { epoch, settings: r.data };
+            // Сбой чтения — последние удачные настройки этого входа, иначе показываем.
+            const settings = this.quietCache?.epoch === epoch ? this.quietCache.settings : null;
+            const decision = quietDecision(
+              settings,
+              Date.now(),
+              this.state.bureau?.timeZone ?? null,
+            );
+            const warning = r.ok ? decision.warning : 'settings_unavailable';
+            if (warning) this.o.log.warn('тихие часы не проверены', { reason: warning });
+            return decision.allowed;
+          })
           .finally(() => {
             if (this.preferencesFlight === flight) this.preferencesFlight = undefined;
           });
@@ -3124,8 +3316,6 @@ export class ClientHost {
       this.o.log.info('состояние соединения', { state: this.state.connection });
     }
     if (this.state.connection !== 'online') this.state.typing = [];
-    this.state.revision++;
-    this.state.epoch = this.api?.epoch ?? 0;
     this.state.themePreference = this.o.settings.get().theme;
     this.state.theme =
       this.state.themePreference === 'system'
@@ -3133,11 +3323,32 @@ export class ClientHost {
           ? 'dark'
           : 'light'
         : this.state.themePreference;
+    this.sendState();
+    this.renderTray();
+  }
+  /** Снимок окнам интерфейса; лёгкая часть publish() для частых событий («печатает…»). */
+  private sendState(): void {
+    if (this.destroyed) return;
+    this.state.revision++;
+    this.state.epoch = this.api?.epoch ?? 0;
     for (const win of [this.o.main.win, this.trayWindow])
       if (win && !win.isDestroyed() && this.peers.has(win.webContents.id))
         win.webContents.send('client:state', this.state);
-    if (!this.o.tray.isDestroyed()) {
-      const n = this.state.unread + this.state.notificationUnread;
+  }
+  /** Значок и подсказка трея перерисовываются только при смене счётчика или состояния. */
+  private renderTray(): void {
+    if (this.o.tray.isDestroyed()) return;
+    const n = this.state.unread + this.state.notificationUnread;
+    const online = this.state.connection === 'online';
+    const focus = Boolean(
+      this.state.focus.until && Date.parse(this.state.focus.until) > Date.now(),
+    );
+    const timer = this.state.timerReady && this.state.timer ? this.state.timer.state : 'idle';
+    const dark = nativeTheme.shouldUseDarkColorsForSystemIntegratedUI;
+    const overlay = n > 0 && Boolean(this.state.user) && this.o.main.win.isVisible();
+    const key = JSON.stringify([n, online, focus, timer, dark, overlay]);
+    if (key !== this.trayKey) {
+      this.trayKey = key;
       const image = nativeImage.createEmpty();
       for (const [scaleFactor, size] of [
         [1, 16],
@@ -3149,28 +3360,27 @@ export class ClientHost {
           scaleFactor,
           width: size,
           height: size,
-          buffer: encodePng(
-            statusBitmap(size, nativeTheme.shouldUseDarkColorsForSystemIntegratedUI, {
-              count: n,
-              online: this.state.connection === 'online',
-              focus: Boolean(
-                this.state.focus.until && Date.parse(this.state.focus.until) > Date.now(),
-              ),
-              timer: this.state.timerReady && this.state.timer ? this.state.timer.state : 'idle',
-            }),
-          ),
+          buffer: encodePng(statusBitmap(size, dark, { count: n, online, focus, timer })),
         });
       this.o.tray.setImage(image);
       if (!this.o.main.win.isDestroyed())
         this.o.main.win.setOverlayIcon(
-          n > 0 && this.state.user && this.o.main.win.isVisible()
-            ? nativeImage.createFromBuffer(encodePng(badgeBitmap(n)))
-            : null,
+          overlay ? nativeImage.createFromBuffer(encodePng(badgeBitmap(n))) : null,
           `Непрочитанных: ${n}`,
         );
-      this.o.tray.setToolTip(
-        `Schema Teams · ${this.state.connection === 'online' ? `Непрочитанных: ${n}` : 'Нет связи'}`,
-      );
+    }
+    const signedOut = ['signedOut', 'passwordChange'].includes(this.state.connection);
+    const tip = trayTooltip({
+      online: online || signedOut,
+      signedIn: online && Boolean(this.state.user),
+      unread: n,
+      timer: this.state.timerReady ? (this.state.timer ?? null) : null,
+      timerObservedAt: this.state.timerObservedAt,
+      focusUntil: this.state.focus.until,
+    });
+    if (tip !== this.trayTip) {
+      this.trayTip = tip;
+      this.o.tray.setToolTip(tip);
     }
   }
   private preferences(): LocalPreferences {
@@ -3290,6 +3500,7 @@ export class ClientHost {
     this.boot++;
     clearTimeout(this.refreshTimer);
     clearTimeout(this.retryTimer);
+    clearTimeout(this.onlineFallback);
     this.api.clear();
     this.realtime?.stop();
     this.login?.close();
@@ -3298,6 +3509,7 @@ export class ClientHost {
     this.files.destroy();
     this.uploads.destroy();
     this.fileSession.protocol.unhandle('schema-attachment');
+    parse.onSkipped(undefined);
     this.trayWindow?.destroy();
     ipcMain.removeHandler('client:request');
     this.ses.cookies.removeListener('changed', this.cookieChanged);

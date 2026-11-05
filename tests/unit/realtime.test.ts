@@ -69,13 +69,15 @@ describe('main Socket.IO session lifecycle', () => {
     f.client.stop();
     expect(f.client.typing(4)).toBe(false);
   });
-  it('uses a private websocket connection with the URL-scoped cookie header', async () => {
+  // С 05.11.2026 (ревью PR #6, Ч4): запасной транспорт long-polling, если WebSocket режут.
+  it('uses a private websocket connection with polling fallback and the URL-scoped cookie header', async () => {
     const f = fixture();
     await Promise.all([f.client.start(), f.client.start(), f.client.start()]);
     expect(f.getCookie).toHaveBeenCalledTimes(1);
     expect(f.createSocket).toHaveBeenCalledExactlyOnceWith('https://example.test', {
       path: '/socket.io',
-      transports: ['websocket'],
+      transports: ['websocket', 'polling'],
+      tryAllTransports: true,
       extraHeaders: { Cookie: 'st_session=opaque-session' },
       reconnection: false,
       autoConnect: false,

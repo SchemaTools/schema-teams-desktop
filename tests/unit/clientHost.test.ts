@@ -92,6 +92,7 @@ const h = vi.hoisted(() => ({
   timerFinish: vi.fn(),
   toastShow: vi.fn(),
   toastDismiss: vi.fn(),
+  toastUpdate: vi.fn<(id: string, body: string) => boolean>(),
   policyAllows: vi.fn(),
   idleState: vi.fn(),
   toastOptions: undefined as
@@ -268,6 +269,7 @@ vi.mock('../../src/main/notifications/toasts', () => ({
     }
     show = h.toastShow;
     dismiss = h.toastDismiss;
+    update = h.toastUpdate;
     clear = h.toastClear;
     destroy = h.toastDestroy;
   },
@@ -1208,14 +1210,18 @@ describe('ClientHost: поколение входа проверяется в д
     'suppressed reminder %s does not consume shown day or play sound',
     async (reason) => {
       vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
-      const { host, getSettings } = fixture();
+      const { host, getSettings, state } = fixture();
       if (reason === 'dnd') h.policyAllows.mockResolvedValue(false);
       if (reason === 'locked') h.idleState.mockReturnValue('locked');
-      if (reason === 'quiet')
+      // С 05.11.2026 неизвестный пояс бюро не гасит уведомление (fail-open), поэтому
+      // тишина задаётся явно: известный пояс и интервал, покрывающий момент проверки.
+      if (reason === 'quiet') {
+        state.bureau = { timeZone: 'UTC', workEnd: '18:00' };
         h.notificationSettings.mockResolvedValue({
           ok: true,
-          data: { rows: [], digestHourly: false, quiet: { from: '20:00', to: '08:00' } },
+          data: { rows: [], digestHourly: false, quiet: { from: '00:01', to: '00:00' } },
         });
+      }
       (
         host as unknown as { acceptTimer: (timer: ReturnType<typeof timerFixture>) => void }
       ).acceptTimer(timerFixture());
@@ -1765,10 +1771,12 @@ describe('D4 live metadata and personal top routing', () => {
     live(f.host).event('chat:message', message(101, false));
     expect(h.toastShow).toHaveBeenCalledTimes(1);
   });
-  it('mention local quiet policy uses bureau time zone rather than the Windows zone', async () => {
+  // Изменено 05.11.2026 (ревью PR #6, Ч3): у события колокольчика тишину уже решил сервер
+  // (`quiet`, ТЗ 5.2 п.3) — приложение не дублирует её своими настройками.
+  it('mention with server quiet:false is not re-checked against local quiet hours', async () => {
     vi.setSystemTime(new Date('2026-10-29T01:00:00Z'));
     const f = fixture();
-    f.state.bureau = { timeZone: 'Asia/Yekaterinburg', workEnd: '18:00' };
+    f.state.bureau = { timeZone: 'UTC', workEnd: '18:00' };
     h.notificationSettings.mockResolvedValue({
       ok: true,
       data: { rows: [], digestHourly: false, quiet: { from: '00:00', to: '02:00' } },
@@ -1780,8 +1788,38 @@ describe('D4 live metadata and personal top routing', () => {
     host.event('notification', { item, kind: item.event, notificationId: item.id, quiet: false });
     const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
     expect(await required(h.toastOptions).beforeShow(spec)).toBe(true);
+    expect(h.notificationSettings).not.toHaveBeenCalled();
+  });
+  it('legacy chat message without server quiet uses bureau time zone; read failure fails open with a warning', async () => {
+    vi.setSystemTime(new Date('2026-10-29T01:00:00Z'));
+    const f = fixture();
+    f.state.bureau = { timeZone: 'Asia/Yekaterinburg', workEnd: '18:00' };
+    f.state.chats = [{ id: 4, kind: 'direct' } as import('../../src/shared/client').ChatSummary];
+    h.notificationSettings.mockResolvedValue({
+      ok: true,
+      data: { rows: [], digestHourly: false, quiet: { from: '00:00', to: '02:00' } },
+    });
+    const host = live(f.host);
+    host.liveNotices.prime([], []);
+    host.event('chat:message', message(101));
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(true);
     f.state.bureau = { timeZone: 'UTC', workEnd: '18:00' };
     expect(await required(h.toastOptions).beforeShow(spec)).toBe(false);
+    // Сбой чтения: последние удачные настройки этого входа, предупреждение в журнал.
+    h.notificationSettings.mockResolvedValue({
+      ok: false,
+      code: 'network',
+      error: 'offline',
+      retryable: true,
+    });
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(false);
+    expect(f.log.warn).toHaveBeenCalledWith('тихие часы не проверены', {
+      reason: 'settings_unavailable',
+    });
+    // Без удачных настроек этого входа — показываем (fail-open), а не гасим молча.
+    (f.host as unknown as { quietCache?: unknown }).quietCache = undefined;
+    expect(await required(h.toastOptions).beforeShow(spec)).toBe(true);
   });
   const message = (id: number, quiet?: boolean) => ({
     id,
@@ -1959,11 +1997,15 @@ describe('Read receipts bound popup accumulation to unread message IDs', () => {
         4,
         upTo,
       );
-    read(101);
-    expect(notice().messageId).toBe(102);
-    expect(notice().spec.body).not.toContain('2 новых сообщений');
-    expect(await required(h.toastOptions).beforeShow(notice().spec)).toBe(true);
+    // С 05.11.2026 (ревью PR #6): частичное прочтение на другом устройстве не всплывает
+    // заново со звуком — уже показанное уведомление только меняет текст.
     const count = h.toastShow.mock.calls.length;
+    read(101);
+    expect(h.toastShow).toHaveBeenCalledTimes(count);
+    expect(h.toastUpdate).toHaveBeenLastCalledWith('chat:4', expect.any(String));
+    expect(h.toastUpdate.mock.calls.at(-1)?.[1]).not.toContain('2 новых сообщений');
+    expect(notice().messageId).toBe(102);
+    expect(await required(h.toastOptions).beforeShow(notice().spec)).toBe(true);
     read(102);
     expect(h.toastDismiss).toHaveBeenCalledWith('chat:4');
     expect(h.toastShow).toHaveBeenCalledTimes(count);
@@ -1996,10 +2038,13 @@ describe('Read receipts bound popup accumulation to unread message IDs', () => {
     await f.invoke({ kind: 'chat.view', epoch: 7, chatId: null });
     notify(f.host, 11);
     expect(required(h.toastShow.mock.calls.at(-1))[0].body).toContain('2 новых');
+    const shown = h.toastShow.mock.calls.length;
     pending.resolve({ ok: true, data: null });
     await read;
-    expect(h.toastDismiss).toHaveBeenCalledWith('chat:4');
-    expect(required(h.toastShow.mock.calls.at(-1))[0].body).not.toContain('новых сообщений');
+    // Без нового всплытия и звука: текст показанного уведомления обновляется на месте.
+    expect(h.toastShow).toHaveBeenCalledTimes(shown);
+    expect(h.toastDismiss).not.toHaveBeenCalled();
+    expect(h.toastUpdate.mock.calls.at(-1)?.[1]).not.toContain('новых сообщений');
     notify(f.host, 12);
     expect(required(h.toastShow.mock.calls.at(-1))[0].body).toContain('2 новых');
   });
@@ -3212,5 +3257,175 @@ describe('T1 finish requires online at the common main entrypoint', () => {
     expect(f.state.navigateTimer).toBeUndefined();
     expect(h.timerPause).not.toHaveBeenCalled();
     expect(h.timerFinish).not.toHaveBeenCalled();
+  });
+});
+
+describe('Ревью PR #6: сессия, связь, уведомления, трей', () => {
+  type Live = {
+    event: (name: string, value: unknown) => void;
+    liveNotices: { prime: (chats: never[], notifications: never[]) => void };
+    messageNotice: (message: import('../../src/shared/client').ChatMessage) => void;
+  };
+  const live = (host: ClientHost) => host as unknown as Live;
+  const chatMessage = (id: number, chatId = 4): import('../../src/shared/client').ChatMessage => ({
+    id,
+    chatId,
+    text: 'Проверка',
+    deleted: false,
+    author: { id: 2, shortName: 'Иванова И.И.' },
+    mentions: [],
+    at: '2026-11-05T09:00:00.000Z',
+    editedAt: null,
+    replyTo: null,
+    files: [],
+    links: [],
+    canEdit: false,
+    reactions: [],
+    cards: [],
+    sticker: null,
+    poll: null,
+  });
+  const chat = (id: number, kind: string) =>
+    ({ id, kind, title: 'Объект А' }) as import('../../src/shared/client').ChatSummary;
+
+  it('session того же пользователя обновляет данные без сброса входа, тостов и epoch', async () => {
+    const f = fixture();
+    h.authenticate.mockResolvedValue({
+      ok: true,
+      data: { id: 1, shortName: 'Иванова И.И.', mustChangePassword: false },
+    });
+    const offline = { ok: false, code: 'network', error: 'offline', retryable: true };
+    h.readDesktopConfig.mockResolvedValue(offline);
+    h.listChats.mockResolvedValue(offline);
+    h.notifications.mockResolvedValue(offline);
+    h.focus.mockResolvedValue(offline);
+    live(f.host).event('session', undefined);
+    await vi.waitFor(() => expect(f.state.user?.shortName).toBe('Иванова И.И.'));
+    expect(h.clear).not.toHaveBeenCalled();
+    expect(h.toastClear).not.toHaveBeenCalled();
+    expect(h.api.epoch).toBe(7);
+    expect(f.state.connection).toBe('online');
+  });
+  it('session со сменой пользователя — полный сброс', async () => {
+    const f = fixture();
+    h.authenticate.mockImplementation(async () => {
+      // Настоящий TeamsApi при смене пользователя очищает себя и меняет поколение.
+      h.api.epoch++;
+      h.api.owner = 2;
+      return { ok: true, data: { id: 2, shortName: 'Петров П.П.', mustChangePassword: false } };
+    });
+    const current = () => (f.host as unknown as { state: ClientSnapshot }).state;
+    live(f.host).event('session', undefined);
+    await vi.waitFor(() => expect(current().user).toBeNull());
+    expect(h.clear).toHaveBeenCalled();
+  });
+  it('session при сбое связи не сбрасывает вход', async () => {
+    const f = fixture();
+    h.authenticate.mockResolvedValue({
+      ok: false,
+      code: 'network',
+      error: 'offline',
+      retryable: true,
+    });
+    h.health.mockResolvedValue({ ok: true, data: { status: 'ok', db: 'ok', version: '0.12.1' } });
+    live(f.host).event('session', undefined);
+    await vi.waitFor(() => expect(h.health).toHaveBeenCalled());
+    expect(h.toastClear).not.toHaveBeenCalled();
+    expect(f.state.user?.id).toBe(1);
+  });
+  it('разрыв сокета при живом REST не включает «Нет связи»; недоступный сервер — включает', async () => {
+    const f = fixture();
+    const before = h.health.mock.calls.length;
+    h.health.mockResolvedValue({ ok: true, data: { status: 'ok', db: 'ok', version: '0.12.1' } });
+    required(h.realtimeStatus)(false);
+    await vi.waitFor(() => expect(h.health).toHaveBeenCalledTimes(before + 1));
+    await Promise.resolve();
+    expect(f.state.connection).toBe('online');
+    h.health.mockResolvedValue({ ok: false, code: 'network', error: 'Нет связи', retryable: true });
+    required(h.realtimeStatus)(false);
+    await vi.waitFor(() => expect(f.state.connection).toBe('offline'));
+  });
+  it('событие чата перечитывает только список чатов, колокольчик — только уведомления', async () => {
+    const f = fixture();
+    h.listChats.mockResolvedValue({ ok: true, data: { items: [], unreadTotal: 0 } });
+    h.notifications.mockResolvedValue({
+      ok: true,
+      data: { items: [], unread: 0, nextBefore: null },
+    });
+    const revision = f.state.historyRevision ?? 0;
+    live(f.host).event('chat:update', {});
+    live(f.host).event('chat:reaction', {});
+    await vi.advanceTimersByTimeAsync(400);
+    expect(h.listChats).toHaveBeenCalledTimes(1);
+    expect(h.notifications).not.toHaveBeenCalled();
+    expect(h.focus).not.toHaveBeenCalled();
+    expect(h.timer).not.toHaveBeenCalled();
+    expect(f.state.historyRevision).toBe(revision + 1);
+    live(f.host).event('notification', { item: null });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(h.notifications).toHaveBeenCalledTimes(1);
+    expect(h.listChats).toHaveBeenCalledTimes(1);
+  });
+  it('«печатает…» не перерисовывает значок трея; значок — только при смене счётчика', () => {
+    const f = fixture();
+    f.state.chats = [chat(4, 'group')];
+    f.state.unread = 1;
+    f.state.typing = [];
+    const publish = () => (f.host as unknown as { publish: () => void }).publish();
+    publish();
+    const drawn = h.traySetImage.mock.calls.length;
+    const sent = h.published.length;
+    live(f.host).event('chat:typing', { chatId: 4, userId: 2, shortName: 'Иванова И.И.' });
+    expect(h.published.length).toBe(sent + 1);
+    expect(h.traySetImage).toHaveBeenCalledTimes(drawn);
+    publish();
+    expect(h.traySetImage).toHaveBeenCalledTimes(drawn);
+    f.state.unread = 2;
+    publish();
+    expect(h.traySetImage).toHaveBeenCalledTimes(drawn + 1);
+  });
+  it('в группе и чате объекта текст тоста — «Фамилия И.О.: текст», в личном — только текст', () => {
+    const f = fixture();
+    f.state.chats = [chat(4, 'group'), chat(5, 'object'), chat(6, 'direct')];
+    live(f.host).messageNotice(chatMessage(10, 4));
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).toBe('Иванова И.И.: Проверка');
+    live(f.host).messageNotice(chatMessage(11, 5));
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).toBe('Иванова И.И.: Проверка');
+    live(f.host).messageNotice(chatMessage(12, 6));
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).toBe('Проверка');
+  });
+  it('пачка сообщений устаревает через минуту: позднее прочтение не трогает старый тост', () => {
+    const f = fixture();
+    live(f.host).messageNotice(chatMessage(10));
+    live(f.host).messageNotice(chatMessage(11));
+    vi.setSystemTime(Date.now() + 61000);
+    (f.host as unknown as { acceptRead: (chatId: number, upTo: number) => void }).acceptRead(4, 10);
+    expect(h.toastUpdate).not.toHaveBeenCalled();
+    live(f.host).messageNotice(chatMessage(12));
+    expect(required(h.toastShow.mock.calls.at(-1))[0].body).not.toContain('новых сообщений');
+  });
+  it('«Прочитано» на тосте упоминания гасит и сообщение, и событие колокольчика', async () => {
+    const f = fixture();
+    h.readNotification.mockResolvedValue({ ok: true, data: { unread: 0 } });
+    const host = live(f.host);
+    host.liveNotices.prime([], []);
+    const item = {
+      id: 610,
+      event: 'chat_mention',
+      at: '2026-11-05T09:00:00Z',
+      read: false,
+      author: null,
+      task: null,
+      changes: [],
+      reason: null,
+      subject: 'Иванова И.И. упомянула вас',
+      link: '/chat/4?m=101',
+    };
+    host.event('notification', { item, kind: item.event, notificationId: item.id, quiet: false });
+    const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
+    required(h.toastOptions).onButton(spec, 1);
+    await Promise.resolve();
+    expect(h.read).toHaveBeenCalledWith(4, 101);
+    expect(h.readNotification).toHaveBeenCalledWith(610);
   });
 });

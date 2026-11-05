@@ -3,11 +3,12 @@ import { BrowserWindow, ipcMain, screen, type IpcMainEvent } from 'electron';
 import { join } from 'node:path';
 import { S } from '../strings';
 import { customToastPage } from './page';
-import type { ToastSpec } from './types';
+import { REPLY_LIMIT, type ToastSpec } from './types';
 import { desktopShutdown } from '../desktop/updateShutdown';
 
 const CHANNEL = 'desktop:toast';
 const RESULT = 'desktop:toast-result';
+const UPDATE = 'desktop:toast-update';
 const LIFETIME = 8000;
 const GAP = 12;
 const WIDTH = 364;
@@ -164,6 +165,15 @@ export class CustomToasts {
     for (const entry of [...this.entries.values()]) entry.win.close();
   }
 
+  /** Новый текст уже показанного уведомления — без нового всплытия, проверок показа и звука. */
+  update(id: string, body: string): boolean {
+    const entry = this.entries.get(id);
+    if (!entry || entry.win.isDestroyed()) return false;
+    entry.spec.body = body;
+    entry.win.webContents.send(UPDATE, { body });
+    return true;
+  }
+
   dismiss(id: string): void {
     const entry = this.entries.get(id);
     this.entries.delete(id);
@@ -246,6 +256,14 @@ export class CustomToasts {
         message.text.length > 32000 ||
         message.text.trim() === ''
       ) {
+        return;
+      }
+      if (message.text.trim().length > REPLY_LIMIT) {
+        // Причина понятна сотруднику, текст в поле остаётся.
+        entry.win.webContents.send(RESULT, {
+          ok: false,
+          message: S.customToastFailed(S.customToastTooLong),
+        });
         return;
       }
       entry.sent = true;
