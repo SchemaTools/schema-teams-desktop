@@ -6,13 +6,14 @@ import {
   type Page,
 } from '@playwright/test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { source } from 'axe-core';
 import { collectNonText } from './nonTextContrast';
 import { startClientStub, type ClientStub } from './clientStub';
 import type { PluginCatalog } from '../../src/shared/plugins';
-import { makePluginZip, fixtureXml, fixtureGuid, fileHash } from '../helpers/pluginArchiveFixture';
+import { makePluginZip, fixtureXml, fileHash } from '../helpers/pluginArchiveFixture';
 const ROOT = resolve(__dirname, '../..');
 let stub: ClientStub, app: ElectronApplication | undefined, profile: string;
 const initial = (): PluginCatalog => ({
@@ -97,7 +98,6 @@ async function launch(theme: 'light' | 'dark' = 'light') {
         {
           year: 2025,
           executable: 'found',
-          addins: [{ scope: 'user', status: 'ok', names: ['unmanaged.addin'], truncated: false }],
         },
       ],
     });
@@ -112,7 +112,6 @@ for (const theme of ['light', 'dark'] as const)
     await expect(panel.getByRole('heading', { name: 'Планы этажей' })).toBeVisible();
     await expect(panel).toContainText('1.10');
     await expect(panel).toContainText('доверенный издатель не настроен');
-    await expect(panel).toContainText('unmanaged.addin — версия неизвестна');
     const summary = panel.locator('summary');
     await summary.focus();
     await page.keyboard.press('Enter');
@@ -190,181 +189,160 @@ test('tester opt-in switches beta; revocation/tester removal removes old metadat
   expect(stub.state.calls.some((c) => c.path.includes('/plugins/files/'))).toBe(false);
 });
 
+/** Тестовый диск плагинов во временной папке профиля: настоящие Addins и Revit не трогаются. */
+async function useTestDisk(zips: Record<number, string>) {
+  await app?.evaluate(
+    ({ app }, data) => {
+      const { createRequire } = process.getBuiltinModule('module'),
+        load = createRequire(`${app.getAppPath()}/package.json`);
+      const { join } = load('node:path') as typeof import('node:path');
+      const fs = load('node:fs/promises') as typeof import('node:fs/promises');
+      const { PluginInstaller } = load(
+        './dist/main/plugins/installer.js',
+      ) as typeof import('../../src/main/plugins/installer');
+      type Host = {
+        pluginContext: () => import('../../src/main/plugins/updater').PluginUpdaterContext | null;
+        pluginInstaller: import('../../src/main/plugins/installer').PluginInstaller;
+        pluginUpdates: import('../../src/main/plugins/updater').PluginUpdater;
+        pluginTest?: { revit: 'busy' | 'idle'; downloads: number; root: string };
+        publish(): void;
+      };
+      const host = (load('./dist/main/index.js') as { client: Host }).client,
+        original = host.pluginContext.bind(host),
+        root = join(app.getPath('userData'), 'plugin-test-disk'),
+        state = { revit: 'busy' as 'busy' | 'idle', downloads: 0, root };
+      host.pluginTest = state;
+      host.pluginInstaller = new PluginInstaller({
+        root: join(root, 'local', 'plugins'),
+        addinsRoot: join(root, 'roaming', 'Addins'),
+        machineAddinsRoot: join(root, 'machine', 'Addins'),
+        // Синтетические файлы не подписаны: доверие подменяется только здесь, в тесте.
+        trusted: async () => true,
+        revit: async () => state.revit,
+      });
+      host.pluginContext = () => {
+        const context = original();
+        return context ? { ...context, available: true } : null;
+      };
+      const ports = host.pluginUpdates.o as unknown as {
+        processes: () => Promise<string>;
+        download: (build: { id: number }, parent: string) => Promise<string>;
+        pollMs?: number;
+      };
+      ports.processes = async () => state.revit;
+      ports.pollMs = 200;
+      ports.download = async (build, parent) => {
+        state.downloads++;
+        await fs.mkdir(parent, { recursive: true });
+        const file = join(parent, `download-${build.id}.zip`);
+        await fs.writeFile(file, Buffer.from(data[build.id] ?? '', 'base64'));
+        return file;
+      };
+      host.publish();
+      void host.pluginUpdates.refresh(true);
+    },
+    Object.fromEntries(Object.entries(zips)),
+  );
+}
+const testState = () =>
+  app?.evaluate(({ app }) => {
+    const load = process
+      .getBuiltinModule('module')
+      .createRequire(`${app.getAppPath()}/package.json`);
+    return (
+      load('./dist/main/index.js') as {
+        client: { pluginTest: { revit: string; downloads: number; root: string } };
+      }
+    ).client.pluginTest;
+  });
+const setRevit = (revit: 'busy' | 'idle') =>
+  app?.evaluate(({ app }, value) => {
+    const load = process
+      .getBuiltinModule('module')
+      .createRequire(`${app.getAppPath()}/package.json`);
+    (
+      load('./dist/main/index.js') as { client: { pluginTest: { revit: string } } }
+    ).client.pluginTest.revit = value;
+  }, revit);
+function syntheticPlugin(version: string) {
+  return makePluginZip([
+    { name: 'Plugin.addin', bytes: fixtureXml('Plugin.dll') },
+    { name: 'Plugin.dll', bytes: Buffer.from(`INERT E2E FIXTURE ${version}, NEVER LOAD`) },
+  ]).buffer;
+}
+
 for (const theme of ['light', 'dark'] as const)
-  test(`automatic waiting → fresh verified temp transaction → receipt and grouped UI: ${theme}`, async () => {
-    test.skip(process.platform !== 'win32', 'native inert XML fixture is Windows-only');
-    const zip = makePluginZip([
-      { name: 'Plugin.addin', bytes: fixtureXml('Plugin.dll') },
-      { name: 'Plugin.dll', bytes: Buffer.from('INERT E2E FIXTURE, NEVER LOAD') },
-    ]).buffer;
+  test(`Revit open → waiting group; after closing installs; disabled → reinstall; «Вернуть»: ${theme}`, async () => {
+    const first = syntheticPlugin('1.10'),
+      second = syntheticPlugin('1.11');
     const plugin = stub.state.pluginCatalog.plugins[0];
     if (!plugin?.stable) throw Error('Missing fixture');
     plugin.stable.requires = [];
     plugin.stable.revit = [2025];
     plugin.beta = null;
-    plugin.stable.sha256 = fileHash(zip);
-    plugin.stable.size = zip.length;
+    plugin.stable.sha256 = fileHash(first);
+    plugin.stable.size = first.length;
     const page = await launch(theme),
       panel = pagePlugins(page);
-    await app?.evaluate(
-      ({ app }, data) => {
-        const { createRequire } = process.getBuiltinModule('module'),
-          load = createRequire(`${app.getAppPath()}/package.json`);
-        const { join } = load('node:path') as typeof import('node:path');
-        const fs = load('node:fs/promises') as typeof import('node:fs/promises');
-        type Host = {
-          pluginContext: () => import('../../src/main/plugins/controller').PluginJobContext | null;
-          pluginJobs: Pick<
-            import('../../src/main/plugins/controller').PluginController,
-            'inspect'
-          > & {
-            o: import('../../src/main/plugins/controller').PluginControllerOptions;
-          };
-          pluginUpdates: Pick<
-            import('../../src/main/plugins/updateCoordinator').PluginUpdateCoordinator,
-            'invalidate'
-          > & {
-            o: import('../../src/main/plugins/updateCoordinator').PluginUpdatePorts;
-          };
-          pluginTestState?: { revit: 'busy' | 'idle'; downloads: number };
-          publish(): void;
-        };
-        const host = (load('./dist/main/index.js') as { client: Host }).client,
-          original = host.pluginContext.bind(host),
-          root = join(app.getPath('userData'), 'inert-plugin-fixture'),
-          state = { revit: 'busy' as 'busy' | 'idle', downloads: 0 };
-        host.pluginUpdates.invalidate();
-        host.pluginContext = () => {
-          const context = original();
-          return context
-            ? {
-                ...context,
-                targetRoot: join(root, 'user'),
-                dataRoot: join(root, 'data'),
-                stagingParent: join(root, 'staging'),
-                scanRoots: ([2025, 2026] as const).flatMap((year) => [
-                  { year, path: join(root, 'user', String(year)) },
-                  { year, path: join(root, 'machine', String(year)) },
-                ]),
-              }
-            : null;
-        };
-        const { PluginController } = load(
-          './dist/main/plugins/controller.js',
-        ) as typeof import('../../src/main/plugins/controller');
-        const old = host.pluginJobs.o;
-        host.pluginJobs = new PluginController({
-          ...old,
-          context: () => host.pluginContext(),
-          processes: async () => state.revit,
-          pathAllowed: async () => true,
-          verify: async (_path, hash) => ({
-            v: 1,
-            verdict: 'valid',
-            reason: 'verified',
-            fileSha256: hash,
-            signerDerSha256: 'f'.repeat(64),
-            winTrustCode: '00000000',
-          }),
-          policy: () => ({
-            publisherPins: ['f'.repeat(64)],
-            templates: [
-              {
-                policyId: 'synthetic',
-                code: 'floor-plans',
-                archive: {
-                  id: 'raw',
-                  files: [
-                    { relativePath: 'Plugin.dll', kind: 'dll' },
-                    { relativePath: 'Plugin.addin', kind: 'addin' },
-                  ],
-                  manifests: [
-                    {
-                      relativePath: 'Plugin.addin',
-                      year: 2025,
-                      addIns: [{ addInId: data.guid, assemblyRelativePath: 'Plugin.dll' }],
-                    },
-                  ],
-                },
-                yearFiles: [{ year: 2025, paths: ['Plugin.dll'] }],
-                manifestTargets: [
-                  {
-                    year: 2025,
-                    sourceRelativePath: 'Plugin.addin',
-                    targetBasename: 'Schema.addin',
-                  },
-                ],
-              },
-            ],
-          }),
-          download: async (_build, parent) => {
-            state.downloads++;
-            const dir = await fs.mkdtemp(join(parent, 'archive-')),
-              file = join(dir, 'package.zip');
-            await fs.writeFile(file, Buffer.from(data.zip, 'base64'));
-            return file;
-          },
-        }) as unknown as Host['pluginJobs'];
-        host.pluginUpdates.o.processes = async () => state.revit;
-        host.pluginTestState = state;
-        host.publish();
-      },
-      { zip: zip.toString('base64'), guid: fixtureGuid },
-    );
+    await useTestDisk({ 1: first.toString('base64'), 3: second.toString('base64') });
     await expect(
-      panel.getByRole('heading', { name: 'Ожидают закрытия Revit', exact: true }),
+      panel.getByRole('heading', { name: 'Ждут закрытия Revit', exact: true }),
     ).toBeVisible();
-    await expect(panel).toContainText('Ожидаем закрытия всех процессов Revit');
-    expect(
-      await app?.evaluate(({ app }) => {
-        const load = process
-          .getBuiltinModule('module')
-          .createRequire(`${app.getAppPath()}/package.json`);
-        return (
-          load('./dist/main/index.js') as { client: { pluginTestState: { downloads: number } } }
-        ).client.pluginTestState.downloads;
-      }),
-    ).toBe(0);
-    await page.screenshot({ path: test.info().outputPath(`plugins-auto-waiting-${theme}.png`) });
-    await app?.evaluate(({ app }) => {
-      const load = process
-        .getBuiltinModule('module')
-        .createRequire(`${app.getAppPath()}/package.json`);
-      (
-        load('./dist/main/index.js') as { client: { pluginTestState: { revit: string } } }
-      ).client.pluginTestState.revit = 'idle';
+    await expect(panel).toContainText('Установится, когда вы закроете Revit.');
+    await expect(panel).toContainText('Ещё 1 обновление поставим сами');
+    await expect(panel.getByRole('button', { name: 'Установить при закрытии' })).toBeDisabled();
+    expect((await testState())?.downloads).toBe(0);
+    await page.screenshot({ path: test.info().outputPath(`plugins-waiting-${theme}.png`) });
+    await setRevit('idle');
+    await expect(panel).toContainText('Готово — можно открывать Revit.', { timeout: 20000 });
+    await expect(panel.getByRole('heading', { name: 'Установлено', exact: true })).toBeVisible();
+    await expect(panel).toContainText('✓ свежий');
+    await expect(panel).toContainText('актуально 1/1');
+    const state = await testState();
+    if (!state) throw Error('No test state');
+    expect(state.downloads).toBe(1);
+    const addinPath = join(state.root, 'roaming', 'Addins', '2025', 'floor-plans.addin');
+    expect(await readFile(addinPath, 'utf8')).toContain(
+      join(state.root, 'local', 'plugins', 'floor-plans', '1.10', 'Plugin.dll'),
+    );
+    await page.screenshot({ path: test.info().outputPath(`plugins-installed-${theme}.png`) });
+    // Пользователь или антивирус убрал .addin: «отключён» и «Переустановить» без загрузки.
+    await panel.getByRole('checkbox', { name: 'Обновлять автоматически' }).uncheck();
+    await rm(addinPath);
+    await panel.getByRole('button', { name: 'Проверить', exact: true }).click();
+    await expect(panel.getByRole('heading', { name: 'Ошибки', exact: true })).toBeVisible();
+    await expect(panel).toContainText('Плагин отключён');
+    await panel.getByRole('button', { name: 'Переустановить', exact: true }).click();
+    await expect(panel.getByRole('heading', { name: 'Установлено', exact: true })).toBeVisible({
+      timeout: 20000,
     });
-    await expect(panel).toContainText('Установка подтверждена.', { timeout: 20000 });
-    await expect(panel.getByRole('heading', { name: 'Установленные', exact: true })).toBeVisible();
-    await expect(panel).not.toContainText('доверенный издатель не настроен');
-    const facts = await app?.evaluate(async ({ app }) => {
-      const load = process
-          .getBuiltinModule('module')
-          .createRequire(`${app.getAppPath()}/package.json`),
-        host = (
-          load('./dist/main/index.js') as {
-            client: {
-              pluginJobs: { inspect: () => Promise<unknown> };
-              pluginTestState: { downloads: number };
-            };
-          }
-        ).client;
-      return { view: await host.pluginJobs.inspect(), downloads: host.pluginTestState.downloads };
+    expect((await testState())?.downloads).toBe(1);
+    // Новая сборка вручную, затем «Вернуть 1.10» у этого плагина.
+    plugin.stable = {
+      ...plugin.stable,
+      id: 3,
+      url: '/api/desktop/plugins/files/3',
+      version: '1.11',
+      sha256: fileHash(second),
+      size: second.length,
+    };
+    stub.emit('desktop:plugins', undefined);
+    await expect(panel).toContainText('1.10 → 1.11');
+    await panel.getByRole('button', { name: 'Установить', exact: true }).click();
+    await expect(panel).toContainText('Готово — можно открывать Revit.', { timeout: 20000 });
+    await panel.locator('summary').click();
+    await panel.getByRole('button', { name: 'Вернуть 1.10', exact: true }).click();
+    await expect(panel).toContainText('Автообновление версии 1.11 остановлено', {
+      timeout: 20000,
     });
-    expect(facts).toMatchObject({
-      downloads: 1,
-      view: {
-        status: 'ready',
-        packages: [{ code: 'floor-plans', buildId: 1, version: '1.10', years: [2025] }],
-      },
-    });
-    await page.screenshot({ path: test.info().outputPath(`plugins-auto-complete-${theme}.png`) });
+    expect(await readFile(addinPath, 'utf8')).toContain(join('floor-plans', '1.10', 'Plugin.dll'));
     await panel.getByRole('checkbox', { name: 'Сообщать об установке' }).uncheck();
-    const preference = JSON.parse(
-      await (await import('node:fs/promises')).readFile(join(profile, 'settings.json'), 'utf8'),
-    ) as { plugins: { notifyInstalled: boolean } };
-    expect(preference.plugins.notifyInstalled).toBe(false);
+    const preference = JSON.parse(await readFile(join(profile, 'settings.json'), 'utf8')) as {
+      plugins: { notifyInstalled: boolean; autoUpdate: boolean };
+    };
+    expect(preference.plugins).toMatchObject({ notifyInstalled: false, autoUpdate: false });
   });
+
 test('empty catalog, forbidden response and retry are honest; no install or background downloads', async () => {
   stub.state.pluginCatalog = { tester: false, plugins: [] };
   const page = await launch(),
@@ -390,7 +368,6 @@ test('direct install IPC cannot supply paths or override production trust', asyn
       kind: 'plugins.install' as const,
       epoch: snapshot.data.epoch,
       code: 'floor-plans',
-      years: [2025 as const],
     };
     const valid = await window.teams.request(intent);
     const forged = await window.teams.request({
