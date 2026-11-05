@@ -1,5 +1,14 @@
 import { ExternalLink, Check, CheckCheck, File, FolderOpen } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  Fragment,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import type { ChatFile, ChatMessage, ChatReaction } from '../shared/client';
 import { request } from './bridge';
 import { colorClass, findUncPath, initials, timeLabel } from './model';
@@ -81,6 +90,36 @@ export function Avatar({
   );
 }
 
+/** Эмодзи бюро для ленты: код без двоеточий → ид файла картинки. */
+export const BureauEmoji = createContext<ReadonlyMap<string, number>>(new Map());
+/** Код своего эмодзи в тексте — как на сервере (`CHAT_EMOJI_IN_TEXT`). */
+const EMOJI_CODE = /:([\p{L}\p{N}_]{2,32}):/gu;
+
+/** Коды известных эмодзи бюро — картинкой; незнакомый код остаётся текстом. */
+export function withEmoji(piece: string, emoji: ReadonlyMap<string, number>): ReactNode[] {
+  if (!emoji.size || !piece.includes(':')) return [piece];
+  const out: ReactNode[] = [];
+  let last = 0;
+  for (const match of piece.matchAll(EMOJI_CODE)) {
+    const fileId = emoji.get(match[1] ?? '');
+    if (fileId === undefined) continue;
+    if (match.index > last) out.push(piece.slice(last, match.index));
+    out.push(
+      <img
+        key={`${match.index}:${match[0]}`}
+        className="bureau-emoji"
+        src={`schema-attachment://sticker/${fileId}`}
+        alt={match[0]}
+        title={match[0]}
+        draggable={false}
+      />,
+    );
+    last = match.index + match[0].length;
+  }
+  if (last < piece.length) out.push(piece.slice(last));
+  return out;
+}
+
 function MessageText({
   text,
   epoch,
@@ -99,6 +138,7 @@ function MessageText({
     if (!result.ok) onError(result.error);
     else if (result.data === 'blocked') onError(R.pathBlocked);
   };
+  const emoji = useContext(BureauEmoji);
   const links = (line: string) =>
     line.split(/(https?:\/\/[^\s<>"']+)/g).map((piece, part) =>
       /^https?:\/\//.test(piece) ? (
@@ -113,7 +153,7 @@ function MessageText({
           {piece}
         </a>
       ) : (
-        piece
+        <Fragment key={part}>{withEmoji(piece, emoji)}</Fragment>
       ),
     );
   return (

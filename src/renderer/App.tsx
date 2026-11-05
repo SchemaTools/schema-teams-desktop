@@ -43,7 +43,7 @@ import type {
 } from '../shared/client';
 import type { ClientSnapshot } from '../shared/desktop';
 import { request } from './bridge';
-import { Avatar, MessageBubble, SchemaLogo } from './content';
+import { Avatar, BureauEmoji, MessageBubble, SchemaLogo } from './content';
 import {
   chatLink,
   chatGroups,
@@ -64,7 +64,7 @@ import { U } from './uploadStrings';
 import './composer.css';
 import { TypingStatus } from './typing';
 import { ChatSearch } from './chatSearch';
-import { EmojiPicker } from './emojiPicker';
+import { bureauEmojiMap, EmojiPicker, useBureauSet } from './emojiPicker';
 import { ObjectInfoPanel } from './objectInfo';
 import './events.css';
 import { TimerPanel } from './timer';
@@ -198,6 +198,13 @@ export function App() {
   const [awayFromBottom, setAwayFromBottom] = useState(false);
   const owner = `${snapshot.epoch}:${snapshot.user?.id ?? ''}`;
   const online = snapshot.connection === 'online';
+  // набор бюро: стикеры и свои эмодзи — для панели и для `:код:` в ленте
+  const bureau = useBureauSet(
+    snapshot.epoch,
+    snapshot.stickersRevision ?? 0,
+    online && !!snapshot.user,
+  );
+  const bureauEmoji = useMemo(() => bureauEmojiMap(bureau.set), [bureau.set]);
 
   const patchDraft = useCallback((chatId: number, change: (old: Draft) => Draft) => {
     if (updateLock.current) return;
@@ -1129,904 +1136,908 @@ export function App() {
 
   return (
     <UpdateEditors.Provider value={registerUpdateEditor}>
-      <div
-        className={`app-shell${pluginsOpen ? ' plugins-active' : ''}`}
-        data-connection={snapshot.connection}
-        aria-busy={updateLocked || undefined}
-        onPointerDownCapture={guardUpdateInput}
-        onClickCapture={guardUpdateInput}
-        onBeforeInputCapture={guardUpdateInput}
-        onPasteCapture={guardUpdateInput}
-        onDropCapture={guardUpdateInput}
-        onKeyDownCapture={(event) => {
-          if (!updateLock.current) return;
-          if (event.key === 'Escape') {
-            event.preventDefault();
-            event.stopPropagation();
-            return;
-          }
-          if (event.key === 'Tab') {
-            event.preventDefault();
-            event.stopPropagation();
-            const buttons = [
-              ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                '[data-update-controls] button:not(:disabled)',
-              ),
-            ].filter((b) => b.getClientRects().length > 0);
-            const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-            buttons[(index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
-            return;
-          }
-          guardUpdateInput(event);
-        }}
-      >
-        {reportOpen && (
-          <ReportPanel
-            snapshot={snapshot}
-            onClose={() => {
-              setReportOpen(false);
-              requestAnimationFrame(() => menuButton.current?.focus());
-            }}
-          />
-        )}
-        {setupOpen && (
-          <SetupPanel
-            snapshot={snapshot}
-            onClose={() => {
-              setSetupOpen(false);
-              requestAnimationFrame(() => menuButton.current?.focus());
-            }}
-          />
-        )}
-        {settingsView && (
-          <PreferencesPanel
-            key={settingsView.nonce}
-            snapshot={snapshot}
-            initialTab={settingsView.tab}
-            updateActions={updateActions}
-            onClose={() => {
-              setSettingsView(null);
-              requestAnimationFrame(() => {
-                if (timerView)
-                  document
-                    .querySelector<HTMLButtonElement>(
-                      '.timer-panel button[aria-label="Закрыть таймер"]',
-                    )
-                    ?.focus();
-                else menuButton.current?.focus();
-              });
-            }}
-          />
-        )}
-        {timerView && snapshot.user && (
-          <div hidden={Boolean(settingsView) || setupOpen || reportOpen}>
-            <TimerPanel
-              key={`${owner}:${timerView.nonce}`}
+      <BureauEmoji.Provider value={bureauEmoji}>
+        <div
+          className={`app-shell${pluginsOpen ? ' plugins-active' : ''}`}
+          data-connection={snapshot.connection}
+          aria-busy={updateLocked || undefined}
+          onPointerDownCapture={guardUpdateInput}
+          onClickCapture={guardUpdateInput}
+          onBeforeInputCapture={guardUpdateInput}
+          onPasteCapture={guardUpdateInput}
+          onDropCapture={guardUpdateInput}
+          onKeyDownCapture={(event) => {
+            if (!updateLock.current) return;
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            if (event.key === 'Tab') {
+              event.preventDefault();
+              event.stopPropagation();
+              const buttons = [
+                ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                  '[data-update-controls] button:not(:disabled)',
+                ),
+              ].filter((b) => b.getClientRects().length > 0);
+              const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+              buttons[
+                (index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length
+              ]?.focus();
+              return;
+            }
+            guardUpdateInput(event);
+          }}
+        >
+          {reportOpen && (
+            <ReportPanel
               snapshot={snapshot}
-              mode={timerView.mode}
-              taskId={timerView.taskId}
-              prepareExpected={timerView.prepareExpected}
-              onClose={() => setTimerView(null)}
+              onClose={() => {
+                setReportOpen(false);
+                requestAnimationFrame(() => menuButton.current?.focus());
+              }}
             />
-          </div>
-        )}
-        <nav className="folder-rail" aria-label={R.folders}>
-          <button
-            className="folder-button menu-button"
-            aria-label={R.menu}
-            aria-expanded={menu}
-            ref={menuButton}
-            onClick={() => setMenu(!menu)}
-          >
-            <Menu size={24} />
-          </button>
-          {(
-            [
-              ['all', R.all, MessageCircleMore, snapshot.unread + snapshot.notificationUnread],
+          )}
+          {setupOpen && (
+            <SetupPanel
+              snapshot={snapshot}
+              onClose={() => {
+                setSetupOpen(false);
+                requestAnimationFrame(() => menuButton.current?.focus());
+              }}
+            />
+          )}
+          {settingsView && (
+            <PreferencesPanel
+              key={settingsView.nonce}
+              snapshot={snapshot}
+              initialTab={settingsView.tab}
+              updateActions={updateActions}
+              onClose={() => {
+                setSettingsView(null);
+                requestAnimationFrame(() => {
+                  if (timerView)
+                    document
+                      .querySelector<HTMLButtonElement>(
+                        '.timer-panel button[aria-label="Закрыть таймер"]',
+                      )
+                      ?.focus();
+                  else menuButton.current?.focus();
+                });
+              }}
+            />
+          )}
+          {timerView && snapshot.user && (
+            <div hidden={Boolean(settingsView) || setupOpen || reportOpen}>
+              <TimerPanel
+                key={`${owner}:${timerView.nonce}`}
+                snapshot={snapshot}
+                mode={timerView.mode}
+                taskId={timerView.taskId}
+                prepareExpected={timerView.prepareExpected}
+                onClose={() => setTimerView(null)}
+              />
+            </div>
+          )}
+          <nav className="folder-rail" aria-label={R.folders}>
+            <button
+              className="folder-button menu-button"
+              aria-label={R.menu}
+              aria-expanded={menu}
+              ref={menuButton}
+              onClick={() => setMenu(!menu)}
+            >
+              <Menu size={24} />
+            </button>
+            {(
               [
-                'objects',
-                R.objects,
-                BuildingComplex,
-                snapshot.chats
-                  .filter((chat) => chat.kind === 'object')
-                  .reduce((sum, chat) => sum + chat.unread, 0),
-              ],
-              ['personal', R.personal, User, 0],
-              ['events', R.events, Bell, snapshot.notificationUnread],
-            ] as const
-          ).map(([key, label, Icon, count]) => (
+                ['all', R.all, MessageCircleMore, snapshot.unread + snapshot.notificationUnread],
+                [
+                  'objects',
+                  R.objects,
+                  BuildingComplex,
+                  snapshot.chats
+                    .filter((chat) => chat.kind === 'object')
+                    .reduce((sum, chat) => sum + chat.unread, 0),
+                ],
+                ['personal', R.personal, User, 0],
+                ['events', R.events, Bell, snapshot.notificationUnread],
+              ] as const
+            ).map(([key, label, Icon, count]) => (
+              <button
+                type="button"
+                key={key}
+                className={`folder-button${!pluginsOpen && folder === key ? ' active' : ''}`}
+                onClick={() => chooseFolder(key)}
+                aria-pressed={!pluginsOpen && folder === key}
+              >
+                <Icon size={24} />
+                {label}
+                {count > 0 && <b className="rail-count">{count > 99 ? '99+' : count}</b>}
+              </button>
+            ))}
             <button
               type="button"
-              key={key}
-              className={`folder-button${!pluginsOpen && folder === key ? ' active' : ''}`}
-              onClick={() => chooseFolder(key)}
-              aria-pressed={!pluginsOpen && folder === key}
+              className={`folder-button${pluginsOpen ? ' active' : ''}`}
+              aria-pressed={pluginsOpen}
+              onClick={() => setPluginsOpen(true)}
             >
-              <Icon size={24} />
-              {label}
-              {count > 0 && <b className="rail-count">{count > 99 ? '99+' : count}</b>}
+              <Layers size={24} />
+              {R.plugins}
             </button>
-          ))}
-          <button
-            type="button"
-            className={`folder-button${pluginsOpen ? ' active' : ''}`}
-            aria-pressed={pluginsOpen}
-            onClick={() => setPluginsOpen(true)}
-          >
-            <Layers size={24} />
-            {R.plugins}
-          </button>
-          <span className="rail-spacer" />
-          <button
-            type="button"
-            className="folder-button"
-            disabled={!snapshot.user}
-            onClick={() =>
-              void action({
-                kind: 'timer.open',
-                epoch: snapshot.epoch,
-                mode: snapshot.timer ? 'finish' : 'pick',
-              })
-            }
-          >
-            <Timer size={24} />
-            Таймер
-          </button>
-          <button
-            type="button"
-            className="folder-button"
-            onClick={() => void action({ kind: 'open.site', epoch: snapshot.epoch, path: '/' })}
-          >
-            <ExternalLink size={24} />
-            {R.website}
-          </button>
-        </nav>
-        {menu && (
-          <section className="settings-popover" aria-label={R.settings}>
-            <h2>{snapshot.user?.shortName ?? R.appName}</h2>
-            <button onClick={() => void action({ kind: 'settings.open', tab: 'general' })}>
-              <Settings size={18} />
-              Настройки
+            <span className="rail-spacer" />
+            <button
+              type="button"
+              className="folder-button"
+              disabled={!snapshot.user}
+              onClick={() =>
+                void action({
+                  kind: 'timer.open',
+                  epoch: snapshot.epoch,
+                  mode: snapshot.timer ? 'finish' : 'pick',
+                })
+              }
+            >
+              <Timer size={24} />
+              Таймер
             </button>
-            <button onClick={() => void action({ kind: 'settings.open', tab: 'about' })}>
-              <Info size={18} />О программе
+            <button
+              type="button"
+              className="folder-button"
+              onClick={() => void action({ kind: 'open.site', epoch: snapshot.epoch, path: '/' })}
+            >
+              <ExternalLink size={24} />
+              {R.website}
             </button>
-            <button onClick={() => void action({ kind: 'report.open' })}>
-              <MessageCircleMore size={18} />
-              Сообщить о проблеме
-            </button>
-            <label>
-              <Settings size={18} />
-              {R.theme}
-              <select
-                aria-label={R.theme}
-                value={snapshot.themePreference}
-                onChange={(event) =>
-                  void action({
-                    kind: 'theme',
-                    mode: event.target.value as 'system' | 'light' | 'dark',
-                  })
-                }
-              >
-                <option value="system">{R.themeSystem}</option>
-                <option value="light">{R.themeLight}</option>
-                <option value="dark">{R.themeDark}</option>
-              </select>
-            </label>
-            {online && (
-              <>
-                <button
-                  onClick={() => {
+          </nav>
+          {menu && (
+            <section className="settings-popover" aria-label={R.settings}>
+              <h2>{snapshot.user?.shortName ?? R.appName}</h2>
+              <button onClick={() => void action({ kind: 'settings.open', tab: 'general' })}>
+                <Settings size={18} />
+                Настройки
+              </button>
+              <button onClick={() => void action({ kind: 'settings.open', tab: 'about' })}>
+                <Info size={18} />О программе
+              </button>
+              <button onClick={() => void action({ kind: 'report.open' })}>
+                <MessageCircleMore size={18} />
+                Сообщить о проблеме
+              </button>
+              <label>
+                <Settings size={18} />
+                {R.theme}
+                <select
+                  aria-label={R.theme}
+                  value={snapshot.themePreference}
+                  onChange={(event) =>
                     void action({
-                      kind: 'focus.set',
-                      epoch: snapshot.epoch,
-                      minutes: activeFocus ? 0 : 30,
-                    });
-                    setMenu(false);
-                  }}
+                      kind: 'theme',
+                      mode: event.target.value as 'system' | 'light' | 'dark',
+                    })
+                  }
                 >
-                  <Moon size={18} />
-                  {activeFocus ? R.focusOff : R.focus30}
-                </button>
-                {!activeFocus && (
+                  <option value="system">{R.themeSystem}</option>
+                  <option value="light">{R.themeLight}</option>
+                  <option value="dark">{R.themeDark}</option>
+                </select>
+              </label>
+              {online && (
+                <>
                   <button
                     onClick={() => {
-                      void action({ kind: 'focus.set', epoch: snapshot.epoch, minutes: 60 });
+                      void action({
+                        kind: 'focus.set',
+                        epoch: snapshot.epoch,
+                        minutes: activeFocus ? 0 : 30,
+                      });
                       setMenu(false);
                     }}
                   >
                     <Moon size={18} />
-                    {R.focus60}
+                    {activeFocus ? R.focusOff : R.focus30}
                   </button>
-                )}
-              </>
-            )}
-            <button
-              onClick={() => {
-                void action({ kind: 'open.site', epoch: snapshot.epoch, path: '/my' });
-                setMenu(false);
-              }}
-            >
-              <ExternalLink size={18} />
-              {R.myTasks}
-            </button>
-            <button onClick={() => setMenu(false)}>
-              <Check size={18} />
-              {R.closeMenu}
-            </button>
-            {snapshot.user && (
+                  {!activeFocus && (
+                    <button
+                      onClick={() => {
+                        void action({ kind: 'focus.set', epoch: snapshot.epoch, minutes: 60 });
+                        setMenu(false);
+                      }}
+                    >
+                      <Moon size={18} />
+                      {R.focus60}
+                    </button>
+                  )}
+                </>
+              )}
               <button
                 onClick={() => {
+                  void action({ kind: 'open.site', epoch: snapshot.epoch, path: '/my' });
                   setMenu(false);
-                  void action({ kind: 'logout', epoch: snapshot.epoch });
                 }}
               >
-                <LogOut size={18} />
-                {R.logout}
+                <ExternalLink size={18} />
+                {R.myTasks}
               </button>
-            )}
-          </section>
-        )}
-        {pluginsOpen && <PluginsPage key={snapshot.epoch} snapshot={snapshot} />}
-        <aside className="chat-list">
-          <label className="search-field">
-            <MessageCircleMore size={19} />
-            <span className="sr-only">{R.search}</span>
-            <input
-              type="search"
-              aria-label={R.search}
-              placeholder={R.searchPlaceholder}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
-          <div className="list-scroll">
-            {snapshot.user && (
-              <>
-                {folder === 'events' ? (
-                  showService && serviceRow
-                ) : (
-                  <>
-                    {top.length > 0 && (
-                      <section className="chat-group" data-chat-group="top">
-                        <h2 className="group-label">
-                          <Pin size={15} />
-                          Закреплённые · {top.length}
-                        </h2>
-                        {top.map(chatRow)}
-                      </section>
-                    )}
-                    {(waiting.length > 0 || (showService && snapshot.notificationUnread > 0)) && (
-                      <section className="chat-group waiting">
-                        <h2 className="group-label">
-                          <MessageCircleMore size={15} />
-                          {R.waiting(
-                            waiting.length +
-                              (showService && snapshot.notificationUnread > 0 ? 1 : 0),
-                          )}
-                        </h2>
-                        {waiting.map(chatRow)}
-                        {showService && snapshot.notificationUnread > 0 && serviceRow}
-                      </section>
-                    )}
-                    {active.length > 0 && (
-                      <section className="chat-group" data-chat-group="active">
-                        <h2 className="group-label">
-                          <BuildingComplex size={15} />
-                          Мои задачи на объектах · {active.length}
-                        </h2>
-                        {active.map(chatRow)}
-                      </section>
-                    )}
-                    {other.length > 0 && (
-                      <section className="chat-group" data-chat-group="other">
-                        {active.length > 0 && <h2 className="group-label">Остальные чаты</h2>}
-                        {other.map(chatRow)}
-                      </section>
-                    )}
-                    {showService && snapshot.notificationUnread === 0 && serviceRow}
-                  </>
-                )}
-                {!visibleChats.length && !showService && (
-                  <div className="empty-state small-empty">
-                    <p>{search ? R.noResults : R.noChats}</p>
-                    <p>{search ? R.noResultsHint : R.noChatsHint}</p>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-          <footer className="list-footer">
-            <span title={R.version(snapshot.appVersion, snapshot.serverVersion)}>
-              {snapshot.user?.shortName ?? R.appName}
-            </span>
-            <span>
-              <i className={`status-dot${online ? '' : ' offline'}`} />
-              {online
-                ? R.online
-                : snapshot.connection === 'connecting'
-                  ? R.connecting
-                  : snapshot.connection === 'signedOut'
-                    ? R.signedOut
-                    : R.offline}
-            </span>
-          </footer>
-        </aside>
-        <main className="conversation">
-          <UpdateBanner snapshot={snapshot} />
-          {snapshot.user && snapshot.connection !== 'passwordChange' ? (
-            <>
-              {snapshot.connection === 'offline' && (
-                <div className="banner">
-                  <CircleAlert size={17} />
-                  {R.offline}
-                  <button onClick={() => void action({ kind: 'retry' })}>{R.retry}</button>
-                </div>
+              <button onClick={() => setMenu(false)}>
+                <Check size={18} />
+                {R.closeMenu}
+              </button>
+              {snapshot.user && (
+                <button
+                  onClick={() => {
+                    setMenu(false);
+                    void action({ kind: 'logout', epoch: snapshot.epoch });
+                  }}
+                >
+                  <LogOut size={18} />
+                  {R.logout}
+                </button>
               )}
-              {snapshot.timerAbsence && (
-                <div className="banner" role="status">
-                  После блокировки или сна проверьте время таймера.{' '}
-                  <button
-                    onClick={() =>
-                      void action({ kind: 'timer.open', epoch: snapshot.epoch, mode: 'finish' })
-                    }
-                  >
-                    Проверить время
-                  </button>
-                </div>
-              )}
-              {(uiError || snapshot.error || snapshot.morningWarning) && (
-                <div className="banner error-banner" role="status">
-                  <CircleAlert size={17} />
-                  {uiError || snapshot.error || snapshot.morningWarning}
-                </div>
-              )}
-              {selection === 'events' ? (
+            </section>
+          )}
+          {pluginsOpen && <PluginsPage key={snapshot.epoch} snapshot={snapshot} />}
+          <aside className="chat-list">
+            <label className="search-field">
+              <MessageCircleMore size={19} />
+              <span className="sr-only">{R.search}</span>
+              <input
+                type="search"
+                aria-label={R.search}
+                placeholder={R.searchPlaceholder}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+            </label>
+            <div className="list-scroll">
+              {snapshot.user && (
                 <>
-                  <header className="conversation-header">
-                    <Avatar name={R.appName} id={0} bot small />
-                    <div className="header-copy">
-                      <h1>{R.appName}</h1>
-                      <small>{R.eventsSubtitle}</small>
-                    </div>
-                    <button
-                      className="secondary-button"
-                      disabled={!online || snapshot.notificationUnread === 0}
-                      onClick={() =>
-                        void action({
-                          kind: 'notifications.read',
-                          epoch: snapshot.epoch,
-                          id: 'all',
-                        })
-                      }
-                    >
-                      {R.readAll}
-                    </button>
-                  </header>
-                  <div className="chat-wall">
-                    <div className="messages-scroll">
-                      {snapshot.notifications.length ? (
-                        snapshot.notifications.map(eventCard)
-                      ) : (
-                        <Empty title={R.noEvents} text={R.noEventsHint} />
+                  {folder === 'events' ? (
+                    showService && serviceRow
+                  ) : (
+                    <>
+                      {top.length > 0 && (
+                        <section className="chat-group" data-chat-group="top">
+                          <h2 className="group-label">
+                            <Pin size={15} />
+                            Закреплённые · {top.length}
+                          </h2>
+                          {top.map(chatRow)}
+                        </section>
                       )}
+                      {(waiting.length > 0 || (showService && snapshot.notificationUnread > 0)) && (
+                        <section className="chat-group waiting">
+                          <h2 className="group-label">
+                            <MessageCircleMore size={15} />
+                            {R.waiting(
+                              waiting.length +
+                                (showService && snapshot.notificationUnread > 0 ? 1 : 0),
+                            )}
+                          </h2>
+                          {waiting.map(chatRow)}
+                          {showService && snapshot.notificationUnread > 0 && serviceRow}
+                        </section>
+                      )}
+                      {active.length > 0 && (
+                        <section className="chat-group" data-chat-group="active">
+                          <h2 className="group-label">
+                            <BuildingComplex size={15} />
+                            Мои задачи на объектах · {active.length}
+                          </h2>
+                          {active.map(chatRow)}
+                        </section>
+                      )}
+                      {other.length > 0 && (
+                        <section className="chat-group" data-chat-group="other">
+                          {active.length > 0 && <h2 className="group-label">Остальные чаты</h2>}
+                          {other.map(chatRow)}
+                        </section>
+                      )}
+                      {showService && snapshot.notificationUnread === 0 && serviceRow}
+                    </>
+                  )}
+                  {!visibleChats.length && !showService && (
+                    <div className="empty-state small-empty">
+                      <p>{search ? R.noResults : R.noChats}</p>
+                      <p>{search ? R.noResultsHint : R.noChatsHint}</p>
                     </div>
-                  </div>
+                  )}
                 </>
-              ) : selectedChat ? (
-                <>
-                  <header className="conversation-header">
-                    <Avatar
-                      name={chatTitle(selectedChat)}
-                      id={selectedChat.peer?.id ?? selectedChat.id}
-                      photo={selectedChat.photoFileId}
-                      object={selectedChat.kind === 'object'}
-                      small
-                    />
-                    <div className="header-copy">
-                      <h1>{chatTitle(selectedChat)}</h1>
-                      <small>
-                        {selectedChat.objectCode ? `${selectedChat.objectCode} · ` : ''}
-                        <TypingStatus
-                          entries={snapshot.typing}
-                          chatId={selectedChat.id}
-                          online={online}
-                          fallback={R.members(
-                            shownDetail?.members.length ?? selectedChat.memberCount,
-                          )}
-                        />
-                      </small>
-                    </div>
-                    {activeFocus && (
-                      <span className="muted-copy">
-                        <Moon size={15} /> {R.focusUntil(timeLabel(snapshot.focus.until ?? ''))}
-                      </span>
-                    )}
-                    <ChatSearch
-                      key={`${owner}:${selectedChat.id}`}
-                      epoch={snapshot.epoch}
-                      chatId={selectedChat.id}
-                      online={online}
-                      onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
-                    />
-                    {selectedChat.kind === 'object' && selectedChat.objectId !== null && (
-                      <button
-                        type="button"
-                        className="icon-button"
-                        ref={objectInfoButton}
-                        aria-label="Об объекте"
-                        aria-expanded={objectInfoOpen}
-                        aria-controls={objectInfoOpen ? 'object-info-panel' : undefined}
-                        disabled={!online}
-                        onClick={() => setObjectInfoOpen((value) => !value)}
-                      >
-                        <Info size={20} />
-                      </button>
-                    )}
+              )}
+            </div>
+            <footer className="list-footer">
+              <span title={R.version(snapshot.appVersion, snapshot.serverVersion)}>
+                {snapshot.user?.shortName ?? R.appName}
+              </span>
+              <span>
+                <i className={`status-dot${online ? '' : ' offline'}`} />
+                {online
+                  ? R.online
+                  : snapshot.connection === 'connecting'
+                    ? R.connecting
+                    : snapshot.connection === 'signedOut'
+                      ? R.signedOut
+                      : R.offline}
+              </span>
+            </footer>
+          </aside>
+          <main className="conversation">
+            <UpdateBanner snapshot={snapshot} />
+            {snapshot.user && snapshot.connection !== 'passwordChange' ? (
+              <>
+                {snapshot.connection === 'offline' && (
+                  <div className="banner">
+                    <CircleAlert size={17} />
+                    {R.offline}
+                    <button onClick={() => void action({ kind: 'retry' })}>{R.retry}</button>
+                  </div>
+                )}
+                {snapshot.timerAbsence && (
+                  <div className="banner" role="status">
+                    После блокировки или сна проверьте время таймера.{' '}
                     <button
-                      className="icon-button"
-                      title={R.openChatWeb}
-                      aria-label={R.openChatWeb}
                       onClick={() =>
-                        void action({
-                          kind: 'open.site',
-                          epoch: snapshot.epoch,
-                          path: `/chat/${selectedChat.id}`,
-                        })
+                        void action({ kind: 'timer.open', epoch: snapshot.epoch, mode: 'finish' })
                       }
                     >
-                      <ExternalLink size={20} />
+                      Проверить время
                     </button>
-                  </header>
-                  <div className="conversation-workspace">
-                    <div className="chat-wall">
-                      {shownDetail?.pinned && (
-                        <section className="pinned-message" aria-label="Закреплённое сообщение">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              select(selectedChat.id, shownDetail.pinned?.id, snapshot.epoch)
-                            }
-                          >
-                            <Pin size={19} />
-                            <span className="pinned-copy">
-                              <strong>
-                                {shownDetail.pinned.authorShortName ?? 'Закреплённое сообщение'}
-                              </strong>
-                              <span>{shownDetail.pinned.preview}</span>
-                            </span>
-                          </button>
-                          {shownDetail.canPin && (
-                            <button
-                              type="button"
-                              className="unpin-message"
-                              aria-label="Открепить сообщение"
-                              disabled={!online || !shownDetail.canWrite}
-                              onClick={() => {
-                                void action({
-                                  kind: 'chat.pin',
-                                  epoch: snapshot.epoch,
-                                  chatId: selectedChat.id,
-                                  messageId: null,
-                                });
-                              }}
-                            >
-                              <X size={18} />
-                            </button>
-                          )}
-                        </section>
-                      )}
-                      <div
-                        className="messages-scroll"
-                        ref={scroll}
-                        onScroll={() => {
-                          markVisible();
-                          const viewport = scroll.current;
-                          if (viewport) {
-                            const away =
-                              viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight >
-                              100;
-                            setAwayFromBottom(away);
-                            if (!away) setNewMessages(0);
-                          }
-                        }}
-                        aria-label={R.conversation}
-                        data-chat-id={historyChat}
-                        data-owner={messageOwner}
-                      >
-                        {hasMore && shownMessages.length > 0 && (
-                          <button
-                            className="history-button"
-                            disabled={loading || !online}
-                            onClick={() => {
-                              const first = shownMessages[0];
-                              if (first) void loadHistory(selectedChat.id, first.id);
-                            }}
-                          >
-                            {loading ? R.loadingHistory : R.loadOlder}
-                          </button>
-                        )}
-                        {messageError && (
-                          <div className="inline-status error-copy" role="status">
-                            {messageError}
-                            <button
-                              className="secondary-button"
-                              onClick={() => void loadHistory(selectedChat.id)}
-                              disabled={!online}
-                            >
-                              {R.retry}
-                            </button>
-                          </div>
-                        )}
-                        {loading && !shownMessages.length ? (
-                          <Empty title={R.loadingHistory} text="" />
-                        ) : !shownMessages.length && !messageError ? (
-                          <Empty title={R.noMessages} text={R.noMessagesHint} />
-                        ) : (
-                          shownMessages.map((message, index) => (
-                            <Fragment key={message.id}>
-                              {dateLabel(shownMessages[index - 1]?.at ?? '') !==
-                                dateLabel(message.at) && (
-                                <div className="day-divider">
-                                  <span>{dateLabel(message.at)}</span>
-                                </div>
-                              )}
-                              <MessageBubble
-                                message={message}
-                                authorPhoto={
-                                  shownDetail?.members.find(
-                                    (member) => member.user.id === message.author?.id,
-                                  )?.photoFileId ?? null
-                                }
-                                firstInGroup={
-                                  !message.author ||
-                                  shownMessages[index - 1]?.author?.id !== message.author.id ||
-                                  dateLabel(shownMessages[index - 1]?.at ?? '') !==
-                                    dateLabel(message.at)
-                                }
-                                lastInGroup={
-                                  !message.author ||
-                                  shownMessages[index + 1]?.author?.id !== message.author.id ||
-                                  dateLabel(shownMessages[index + 1]?.at ?? '') !==
-                                    dateLabel(message.at)
-                                }
-                                epoch={snapshot.epoch}
-                                ownId={snapshot.user?.id ?? 0}
-                                read={
-                                  shownDetail?.members.some(
-                                    (member) =>
-                                      member.user.id !== snapshot.user?.id &&
-                                      (member.readUpTo ?? 0) >= message.id,
-                                  ) ?? false
-                                }
-                                onError={(message) => {
-                                  if (snapshotRef.current.epoch === snapshot.epoch)
-                                    setUiError(message);
-                                }}
-                                reactionsEnabled={online}
-                                canWrite={shownDetail?.canWrite === true}
-                                canPin={shownDetail?.canPin === true}
-                                pinned={shownDetail?.pinned?.id === message.id}
-                                onReply={() => {
-                                  if (
-                                    snapshotRef.current.epoch !== snapshot.epoch ||
-                                    !online ||
-                                    !shownDetail?.canWrite ||
-                                    message.deleted
-                                  )
-                                    return;
-                                  patchDraft(selectedChat.id, (old) =>
-                                    old.pending || old.uploading
-                                      ? old
-                                      : {
-                                          ...old,
-                                          reply: {
-                                            id: message.id,
-                                            author: message.author?.shortName ?? R.unknownAuthor,
-                                            preview: message.text || 'Вложение',
-                                          },
-                                          intent: undefined,
-                                          error: '',
-                                          uncertain: false,
-                                        },
-                                  );
-                                  requestAnimationFrame(() => composerInput.current?.focus());
-                                }}
-                                onChange={(updated) => {
-                                  if (
-                                    snapshotRef.current.epoch !== snapshot.epoch ||
-                                    selectionRef.current !== selectedChat.id
-                                  )
-                                    return;
-                                  setMessages((old) => mergeMessages(old, [updated]));
-                                }}
-                                onPin={() => {
-                                  if (
-                                    snapshotRef.current.epoch === snapshot.epoch &&
-                                    selectionRef.current === selectedChat.id
-                                  )
-                                    void loadHistory(selectedChat.id, undefined, undefined, true);
-                                }}
-                                onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
-                                onReactions={(messageId, reactions) => {
-                                  if (
-                                    snapshotRef.current.epoch !== snapshot.epoch ||
-                                    selectionRef.current !== selectedChat.id
-                                  )
-                                    return;
-                                  setMessages((old) =>
-                                    old.map((item) =>
-                                      item.id === messageId ? { ...item, reactions } : item,
-                                    ),
-                                  );
-                                }}
-                              />
-                            </Fragment>
-                          ))
-                        )}
-                        <div ref={bottom} />
+                  </div>
+                )}
+                {(uiError || snapshot.error || snapshot.morningWarning) && (
+                  <div className="banner error-banner" role="status">
+                    <CircleAlert size={17} />
+                    {uiError || snapshot.error || snapshot.morningWarning}
+                  </div>
+                )}
+                {selection === 'events' ? (
+                  <>
+                    <header className="conversation-header">
+                      <Avatar name={R.appName} id={0} bot small />
+                      <div className="header-copy">
+                        <h1>{R.appName}</h1>
+                        <small>{R.eventsSubtitle}</small>
                       </div>
-                      {(awayFromBottom || newMessages > 0 || hasNewer) && (
-                        <button
-                          type="button"
-                          className="new-messages-button"
-                          onClick={() => {
-                            aroundRef.current = null;
-                            setNewMessages(0);
-                            setAwayFromBottom(false);
-                            select(selectedChat.id, undefined, snapshot.epoch);
-                          }}
-                        >
-                          К новым сообщениям{newMessages > 0 ? ` · ${newMessages}` : ''}
-                        </button>
-                      )}
-                      {draft.reply && (
-                        <section className="composer-context" aria-label="Ответ с цитатой">
-                          <div className="composer-context-copy">
-                            <strong>{draft.reply.author}</strong>
-                            <span>{draft.reply.preview}</span>
-                          </div>
-                          <button
-                            type="button"
-                            aria-label="Отменить ответ с цитатой"
-                            disabled={draft.pending || draft.uploading}
-                            onClick={() =>
-                              patchDraft(selectedChat.id, (old) => ({
-                                ...old,
-                                reply: undefined,
-                                intent: undefined,
-                                error: '',
-                                uncertain: false,
-                              }))
-                            }
-                          >
-                            <X size={16} />
-                          </button>
-                        </section>
-                      )}
-                      {(draft.files.length > 0 || draft.uploading) && (
-                        <section
-                          className="composer-uploads"
-                          aria-label={U.attachments}
-                          data-chat-id={selectedChat.id}
-                        >
-                          {draft.files.length > 0 && (
-                            <ul className="composer-upload-list">
-                              {draft.files.map((file) => (
-                                <li
-                                  key={file.fileId}
-                                  className="composer-upload-chip"
-                                  data-file-id={file.fileId}
-                                >
-                                  <File size={19} aria-hidden="true" />
-                                  <span className="composer-upload-copy">
-                                    <span title={file.fileName}>{file.fileName}</span>
-                                    <small>{U.fileSize(file.size)}</small>
-                                  </span>
-                                  <button
-                                    type="button"
-                                    aria-label={U.remove(file.fileName)}
-                                    disabled={draft.pending || draft.uploading}
-                                    onClick={() => removeAttachment(selectedChat.id, file.fileId)}
-                                  >
-                                    <X size={15} />
-                                  </button>
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                          {draft.uploading && (
-                            <span className="composer-upload-status" role="status">
-                              {U.uploading}
-                            </span>
-                          )}
-                        </section>
-                      )}
-                      <form
-                        className="composer"
-                        aria-busy={draft.uploading || draft.pending}
-                        onSubmit={(event) => {
-                          event.preventDefault();
-                          void send();
-                        }}
+                      <button
+                        className="secondary-button"
+                        disabled={!online || snapshot.notificationUnread === 0}
+                        onClick={() =>
+                          void action({
+                            kind: 'notifications.read',
+                            epoch: snapshot.epoch,
+                            id: 'all',
+                          })
+                        }
                       >
-                        <div className="composer-field">
-                          <button
-                            type="button"
-                            className="composer-attach-button"
-                            aria-label={U.pickFiles}
-                            title={U.limits}
-                            disabled={
-                              !online ||
-                              draft.pending ||
-                              draft.uploading ||
-                              draft.files.length >= 10 ||
-                              shownDetail?.canWrite !== true
-                            }
-                            onClick={() => void uploadFiles('pick')}
-                          >
-                            <Paperclip size={21} />
-                          </button>
-                          <textarea
-                            ref={composerInput}
-                            rows={1}
-                            aria-label={R.messagePlaceholder}
-                            placeholder={R.messagePlaceholder}
-                            maxLength={4000}
-                            value={draft.value}
-                            disabled={!online || draft.pending || shownDetail?.canWrite !== true}
-                            onChange={(event) => {
-                              if (snapshotRef.current.epoch !== snapshot.epoch) return;
-                              const value = event.target.value;
-                              if (value.trim() && online && shownDetail?.canWrite)
-                                void request({
-                                  kind: 'chat.typing',
-                                  epoch: snapshot.epoch,
-                                  chatId: selectedChat.id,
-                                });
-                              patchDraft(selectedChat.id, (old) => ({
-                                ...old,
-                                value,
-                                error: '',
-                                uncertain: false,
-                                ...(old.intent?.text !== value.trim() && { intent: undefined }),
-                              }));
-                            }}
-                            onKeyDown={(event) => {
-                              if (
-                                event.key === 'Enter' &&
-                                !event.shiftKey &&
-                                !event.nativeEvent.isComposing &&
-                                !event.repeat
-                              ) {
-                                event.preventDefault();
-                                void send();
-                              }
-                            }}
-                            onPaste={(event) => {
-                              if (
-                                ![...event.clipboardData.items].some(
-                                  (item) => item.kind === 'file' && item.type.startsWith('image/'),
-                                )
-                              )
-                                return;
-                              event.preventDefault();
-                              void uploadFiles('paste');
-                            }}
-                          />
-                          <EmojiPicker
-                            key={`${owner}:${selectedChat.id}`}
-                            epoch={snapshot.epoch}
-                            stickersRevision={snapshot.stickersRevision ?? 0}
-                            onSticker={(sticker) => void sendSticker(sticker)}
-                            disabled={!online || draft.pending || shownDetail?.canWrite !== true}
-                            onPick={(emoji) => {
-                              if (snapshotRef.current.epoch !== snapshot.epoch) return;
-                              const input = composerInput.current,
-                                start = input?.selectionStart ?? draft.value.length,
-                                end = input?.selectionEnd ?? start;
-                              patchDraft(selectedChat.id, (old) =>
-                                old.value.length - (end - start) + emoji.length > 4000
-                                  ? { ...old, error: R.tooLong }
-                                  : {
-                                      ...old,
-                                      value:
-                                        old.value.slice(0, start) + emoji + old.value.slice(end),
-                                      intent: undefined,
-                                      error: '',
-                                      uncertain: false,
-                                    },
-                              );
-                              requestAnimationFrame(() => {
-                                if (snapshotRef.current.epoch !== snapshot.epoch) return;
-                                input?.focus();
-                                input?.setSelectionRange(
-                                  start + emoji.length,
-                                  start + emoji.length,
-                                );
-                              });
-                            }}
-                          />
-                        </div>
-                        <button
-                          type="submit"
-                          className="send-button"
-                          aria-label={draft.pending ? R.sending : R.send}
-                          disabled={
-                            !online ||
-                            shownDetail?.canWrite !== true ||
-                            (!draft.value.trim() && !draft.files.length) ||
-                            draft.pending ||
-                            draft.uploading
-                          }
-                        >
-                          <Send size={24} />
-                        </button>
-                      </form>
-                      <div
-                        className={`compose-meta${draftIssue ? ' error-copy' : ''}`}
-                        role="status"
-                      >
-                        <span>
-                          {draftIssue ||
-                            (shownDetail?.canWrite === false
-                              ? R.readOnly
-                              : !online
-                                ? R.offlineHint
-                                : draft.uploading
-                                  ? U.uploading
-                                  : draft.pending
-                                    ? R.sending
-                                    : R.keys)}
-                        </span>
-                        {draft.error && (draft.value.trim() || draft.files.length > 0) && (
-                          <button
-                            className="secondary-button"
-                            disabled={
-                              !online ||
-                              draft.pending ||
-                              draft.uploading ||
-                              shownDetail?.canWrite !== true
-                            }
-                            onClick={() => void send()}
-                          >
-                            {R.retrySend}
-                          </button>
+                        {R.readAll}
+                      </button>
+                    </header>
+                    <div className="chat-wall">
+                      <div className="messages-scroll">
+                        {snapshot.notifications.length ? (
+                          snapshot.notifications.map(eventCard)
+                        ) : (
+                          <Empty title={R.noEvents} text={R.noEventsHint} />
                         )}
                       </div>
                     </div>
-                    {objectInfoOpen && selectedChat.kind === 'object' && (
-                      <ObjectInfoPanel
+                  </>
+                ) : selectedChat ? (
+                  <>
+                    <header className="conversation-header">
+                      <Avatar
+                        name={chatTitle(selectedChat)}
+                        id={selectedChat.peer?.id ?? selectedChat.id}
+                        photo={selectedChat.photoFileId}
+                        object={selectedChat.kind === 'object'}
+                        small
+                      />
+                      <div className="header-copy">
+                        <h1>{chatTitle(selectedChat)}</h1>
+                        <small>
+                          {selectedChat.objectCode ? `${selectedChat.objectCode} · ` : ''}
+                          <TypingStatus
+                            entries={snapshot.typing}
+                            chatId={selectedChat.id}
+                            online={online}
+                            fallback={R.members(
+                              shownDetail?.members.length ?? selectedChat.memberCount,
+                            )}
+                          />
+                        </small>
+                      </div>
+                      {activeFocus && (
+                        <span className="muted-copy">
+                          <Moon size={15} /> {R.focusUntil(timeLabel(snapshot.focus.until ?? ''))}
+                        </span>
+                      )}
+                      <ChatSearch
                         key={`${owner}:${selectedChat.id}`}
                         epoch={snapshot.epoch}
                         chatId={selectedChat.id}
                         online={online}
-                        onClose={() => {
-                          setObjectInfoOpen(false);
-                          requestAnimationFrame(() => objectInfoButton.current?.focus());
-                        }}
+                        onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
                       />
-                    )}
+                      {selectedChat.kind === 'object' && selectedChat.objectId !== null && (
+                        <button
+                          type="button"
+                          className="icon-button"
+                          ref={objectInfoButton}
+                          aria-label="Об объекте"
+                          aria-expanded={objectInfoOpen}
+                          aria-controls={objectInfoOpen ? 'object-info-panel' : undefined}
+                          disabled={!online}
+                          onClick={() => setObjectInfoOpen((value) => !value)}
+                        >
+                          <Info size={20} />
+                        </button>
+                      )}
+                      <button
+                        className="icon-button"
+                        title={R.openChatWeb}
+                        aria-label={R.openChatWeb}
+                        onClick={() =>
+                          void action({
+                            kind: 'open.site',
+                            epoch: snapshot.epoch,
+                            path: `/chat/${selectedChat.id}`,
+                          })
+                        }
+                      >
+                        <ExternalLink size={20} />
+                      </button>
+                    </header>
+                    <div className="conversation-workspace">
+                      <div className="chat-wall">
+                        {shownDetail?.pinned && (
+                          <section className="pinned-message" aria-label="Закреплённое сообщение">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                select(selectedChat.id, shownDetail.pinned?.id, snapshot.epoch)
+                              }
+                            >
+                              <Pin size={19} />
+                              <span className="pinned-copy">
+                                <strong>
+                                  {shownDetail.pinned.authorShortName ?? 'Закреплённое сообщение'}
+                                </strong>
+                                <span>{shownDetail.pinned.preview}</span>
+                              </span>
+                            </button>
+                            {shownDetail.canPin && (
+                              <button
+                                type="button"
+                                className="unpin-message"
+                                aria-label="Открепить сообщение"
+                                disabled={!online || !shownDetail.canWrite}
+                                onClick={() => {
+                                  void action({
+                                    kind: 'chat.pin',
+                                    epoch: snapshot.epoch,
+                                    chatId: selectedChat.id,
+                                    messageId: null,
+                                  });
+                                }}
+                              >
+                                <X size={18} />
+                              </button>
+                            )}
+                          </section>
+                        )}
+                        <div
+                          className="messages-scroll"
+                          ref={scroll}
+                          onScroll={() => {
+                            markVisible();
+                            const viewport = scroll.current;
+                            if (viewport) {
+                              const away =
+                                viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight >
+                                100;
+                              setAwayFromBottom(away);
+                              if (!away) setNewMessages(0);
+                            }
+                          }}
+                          aria-label={R.conversation}
+                          data-chat-id={historyChat}
+                          data-owner={messageOwner}
+                        >
+                          {hasMore && shownMessages.length > 0 && (
+                            <button
+                              className="history-button"
+                              disabled={loading || !online}
+                              onClick={() => {
+                                const first = shownMessages[0];
+                                if (first) void loadHistory(selectedChat.id, first.id);
+                              }}
+                            >
+                              {loading ? R.loadingHistory : R.loadOlder}
+                            </button>
+                          )}
+                          {messageError && (
+                            <div className="inline-status error-copy" role="status">
+                              {messageError}
+                              <button
+                                className="secondary-button"
+                                onClick={() => void loadHistory(selectedChat.id)}
+                                disabled={!online}
+                              >
+                                {R.retry}
+                              </button>
+                            </div>
+                          )}
+                          {loading && !shownMessages.length ? (
+                            <Empty title={R.loadingHistory} text="" />
+                          ) : !shownMessages.length && !messageError ? (
+                            <Empty title={R.noMessages} text={R.noMessagesHint} />
+                          ) : (
+                            shownMessages.map((message, index) => (
+                              <Fragment key={message.id}>
+                                {dateLabel(shownMessages[index - 1]?.at ?? '') !==
+                                  dateLabel(message.at) && (
+                                  <div className="day-divider">
+                                    <span>{dateLabel(message.at)}</span>
+                                  </div>
+                                )}
+                                <MessageBubble
+                                  message={message}
+                                  authorPhoto={
+                                    shownDetail?.members.find(
+                                      (member) => member.user.id === message.author?.id,
+                                    )?.photoFileId ?? null
+                                  }
+                                  firstInGroup={
+                                    !message.author ||
+                                    shownMessages[index - 1]?.author?.id !== message.author.id ||
+                                    dateLabel(shownMessages[index - 1]?.at ?? '') !==
+                                      dateLabel(message.at)
+                                  }
+                                  lastInGroup={
+                                    !message.author ||
+                                    shownMessages[index + 1]?.author?.id !== message.author.id ||
+                                    dateLabel(shownMessages[index + 1]?.at ?? '') !==
+                                      dateLabel(message.at)
+                                  }
+                                  epoch={snapshot.epoch}
+                                  ownId={snapshot.user?.id ?? 0}
+                                  read={
+                                    shownDetail?.members.some(
+                                      (member) =>
+                                        member.user.id !== snapshot.user?.id &&
+                                        (member.readUpTo ?? 0) >= message.id,
+                                    ) ?? false
+                                  }
+                                  onError={(message) => {
+                                    if (snapshotRef.current.epoch === snapshot.epoch)
+                                      setUiError(message);
+                                  }}
+                                  reactionsEnabled={online}
+                                  canWrite={shownDetail?.canWrite === true}
+                                  canPin={shownDetail?.canPin === true}
+                                  pinned={shownDetail?.pinned?.id === message.id}
+                                  onReply={() => {
+                                    if (
+                                      snapshotRef.current.epoch !== snapshot.epoch ||
+                                      !online ||
+                                      !shownDetail?.canWrite ||
+                                      message.deleted
+                                    )
+                                      return;
+                                    patchDraft(selectedChat.id, (old) =>
+                                      old.pending || old.uploading
+                                        ? old
+                                        : {
+                                            ...old,
+                                            reply: {
+                                              id: message.id,
+                                              author: message.author?.shortName ?? R.unknownAuthor,
+                                              preview: message.text || 'Вложение',
+                                            },
+                                            intent: undefined,
+                                            error: '',
+                                            uncertain: false,
+                                          },
+                                    );
+                                    requestAnimationFrame(() => composerInput.current?.focus());
+                                  }}
+                                  onChange={(updated) => {
+                                    if (
+                                      snapshotRef.current.epoch !== snapshot.epoch ||
+                                      selectionRef.current !== selectedChat.id
+                                    )
+                                      return;
+                                    setMessages((old) => mergeMessages(old, [updated]));
+                                  }}
+                                  onPin={() => {
+                                    if (
+                                      snapshotRef.current.epoch === snapshot.epoch &&
+                                      selectionRef.current === selectedChat.id
+                                    )
+                                      void loadHistory(selectedChat.id, undefined, undefined, true);
+                                  }}
+                                  onJump={(id) => select(selectedChat.id, id, snapshot.epoch)}
+                                  onReactions={(messageId, reactions) => {
+                                    if (
+                                      snapshotRef.current.epoch !== snapshot.epoch ||
+                                      selectionRef.current !== selectedChat.id
+                                    )
+                                      return;
+                                    setMessages((old) =>
+                                      old.map((item) =>
+                                        item.id === messageId ? { ...item, reactions } : item,
+                                      ),
+                                    );
+                                  }}
+                                />
+                              </Fragment>
+                            ))
+                          )}
+                          <div ref={bottom} />
+                        </div>
+                        {(awayFromBottom || newMessages > 0 || hasNewer) && (
+                          <button
+                            type="button"
+                            className="new-messages-button"
+                            onClick={() => {
+                              aroundRef.current = null;
+                              setNewMessages(0);
+                              setAwayFromBottom(false);
+                              select(selectedChat.id, undefined, snapshot.epoch);
+                            }}
+                          >
+                            К новым сообщениям{newMessages > 0 ? ` · ${newMessages}` : ''}
+                          </button>
+                        )}
+                        {draft.reply && (
+                          <section className="composer-context" aria-label="Ответ с цитатой">
+                            <div className="composer-context-copy">
+                              <strong>{draft.reply.author}</strong>
+                              <span>{draft.reply.preview}</span>
+                            </div>
+                            <button
+                              type="button"
+                              aria-label="Отменить ответ с цитатой"
+                              disabled={draft.pending || draft.uploading}
+                              onClick={() =>
+                                patchDraft(selectedChat.id, (old) => ({
+                                  ...old,
+                                  reply: undefined,
+                                  intent: undefined,
+                                  error: '',
+                                  uncertain: false,
+                                }))
+                              }
+                            >
+                              <X size={16} />
+                            </button>
+                          </section>
+                        )}
+                        {(draft.files.length > 0 || draft.uploading) && (
+                          <section
+                            className="composer-uploads"
+                            aria-label={U.attachments}
+                            data-chat-id={selectedChat.id}
+                          >
+                            {draft.files.length > 0 && (
+                              <ul className="composer-upload-list">
+                                {draft.files.map((file) => (
+                                  <li
+                                    key={file.fileId}
+                                    className="composer-upload-chip"
+                                    data-file-id={file.fileId}
+                                  >
+                                    <File size={19} aria-hidden="true" />
+                                    <span className="composer-upload-copy">
+                                      <span title={file.fileName}>{file.fileName}</span>
+                                      <small>{U.fileSize(file.size)}</small>
+                                    </span>
+                                    <button
+                                      type="button"
+                                      aria-label={U.remove(file.fileName)}
+                                      disabled={draft.pending || draft.uploading}
+                                      onClick={() => removeAttachment(selectedChat.id, file.fileId)}
+                                    >
+                                      <X size={15} />
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {draft.uploading && (
+                              <span className="composer-upload-status" role="status">
+                                {U.uploading}
+                              </span>
+                            )}
+                          </section>
+                        )}
+                        <form
+                          className="composer"
+                          aria-busy={draft.uploading || draft.pending}
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void send();
+                          }}
+                        >
+                          <div className="composer-field">
+                            <button
+                              type="button"
+                              className="composer-attach-button"
+                              aria-label={U.pickFiles}
+                              title={U.limits}
+                              disabled={
+                                !online ||
+                                draft.pending ||
+                                draft.uploading ||
+                                draft.files.length >= 10 ||
+                                shownDetail?.canWrite !== true
+                              }
+                              onClick={() => void uploadFiles('pick')}
+                            >
+                              <Paperclip size={21} />
+                            </button>
+                            <textarea
+                              ref={composerInput}
+                              rows={1}
+                              aria-label={R.messagePlaceholder}
+                              placeholder={R.messagePlaceholder}
+                              maxLength={4000}
+                              value={draft.value}
+                              disabled={!online || draft.pending || shownDetail?.canWrite !== true}
+                              onChange={(event) => {
+                                if (snapshotRef.current.epoch !== snapshot.epoch) return;
+                                const value = event.target.value;
+                                if (value.trim() && online && shownDetail?.canWrite)
+                                  void request({
+                                    kind: 'chat.typing',
+                                    epoch: snapshot.epoch,
+                                    chatId: selectedChat.id,
+                                  });
+                                patchDraft(selectedChat.id, (old) => ({
+                                  ...old,
+                                  value,
+                                  error: '',
+                                  uncertain: false,
+                                  ...(old.intent?.text !== value.trim() && { intent: undefined }),
+                                }));
+                              }}
+                              onKeyDown={(event) => {
+                                if (
+                                  event.key === 'Enter' &&
+                                  !event.shiftKey &&
+                                  !event.nativeEvent.isComposing &&
+                                  !event.repeat
+                                ) {
+                                  event.preventDefault();
+                                  void send();
+                                }
+                              }}
+                              onPaste={(event) => {
+                                if (
+                                  ![...event.clipboardData.items].some(
+                                    (item) =>
+                                      item.kind === 'file' && item.type.startsWith('image/'),
+                                  )
+                                )
+                                  return;
+                                event.preventDefault();
+                                void uploadFiles('paste');
+                              }}
+                            />
+                            <EmojiPicker
+                              key={`${owner}:${selectedChat.id}`}
+                              bureau={bureau}
+                              onSticker={(sticker) => void sendSticker(sticker)}
+                              disabled={!online || draft.pending || shownDetail?.canWrite !== true}
+                              onPick={(emoji) => {
+                                if (snapshotRef.current.epoch !== snapshot.epoch) return;
+                                const input = composerInput.current,
+                                  start = input?.selectionStart ?? draft.value.length,
+                                  end = input?.selectionEnd ?? start;
+                                patchDraft(selectedChat.id, (old) =>
+                                  old.value.length - (end - start) + emoji.length > 4000
+                                    ? { ...old, error: R.tooLong }
+                                    : {
+                                        ...old,
+                                        value:
+                                          old.value.slice(0, start) + emoji + old.value.slice(end),
+                                        intent: undefined,
+                                        error: '',
+                                        uncertain: false,
+                                      },
+                                );
+                                requestAnimationFrame(() => {
+                                  if (snapshotRef.current.epoch !== snapshot.epoch) return;
+                                  input?.focus();
+                                  input?.setSelectionRange(
+                                    start + emoji.length,
+                                    start + emoji.length,
+                                  );
+                                });
+                              }}
+                            />
+                          </div>
+                          <button
+                            type="submit"
+                            className="send-button"
+                            aria-label={draft.pending ? R.sending : R.send}
+                            disabled={
+                              !online ||
+                              shownDetail?.canWrite !== true ||
+                              (!draft.value.trim() && !draft.files.length) ||
+                              draft.pending ||
+                              draft.uploading
+                            }
+                          >
+                            <Send size={24} />
+                          </button>
+                        </form>
+                        <div
+                          className={`compose-meta${draftIssue ? ' error-copy' : ''}`}
+                          role="status"
+                        >
+                          <span>
+                            {draftIssue ||
+                              (shownDetail?.canWrite === false
+                                ? R.readOnly
+                                : !online
+                                  ? R.offlineHint
+                                  : draft.uploading
+                                    ? U.uploading
+                                    : draft.pending
+                                      ? R.sending
+                                      : R.keys)}
+                          </span>
+                          {draft.error && (draft.value.trim() || draft.files.length > 0) && (
+                            <button
+                              className="secondary-button"
+                              disabled={
+                                !online ||
+                                draft.pending ||
+                                draft.uploading ||
+                                shownDetail?.canWrite !== true
+                              }
+                              onClick={() => void send()}
+                            >
+                              {R.retrySend}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {objectInfoOpen && selectedChat.kind === 'object' && (
+                        <ObjectInfoPanel
+                          key={`${owner}:${selectedChat.id}`}
+                          epoch={snapshot.epoch}
+                          chatId={selectedChat.id}
+                          online={online}
+                          onClose={() => {
+                            setObjectInfoOpen(false);
+                            requestAnimationFrame(() => objectInfoButton.current?.focus());
+                          }}
+                        />
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="chat-wall">
+                    <Empty title={R.pickChat} text={R.pickChatHint} />
                   </div>
-                </>
-              ) : (
-                <div className="chat-wall">
-                  <Empty title={R.pickChat} text={R.pickChatHint} />
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              {uiError && (
-                <div className="banner error-banner" role="status">
-                  {uiError}
-                </div>
-              )}
-              {gate()}
-            </>
-          )}
-        </main>
-      </div>
+                )}
+              </>
+            ) : (
+              <>
+                {uiError && (
+                  <div className="banner error-banner" role="status">
+                    {uiError}
+                  </div>
+                )}
+                {gate()}
+              </>
+            )}
+          </main>
+        </div>
+      </BureauEmoji.Provider>
     </UpdateEditors.Provider>
   );
 }

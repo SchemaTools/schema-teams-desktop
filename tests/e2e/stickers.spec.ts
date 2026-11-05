@@ -128,3 +128,32 @@ test('пустой набор — подсказка; стикер, удалён
   });
   await expect(page.getByText('Стикер удалён', { exact: true })).toBeVisible();
 });
+
+test('эмодзи бюро: вставляется кодом, в ленте — картинкой; незнакомый код остаётся текстом', async () => {
+  const page = await openChat();
+  const input = page.getByRole('textbox', { name: 'Сообщение', exact: true });
+  await input.fill('Перерыв ');
+  await page.getByRole('button', { name: 'Эмодзи и стикеры', exact: true }).click();
+  await expect(page.getByText('Эмодзи бюро', { exact: true })).toBeVisible();
+  // во вкладке эмодзи — только свои эмодзи, без стикеров
+  await expect(page.locator('.bureau-emoji-grid button')).toHaveCount(1);
+  await page.screenshot({ path: test.info().outputPath('bureau-emoji-panel.png') });
+  // одна строка эмодзи — без полосы прокрутки
+  expect(
+    await page.locator('.bureau-emoji-grid').evaluate((el) => el.scrollHeight <= el.clientHeight),
+  ).toBe(true);
+  await page.getByRole('button', { name: 'Вставить эмодзи «:кофе:»', exact: true }).click();
+  await expect(input).toHaveValue('Перерыв :кофе:');
+  await input.press('End');
+  await input.pressSequentially(' и :чай:');
+  await input.press('Enter');
+
+  const sent = page.locator('.message-row.outgoing .message-text').last();
+  await expect(sent).toContainText('Перерыв');
+  const img = sent.locator('img.bureau-emoji');
+  await expect(img).toHaveCount(1);
+  await expect(img).toHaveAttribute('alt', ':кофе:');
+  await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBe(2);
+  await expect(sent).toContainText(':чай:');
+  await page.screenshot({ path: test.info().outputPath('bureau-emoji-message.png') });
+});

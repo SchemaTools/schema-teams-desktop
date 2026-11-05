@@ -406,3 +406,36 @@ html[data-theme='dark'] .message-author.color-5 {
   color: var(--muted);
   font-style: italic;
 }
+/* свои эмодзи бюро: в панели — отдельной строкой под стандартными, в тексте — высотой строки */
+.emoji-picker-caption {
+  margin: 6px 4px 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.bureau-emoji-grid {
+  flex-wrap: wrap;
+  max-width: 300px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.emoji-picker-panel .bureau-emoji-grid img {
+  display: block;
+  margin: auto;
+  object-fit: contain;
+}
+.emoji-picker-panel .sticker-picker-retry {
+  width: auto;
+  height: auto;
+  padding: 0;
+  color: var(--accent-text);
+  font: inherit;
+  text-decoration: underline;
+}
+.message-text .bureau-emoji {
+  display: inline-block;
+  width: 1.45em;
+  height: 1.45em;
+  margin: 0 1px;
+  vertical-align: -0.35em;
+  object-fit: contain;
+}

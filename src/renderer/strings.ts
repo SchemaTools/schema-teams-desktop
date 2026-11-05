@@ -69,6 +69,7 @@ export const R = {
   // стикеры бюро (постановка Teams 0.9.0, п. 4.4)
   emojiAndStickers: 'Эмодзи и стикеры',
   emojiTab: 'Эмодзи',
+  bureauEmoji: 'Эмодзи бюро',
   stickersTab: 'Стикеры бюро',
   noStickers: 'В наборе бюро пока нет стикеров. Добавить можно на сайте Teams.',
   loadingStickers: 'Загрузка стикеров…',
