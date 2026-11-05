@@ -8,7 +8,7 @@ const HISTORY_LIMIT = 256;
 export interface ReminderTicket {
   readonly id: string;
   readonly owner: number;
-  /** Календарный день компьютера, не UTC-день сервера. */
+  /** Календарный день бюро (часовой пояс из настроек сервера), без пояса — день компьютера. */
   readonly date: string;
   readonly taskId: number;
   readonly startedAt: string | null;
@@ -20,16 +20,59 @@ export function isReminderTime(value: unknown): value is string {
   return typeof value === 'string' && value.length === 5 && /^([01]\d|2[0-3]):(00|30)$/.test(value);
 }
 
-function localDay(now: number): string | null {
+/**
+ * День и минута суток в часовом поясе бюро — как у утренней сводки (ТЗ 5.5).
+ * Без пояса (настройки бюро ещё не прочитаны) — часы компьютера.
+ */
+export function bureauClock(
+  now: number,
+  timeZone?: string | null,
+): { date: string; minutes: number } | null {
   const date = new Date(now);
   if (!Number.isFinite(date.getTime())) return null;
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  if (!timeZone) {
+    const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    return isoDay(day) ? { date: day, minutes: date.getHours() * 60 + date.getMinutes() } : null;
+  }
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(date);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value;
+    const day = `${get('year')}-${get('month')}-${get('day')}`;
+    const minutes = Number(get('hour')) * 60 + Number(get('minute'));
+    return isoDay(day) && Number.isInteger(minutes) ? { date: day, minutes } : null;
+  } catch {
+    return null;
+  }
 }
 
 function eligible(state: DesktopState): boolean {
   return Boolean(
     state.timerReady && state.connection === 'online' && state.user && state.timer?.state === 'run',
   );
+}
+
+/**
+ * ТЗ 9.5: напоминание «если таймер идёт» в 18:30. Таймер, запущенный после времени
+ * напоминания, напоминания сразу при запуске не получает: он должен быть запущен
+ * не позже этого времени сегодня (или в прошлые дни).
+ */
+function runningAtReminder(
+  startedAt: string | undefined,
+  today: string,
+  reminderMinutes: number,
+  timeZone?: string | null,
+): boolean {
+  const started = startedAt ? bureauClock(Date.parse(startedAt), timeZone) : null;
+  if (!started) return false;
+  return started.date < today || (started.date === today && started.minutes <= reminderMinutes);
 }
 
 /**
@@ -52,15 +95,23 @@ export class TimerReminders {
     }
   }
 
-  due(state: DesktopState, time: string, now = Date.now()): ReminderTicket | null {
-    const day = localDay(now);
-    if (!day || !isReminderTime(time) || !eligible(state) || !state.user || !state.timer?.task)
+  due(
+    state: DesktopState,
+    time: string,
+    now = Date.now(),
+    timeZone?: string | null,
+  ): ReminderTicket | null {
+    const clock = bureauClock(now, timeZone);
+    if (!clock || !isReminderTime(time) || !eligible(state) || !state.user || !state.timer?.task)
       return null;
-    const date = new Date(now);
     const [hours, minutes] = time.split(':').map(Number);
-    if (date.getHours() * 60 + date.getMinutes() < (hours ?? 0) * 60 + (minutes ?? 0)) return null;
+    const reminderMinutes = (hours ?? 0) * 60 + (minutes ?? 0);
+    if (clock.minutes < reminderMinutes) return null;
+    if (!runningAtReminder(state.timer.startedAt, clock.date, reminderMinutes, timeZone))
+      return null;
     const owner = state.user.id;
     const task = state.timer.task;
+    const day = clock.date;
     const id = `timer-reminder:${owner}:${day}`;
     if (this.seen.has(id)) return null;
     const previous = this.attempts.get(id);
@@ -82,12 +133,18 @@ export class TimerReminders {
     return ticket;
   }
 
-  valid(ticket: ReminderTicket, state: DesktopState, time: string, now = Date.now()): boolean {
+  valid(
+    ticket: ReminderTicket,
+    state: DesktopState,
+    time: string,
+    now = Date.now(),
+    timeZone?: string | null,
+  ): boolean {
     return Boolean(
       this.issued.get(ticket.id) === ticket &&
       eligible(state) &&
       ticket.owner === state.user?.id &&
-      ticket.date === localDay(now) &&
+      ticket.date === bureauClock(now, timeZone)?.date &&
       ticket.reminderTime === time &&
       ticket.taskId === state.timer?.task.id &&
       ticket.startedAt === state.timer?.startedAt &&

@@ -133,3 +133,37 @@ describe('TimerReminders: local calendar, one shown reminder, bounded retry', ()
       expect(requestValid({ ...v, ...patch })).toBe(false);
   });
 });
+
+describe('Ревью PR #6: напоминание по поясу бюро, только для таймера, шедшего в 18:30', () => {
+  const utc = (iso: string) => Date.parse(iso);
+  it('время и день — по поясу бюро, а не по часам компьютера', () => {
+    const r = new TimerReminders(),
+      s = running();
+    // 18:30 по Москве = 15:30 UTC, как бы ни был настроен пояс компьютера.
+    expect(r.due(s, '18:30', utc('2026-10-29T15:29:59Z'), 'Europe/Moscow')).toBeNull();
+    const t = required(r.due(s, '18:30', utc('2026-10-29T15:30:00Z'), 'Europe/Moscow'));
+    expect(t.date).toBe('2026-10-29');
+    expect(r.valid(t, s, '18:30', utc('2026-10-29T20:59:00Z'), 'Europe/Moscow')).toBe(true);
+    // После полуночи бюро старая кнопка недействительна.
+    expect(r.valid(t, s, '18:30', utc('2026-10-29T21:00:00Z'), 'Europe/Moscow')).toBe(false);
+  });
+  it('таймер, запущенный после 18:30, не получает напоминание сразу при запуске', () => {
+    const r = new TimerReminders(),
+      late = {
+        ...running(),
+        timer: { ...timerFixture(), startedAt: '2026-10-29T15:45:00.000Z' },
+      };
+    expect(r.due(late, '18:30', utc('2026-10-29T15:46:00Z'), 'Europe/Moscow')).toBeNull();
+    expect(r.due(late, '18:30', utc('2026-10-29T19:00:00Z'), 'Europe/Moscow')).toBeNull();
+    const exact = {
+      ...running(),
+      timer: { ...timerFixture(), startedAt: '2026-10-29T15:30:00.000Z' },
+    };
+    expect(r.due(exact, '18:30', utc('2026-10-29T15:31:00Z'), 'Europe/Moscow')).not.toBeNull();
+  });
+  it('неизвестный пояс бюро — часы компьютера; негодный пояс — без напоминания', () => {
+    const r = new TimerReminders();
+    expect(r.due(running(), '18:30', at(), null)).not.toBeNull();
+    expect(new TimerReminders().due(running(), '18:30', at(), 'Not/AZone')).toBeNull();
+  });
+});
