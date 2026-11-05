@@ -115,7 +115,27 @@ export class WindowsScreenSaverReader implements ScreenSaverReader {
   }
 }
 
-/** App lifecycle only, no scheduled task; cadence starts AFTER each bounded read. */
+/** Дешёвая проверка бездействия — без запуска процесса (powerMonitor). */
+export const SCREEN_SAVER_CHECK_MS = 5000;
+/** Помощник запускается не чаще раза в 15 с, пока пользователь бездействует. */
+export const SCREEN_SAVER_READ_MS = 15000;
+/** Пока заставка замечена, опрос без признаков возврата — раз в минуту. */
+export const SCREEN_SAVER_LATCHED_MS = 60000;
+/** Минимальный тайм-аут заставки Windows — 1 мин; раньше заставка сама не включится. */
+export const SCREEN_SAVER_IDLE_S = 55;
+export interface ScreenSaverCadence {
+  /** Секунды без ввода пользователя (powerMonitor.getSystemIdleTime). */
+  idleSeconds(): number;
+  /** Заставка уже замечена: нужен опрос, чтобы увидеть её окончание. */
+  latched(): boolean;
+}
+
+/**
+ * App lifecycle only, no scheduled task; cadence starts AFTER each bounded read.
+ * С cadence помощник запускается только при признаках бездействия (≥ 55 с без ввода)
+ * или пока заставка замечена; явные события (блокировка, сон, пробуждение) вызывают
+ * fresh() — внеочередное чтение. Без cadence — чтение раз в SCREEN_SAVER_READ_MS.
+ */
 export class ScreenSaverPoller<Context = undefined> {
   private timer?: ReturnType<typeof setTimeout>;
   private generation = 0;
@@ -124,10 +144,13 @@ export class ScreenSaverPoller<Context = undefined> {
   private busy = false;
   private freshWanted = false;
   private disposed = false;
+  /** Время с последнего чтения в мс, считается по проверкам (без часов). */
+  private sinceRead = 0;
   constructor(
     private readonly reader: ScreenSaverReader,
     private readonly publish: (sample: ScreenSaverSample, context: Context) => void,
     private readonly capture: () => Context = () => undefined as Context,
+    private readonly cadence?: ScreenSaverCadence,
   ) {}
   start(): void {
     if (this.disposed) return;
@@ -154,8 +177,31 @@ export class ScreenSaverPoller<Context = undefined> {
     this.active = false;
     this.fresh();
   }
+  private shouldRead(): boolean {
+    if (this.freshWanted || !this.cadence) return true;
+    let idle: number, latched: boolean;
+    try {
+      idle = this.cadence.idleSeconds();
+      latched = this.cadence.latched();
+    } catch {
+      return this.sinceRead >= SCREEN_SAVER_READ_MS;
+    }
+    if (!Number.isFinite(idle)) idle = 0;
+    // Заставка замечена: ввод пользователя (бездействие сброшено) — признак её окончания.
+    if (latched) return idle < SCREEN_SAVER_IDLE_S || this.sinceRead >= SCREEN_SAVER_LATCHED_MS;
+    return idle >= SCREEN_SAVER_IDLE_S && this.sinceRead >= SCREEN_SAVER_READ_MS;
+  }
+  private schedule(ms: number): void {
+    this.timer = setTimeout(() => void this.tick(), ms);
+    this.timer.unref?.();
+  }
   private async tick(): Promise<void> {
     if (!this.active || this.suspended || this.busy) return;
+    if (!this.shouldRead()) {
+      this.sinceRead += SCREEN_SAVER_CHECK_MS;
+      this.schedule(SCREEN_SAVER_CHECK_MS);
+      return;
+    }
     this.busy = true;
     this.freshWanted = false;
     const generation = this.generation;
@@ -169,8 +215,13 @@ export class ScreenSaverPoller<Context = undefined> {
     } finally {
       this.busy = false;
       if (this.active && !this.suspended) {
-        this.timer = setTimeout(() => void this.tick(), this.freshWanted ? 0 : 2000);
-        this.timer.unref?.();
+        const next = this.freshWanted
+          ? 0
+          : this.cadence
+            ? SCREEN_SAVER_CHECK_MS
+            : SCREEN_SAVER_READ_MS;
+        this.sinceRead = next;
+        this.schedule(next);
       }
     }
   }

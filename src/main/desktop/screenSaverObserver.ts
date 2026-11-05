@@ -26,6 +26,10 @@ export class ScreenSaverObserver {
   get absent(): boolean {
     return this.locked || this.suspended || this.saver;
   }
+  /** Последнее свежее чтение видело заставку; нужен опрос, чтобы заметить её окончание. */
+  get saverLatched(): boolean {
+    return this.saver;
+  }
   get returnAllowed(): boolean {
     return !this.absent && this.fresh;
   }

@@ -4,6 +4,10 @@ import {
   parseScreenSaverState,
   SCREEN_SAVER_OPTIONS,
   ScreenSaverPoller,
+  SCREEN_SAVER_CHECK_MS,
+  SCREEN_SAVER_IDLE_S,
+  SCREEN_SAVER_LATCHED_MS,
+  SCREEN_SAVER_READ_MS,
   WindowsScreenSaverReader,
   type ScreenSaverRunner,
 } from '../../src/main/desktop/screenSaverState';
@@ -153,7 +157,7 @@ describe('Synthetic screensaver protocol and controlled reader', () => {
 });
 
 describe('Demand-driven main polling (synthetic process results)', () => {
-  it('does nothing until start; cadence is two seconds after completion, never overlapping', async () => {
+  it('does nothing until start; without cadence reads every 15 s after completion, never overlapping', async () => {
     vi.useFakeTimers();
     const f = fixture();
     const publish = vi.fn();
@@ -164,15 +168,61 @@ describe('Demand-driven main polling (synthetic process results)', () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(f.calls).toHaveLength(1);
     f.done('running');
-    await vi.advanceTimersByTimeAsync(1999);
+    await vi.advanceTimersByTimeAsync(SCREEN_SAVER_READ_MS - 1);
     expect(f.calls).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(f.calls).toHaveLength(2);
     poller.stop();
     f.done();
-    await vi.advanceTimersByTimeAsync(10000);
+    await vi.advanceTimersByTimeAsync(60000);
     expect(publish).toHaveBeenCalledTimes(1);
     expect(f.calls).toHaveLength(2);
+    poller.dispose();
+  });
+  it('with cadence starts the helper only while idle or latched; explicit fresh always reads', async () => {
+    vi.useFakeTimers();
+    const f = fixture();
+    const publish = vi.fn();
+    let idle = 0,
+      latched = false;
+    const poller = new ScreenSaverPoller(f.reader, publish, () => undefined, {
+      idleSeconds: () => idle,
+      latched: () => latched,
+    });
+    poller.start();
+    // Старт — внеочередное чтение.
+    expect(f.calls).toHaveLength(1);
+    f.done('stopped');
+    // Пользователь активен: за 10 минут помощник не запускается ни разу.
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(f.calls).toHaveLength(1);
+    // Блокировка/пробуждение — fresh(): чтение сразу, независимо от бездействия.
+    poller.fresh();
+    expect(f.calls).toHaveLength(2);
+    f.done('stopped');
+    // Бездействие ≥ 55 с: чтение не чаще раза в 15 с.
+    idle = SCREEN_SAVER_IDLE_S;
+    await vi.advanceTimersByTimeAsync(SCREEN_SAVER_READ_MS - 1);
+    expect(f.calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(f.calls).toHaveLength(3);
+    f.done('running');
+    latched = true;
+    // Заставка идёт, ввода нет: раз в минуту.
+    await vi.advanceTimersByTimeAsync(SCREEN_SAVER_LATCHED_MS - SCREEN_SAVER_CHECK_MS);
+    expect(f.calls).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(SCREEN_SAVER_CHECK_MS);
+    expect(f.calls).toHaveLength(4);
+    f.done('running');
+    // Ввод пользователя сбросил бездействие — ближайшая проверка читает окончание заставки.
+    idle = 0;
+    await vi.advanceTimersByTimeAsync(SCREEN_SAVER_CHECK_MS);
+    expect(f.calls).toHaveLength(5);
+    f.done('stopped');
+    latched = false;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(f.calls).toHaveLength(5);
+    expect(publish).toHaveBeenCalledTimes(5);
     poller.dispose();
   });
   it('suspend discards pending false; resume requests immediate fresh, dispose removes timeout', async () => {
