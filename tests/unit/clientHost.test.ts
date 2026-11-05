@@ -4,7 +4,7 @@ import { SupportLedger } from '../../src/main/diagnostics/ledger';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { IpcMainInvokeEvent, Tray } from 'electron';
 import type { ApiResult, FocusState } from '../../src/shared/client';
 import type { ClientSnapshot, DesktopRequest } from '../../src/shared/desktop';
@@ -141,7 +141,14 @@ vi.mock('electron', async () => {
       handle: (name: string, fn: Handler) => h.handlers.set(name, fn),
       removeHandler: (name: string) => h.handlers.delete(name),
     },
-    nativeTheme: Object.assign(new EventEmitter(), { shouldUseDarkColors: false }),
+    // Как в Electron: themeSource задаёт тему окон, «system» — по Windows (здесь светлая).
+    nativeTheme: (() => {
+      const theme = Object.assign(new EventEmitter(), { themeSource: 'system' });
+      Object.defineProperty(theme, 'shouldUseDarkColors', {
+        get: () => theme.themeSource === 'dark',
+      });
+      return theme;
+    })(),
     nativeImage: {
       createEmpty: () => ({ addRepresentation: vi.fn() }),
       createFromBuffer: () => ({}),
@@ -337,6 +344,7 @@ function fixture(
     show: vi.fn(),
     hide: vi.fn(),
     setOverlayIcon: h.setOverlayIcon,
+    setBackgroundColor: vi.fn(),
   });
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const memory = (): PauseOutboxStorage => {
@@ -1145,6 +1153,21 @@ describe('ClientHost: поколение входа проверяется в д
     expect(getSettings().recentTimeTaskIds).toEqual({ '1': [21] });
     expect(JSON.stringify(result)).not.toContain('private.example.test');
     expect(h.toastClear).toHaveBeenCalled();
+  });
+  it('тема приложения передаётся рамкам окон Windows (nativeTheme.themeSource)', async () => {
+    const { invoke, owned } = fixture();
+    const { nativeTheme } = await import('electron');
+    const win = (owned as unknown as { o: { main: { win: { setBackgroundColor: Mock } } } }).o.main
+      .win;
+    expect(await invoke({ kind: 'theme', mode: 'dark' })).toEqual({ ok: true, data: null });
+    expect(nativeTheme.themeSource).toBe('dark');
+    expect(owned.state.theme).toBe('dark');
+    expect(win.setBackgroundColor).toHaveBeenLastCalledWith('#0e1621');
+    expect(await invoke({ kind: 'theme', mode: 'light' })).toEqual({ ok: true, data: null });
+    expect(nativeTheme.themeSource).toBe('light');
+    expect(owned.state.theme).toBe('light');
+    expect(await invoke({ kind: 'theme', mode: 'system' })).toEqual({ ok: true, data: null });
+    expect(nativeTheme.themeSource).toBe('system');
   });
   it('settings save failure rolls back the autostart backend and never reports success', async () => {
     const { invoke, settingsUpdate, getSettings } = fixture();

@@ -7,6 +7,7 @@ import { ZOOM_MAX, ZOOM_MIN, type SettingsStore } from './settings';
 import { S } from './strings';
 import { fitBounds, MIN_SIZE } from './windowState';
 import { windowImage } from './icons';
+import { applyWindowTheme, windowBackground } from './windowTheme';
 export const PARTITION = 'persist:teams';
 export const CLIENT_FILE = join(__dirname, '../renderer/index.html');
 export const CLIENT_URL = pathToFileURL(CLIENT_FILE).href;
@@ -43,7 +44,7 @@ export class MainWindow {
       icon: windowImage(),
       show: false,
       autoHideMenuBar: true,
-      backgroundColor: '#e9eefb',
+      backgroundColor: windowBackground(applyWindowTheme(o.settings.get().theme)),
       webPreferences: {
         preload: join(__dirname, '../preload/client.js'),
         partition: 'client-ui',

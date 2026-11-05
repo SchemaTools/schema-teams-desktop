@@ -50,6 +50,7 @@ import { trayTooltip } from './desktop/trayTooltip';
 import { LiveNoticeGate } from './notifications/liveGate';
 import { RealtimeClient, type RealtimeEvent } from './realtime/connection';
 import { CLIENT_FILE, CLIENT_URL, PARTITION, guardLocal, type MainWindow } from './mainWindow';
+import { applyWindowTheme, windowBackground } from './windowTheme';
 import { LoginWindow } from './loginWindow';
 import { CustomToasts } from './notifications/toasts';
 import type { ToastSpec } from './notifications/types';
@@ -3282,12 +3283,10 @@ export class ClientHost {
     }
     if (this.state.connection !== 'online') this.state.typing = [];
     this.state.themePreference = this.o.settings.get().theme;
-    this.state.theme =
-      this.state.themePreference === 'system'
-        ? nativeTheme.shouldUseDarkColors
-          ? 'dark'
-          : 'light'
-        : this.state.themePreference;
+    // Рамки окон Windows — в теме приложения (windowTheme.ts).
+    const dark = applyWindowTheme(this.state.themePreference);
+    this.state.theme = dark ? 'dark' : 'light';
+    if (!this.o.main.win.isDestroyed()) this.o.main.win.setBackgroundColor(windowBackground(dark));
     this.sendState();
     this.renderTray();
   }

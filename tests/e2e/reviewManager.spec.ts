@@ -6,6 +6,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -82,4 +83,56 @@ test('поле ввода растёт от 1 до 8 строк, дальше �
   await input.pressSequentially('Одна строка');
   await input.press('Enter');
   await expect(page.locator('.message-row.outgoing', { hasText: 'Одна строка' })).toBeVisible();
+});
+
+/** Флаг DWMWA_USE_IMMERSIVE_DARK_MODE (20) окна: так Windows 10 1809+ и 11 красят рамку. */
+function frameDark(hwnd: string): boolean {
+  const script = `Add-Type -Namespace W -Name D -MemberDefinition '[DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int a, out int v, int s);'; $v = 0; [void][W.D]::DwmGetWindowAttribute([IntPtr]${hwnd}, 20, [ref]$v, 4); $v`;
+  const out = execFileSync(
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+    {
+      encoding: 'utf8',
+    },
+  );
+  return out.trim().endsWith('1');
+}
+
+test('тёмная тема приложения делает тёмной и рамку окна Windows', async () => {
+  stub = await startClientStub();
+  const page = await authenticated(stub, { theme: 'dark' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const current = app;
+  if (!current) throw new Error('Приложение не запущено');
+  const read = () =>
+    current.evaluate(({ BrowserWindow, nativeTheme }) => {
+      const w = BrowserWindow.getAllWindows().find((win) =>
+        win.webContents.getURL().startsWith('file:'),
+      );
+      const handle = w?.getNativeWindowHandle();
+      return {
+        source: nativeTheme.themeSource,
+        dark: nativeTheme.shouldUseDarkColors,
+        hwnd: handle
+          ? (handle.length >= 8
+              ? handle.readBigUInt64LE(0)
+              : BigInt(handle.readUInt32LE(0))
+            ).toString()
+          : '0',
+      };
+    });
+  const dark = await read();
+  expect(dark).toMatchObject({ source: 'dark', dark: true });
+  if (process.platform === 'win32') await expect.poll(() => frameDark(dark.hwnd)).toBe(true);
+  // Переключение в настройках сразу перекрашивает рамку.
+  await page.evaluate(() =>
+    (window as unknown as { teams: { request: (r: unknown) => Promise<unknown> } }).teams.request({
+      kind: 'theme',
+      mode: 'light',
+    }),
+  );
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  const light = await read();
+  expect(light).toMatchObject({ source: 'light', dark: false });
+  if (process.platform === 'win32') await expect.poll(() => frameDark(light.hwnd)).toBe(false);
 });
