@@ -91,7 +91,10 @@ async function apply(page: Page) {
     .getByRole('button', { name: 'Применить адрес и выйти из Teams', exact: true })
     .click();
   const fresh = await pending;
-  await expect(fresh.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(fresh.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   return fresh;
 }
 test('проверка чужого адреса без cookie; применение только после подтверждения, вход изолирован даже на том же хосте', async () => {
@@ -301,7 +304,10 @@ test('сбой сохранения восстанавливает прежне�
     .getByRole('button', { name: 'Применить адрес и выйти из Teams', exact: true })
     .click();
   const fresh = await pending;
-  await expect(fresh.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(fresh.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   await expect(panel(fresh)).toContainText('Адрес не изменён');
   await expect(panel(fresh).getByRole('textbox', { name: 'Адрес сервера' })).toHaveValue(
     new URL(old.url).origin,

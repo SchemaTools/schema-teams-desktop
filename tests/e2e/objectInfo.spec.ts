@@ -36,7 +36,10 @@ async function openChat() {
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
   });
   const page = await app.firstWindow();
-  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   await signIn(app, page);
   await app.evaluate(({ BrowserWindow }) => {
     const w = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith('file:'));
@@ -188,7 +191,10 @@ test('поздние сведения после выхода не появля�
   await expect.poll(() => objectCalls().length).toBe(1);
   await page.getByRole('button', { name: 'Меню', exact: true }).click();
   await page.getByRole('button', { name: 'Выйти из учётной записи', exact: true }).click();
-  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   await expect(panel(page)).toHaveCount(0);
   stub.state.loginUserId = 2;
   if (!app) throw Error('Missing app');

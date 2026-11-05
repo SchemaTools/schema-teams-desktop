@@ -58,7 +58,10 @@ async function open(theme: 'light' | 'dark' = 'light'): Promise<Page> {
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
   });
   const page = await app.firstWindow();
-  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   const pending = app.waitForEvent('window');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
   await (await pending).locator('#sign-in').click();
@@ -161,7 +164,10 @@ test('закрепления одного пользователя не появ
     if (!state.ok) throw Error('No snapshot');
     await window.teams.request({ kind: 'logout', epoch: state.data.epoch });
   });
-  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   stub.state.loginUserId = 2;
   if (!app) throw Error('No app');
   const pending = app.waitForEvent('window');

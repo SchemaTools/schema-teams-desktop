@@ -138,7 +138,10 @@ test('прежний профиль не прерывается; повторн�
   writeFileSync(settingsFile(), JSON.stringify({ theme: 'light', autostart: false }));
   const page = await launch();
   await expect(wizard(page)).toHaveCount(0);
-  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   const pending = active().waitForEvent('window');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
   await (await pending).locator('#sign-in').click();

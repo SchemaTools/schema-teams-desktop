@@ -35,7 +35,10 @@ async function launch(profile: string, url = stub.url, args: string[] = []) {
 }
 const newProfile = () => mkdtempSync(join(tmpdir(), 'stdesk-v4-'));
 async function login(app: ElectronApplication, page: Page) {
-  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   const popup = app.waitForEvent('window');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
   const auth = await popup;

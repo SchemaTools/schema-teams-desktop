@@ -56,7 +56,10 @@ async function launch() {
     env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
   });
   const page = await app.firstWindow();
-  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
   const next = app.waitForEvent('window');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
   await (await next).locator('#sign-in').click();
@@ -217,7 +220,10 @@ test('открытие не меняет таймер, блокировка бе
     if (state.ok) await window.teams.request({ kind: 'logout', epoch: state.data.epoch });
   });
   await expect(p).toHaveCount(0);
-  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+  await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
+    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
+    timeout: 15_000,
+  });
 });
 test('таймер, запущенный на сайте или другом ПК, блокировка этого компьютера на паузу не ставит', async () => {
   const settings = join(profile, 'settings.json');
