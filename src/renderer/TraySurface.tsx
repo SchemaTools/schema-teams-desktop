@@ -241,33 +241,36 @@ export function TraySurface() {
             snapshot={snapshot}
             onOpen={(mode) => void act({ kind: 'timer.open', epoch: snapshot.epoch, mode })}
           />
-          <section className="tray-focus">
-            <div>
-              <Moon size={17} />
+          {/* «Фокус» — строкой меню, как в макете v4; синей карточкой выделен таймер */}
+          <section className={`tray-focus${focus ? ' active' : ''}`} aria-label={R.focus}>
+            <Moon size={20} />
+            <span className="tray-focus-copy">
               <b>{focus ? R.focus : R.focusDisabled}</b>
-            </div>
-            <p>{focus ? R.focusUntil(timeLabel(focus)) : R.focusHint}</p>
-            <button
-              disabled={!online}
-              onClick={() =>
-                void act(
-                  { kind: 'focus.set', epoch: snapshot.epoch, minutes: focus ? 0 : 30 },
-                  false,
-                )
-              }
-            >
-              {focus ? R.focusOff : R.focus30}
-            </button>
-            {!focus && (
+              <small>{focus ? R.focusUntil(timeLabel(focus)) : R.focusHint}</small>
+            </span>
+            <span className="tray-focus-actions">
               <button
                 disabled={!online}
                 onClick={() =>
-                  void act({ kind: 'focus.set', epoch: snapshot.epoch, minutes: 60 }, false)
+                  void act(
+                    { kind: 'focus.set', epoch: snapshot.epoch, minutes: focus ? 0 : 30 },
+                    false,
+                  )
                 }
               >
-                {R.focus60}
+                {focus ? R.focusOff : R.focus30}
               </button>
-            )}
+              {!focus && (
+                <button
+                  disabled={!online}
+                  onClick={() =>
+                    void act({ kind: 'focus.set', epoch: snapshot.epoch, minutes: 60 }, false)
+                  }
+                >
+                  {R.focus60}
+                </button>
+              )}
+            </span>
           </section>
           <button
             className="tray-item"

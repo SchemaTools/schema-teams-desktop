@@ -1,5 +1,5 @@
 // Собственные уведомления: изолированный локальный UI и асинхронные действия.
-import { BrowserWindow, ipcMain, screen, type IpcMainEvent } from 'electron';
+import { BrowserWindow, ipcMain, screen, type IpcMainEvent, nativeTheme } from 'electron';
 import { join } from 'node:path';
 import { S } from '../strings';
 import { customToastPage } from './page';
@@ -11,7 +11,8 @@ const RESULT = 'desktop:toast-result';
 const UPDATE = 'desktop:toast-update';
 const LIFETIME = 8000;
 const GAP = 12;
-const WIDTH = 364;
+/** Ширина карточки уведомления по макету v4 */
+const WIDTH = 380;
 
 interface Entry {
   win: BrowserWindow;
@@ -56,7 +57,8 @@ export class CustomToasts {
   show(spec: ToastSpec): boolean {
     if (desktopShutdown.locked) return false;
     const area = screen.getPrimaryDisplay().workArea;
-    const height = Math.min(spec.hasReply ? 258 : 194, area.height - GAP * 2);
+    // высота — по содержимому карточки v4: без пустого места над кнопками
+    const height = Math.min(spec.hasReply ? 226 : 162, area.height - GAP * 2);
     const previous = this.entries.get(spec.id);
     // Не заменяем уведомление, пока сотрудник пишет ответ.
     if (previous?.draft || previous?.sent) return false;
@@ -93,7 +95,9 @@ export class CustomToasts {
       skipTaskbar: true,
       alwaysOnTop: true,
       show: false,
-      backgroundColor: '#f9f9f9',
+      // окно прозрачное: на экране — только скруглённая карточка (макет v4)
+      transparent: true,
+      backgroundColor: '#00000000',
       autoHideMenuBar: true,
       webPreferences: {
         preload: join(__dirname, '../../preload/customToast.js'),
@@ -104,7 +108,7 @@ export class CustomToasts {
         webSecurity: true,
       },
     });
-    const url = customToastPage(spec);
+    const url = customToastPage(spec, nativeTheme.shouldUseDarkColors);
     const entry: Entry = { win, spec, url, height, hover: false, draft: false, sent: false };
     this.entries.set(spec.id, entry);
     // Окна неподвижны для сотрудника; если Windows меняет их геометрию при

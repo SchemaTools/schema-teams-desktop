@@ -862,36 +862,68 @@ button svg {
   color: var(--ink);
 }
 .tray-user small {
-  color: var(--muted);
+  color: var(--accent-text);
   font-size: 12px;
 }
-.tray-focus {
-  margin: 10px 12px 7px;
-  padding: 12px 14px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #1b3fd1, #3d5ce0);
-  color: #fff;
+/* без связи или без входа — серым */
+.tray-user small:has(.status-dot.offline) {
+  color: var(--muted);
 }
-.tray-focus > div {
+/* «Фокус» — строка меню с кнопками-«таблетками» (макет v4) */
+.tray-focus {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 13px;
+  gap: 12px;
+  min-height: 52px;
+  padding: 6px 16px;
 }
-.tray-focus p {
-  margin: 4px 0 9px;
-  font-size: 13px;
+.tray-focus > svg {
+  flex: none;
+  color: var(--muted);
+}
+.tray-focus.active > svg {
+  color: var(--accent-text);
+}
+.tray-focus-copy {
+  flex: 1;
+  min-width: 0;
+}
+.tray-focus-copy b {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink);
+}
+.tray-focus-copy small {
+  display: block;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+.tray-focus-actions {
+  display: flex;
+  flex: none;
+  gap: 4px;
 }
 .tray-focus button {
-  min-height: 30px;
+  height: 28px;
   border: 0;
-  border-radius: 15px;
-  background: #fff;
-  color: #1532a8;
-  padding: 4px 11px;
-  margin-right: 5px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  padding: 0 10px;
+  font: inherit;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.tray-focus button:hover {
+  background: var(--hover);
+}
+.tray-focus button:disabled {
+  opacity: 0.48;
+  cursor: default;
 }
 .tray-item {
   display: flex;

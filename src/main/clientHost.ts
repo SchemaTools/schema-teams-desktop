@@ -160,6 +160,9 @@ export const SHUTDOWN_QUERY_MS = 60_000;
 export const pauseRetryDelay = (count: number, base = 30_000): number =>
   Math.min(300_000, base * 2 ** Math.max(0, Math.min(count, 20) - 1));
 const ok = <T>(data: T): ApiResult<T> => ({ ok: true, data });
+/** Высота меню трея: всё содержимое без прокрутки на экране 1080p. */
+const TRAY_MAX_HEIGHT = 820;
+
 export class ClientHost {
   get partition(): string {
     return this.o.partition ?? PARTITION;
@@ -3470,11 +3473,13 @@ export class ClientHost {
       });
     }
     const area = screen.getDisplayMatching(bounds).workArea;
+    // меню целиком, без прокрутки, если экран позволяет (замечание 3, макет v4)
+    const height = Math.min(TRAY_MAX_HEIGHT, area.height - 16);
     this.trayWindow.setBounds({
       x: Math.max(area.x, Math.min(bounds.x - 376, area.x + area.width - 400)),
-      y: Math.max(area.y + 8, area.y + area.height - Math.min(600, area.height - 16) - 8),
+      y: Math.max(area.y + 8, area.y + area.height - height - 8),
       width: Math.min(400, area.width),
-      height: Math.min(600, area.height - 16),
+      height,
     });
     if (!this.trayWindow.webContents.isLoading()) {
       this.trayWindow.show();

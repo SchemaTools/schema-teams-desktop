@@ -10,6 +10,8 @@ const f = vi.hoisted(() => ({ windows: [] as Win[] }));
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events');
   return {
+    // тема окна уведомления (замечание 3): в тестах — светлая
+    nativeTheme: { shouldUseDarkColors: false },
     BrowserWindow: class extends EventEmitter {
       destroyed = false;
       bounds = { x: 0, y: 0, width: 364, height: 258 };

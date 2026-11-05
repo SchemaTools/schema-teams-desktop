@@ -262,11 +262,47 @@
   padding-left: 0;
   color: var(--accent-text);
 }
+/* таймер в меню трея — синей карточкой (макет v4) */
 .timer-card {
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--accent-soft);
+  margin: 10px 10px 4px;
+  padding: 14px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #1b3fd1, #3d5ce0);
+  color: #fff;
   font-size: 13px;
+}
+.timer-card .timer-clock {
+  color: #fff;
+}
+.timer-card small {
+  color: rgb(255 255 255 / 82%);
+}
+.timer-card .timer-error,
+.timer-card .timer-warning {
+  margin: 8px 0 0;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgb(0 0 0 / 22%);
+  color: #fff;
+}
+.timer-card .timer-actions button {
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 15px;
+  background: rgb(255 255 255 / 22%);
+  color: #fff;
+  font-weight: 600;
+}
+.timer-card .timer-actions button:first-child {
+  background: #fff;
+  color: #1532a8;
+}
+.timer-card .timer-actions button:hover {
+  background: rgb(255 255 255 / 32%);
+}
+.timer-card .timer-actions button:first-child:hover {
+  background: #e8ecfb;
 }
 .timer-card-top {
   display: flex;
@@ -280,9 +316,6 @@
   margin: 10px 0 4px;
   line-height: 1.4;
   overflow-wrap: anywhere;
-}
-.timer-card small {
-  color: var(--muted);
 }
 .timer-card .timer-clock {
   font-size: 18px;
