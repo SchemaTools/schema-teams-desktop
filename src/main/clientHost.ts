@@ -147,8 +147,7 @@ const mergeScope = (a: RefreshScope | null, b: RefreshScope): RefreshScope =>
   a === null || a === b ? b : 'all';
 /** Пачка «N новых сообщений» одного чата живёт минуту (ТЗ 5.3). */
 const COUNT_WINDOW = 60000;
-export const PAUSE_RECOVERED_MESSAGE =
-  'Очередь паузы была повреждена и сброшена — проверьте время за сегодня.';
+export const PAUSE_RECOVERED_MESSAGE = S.pauseRecovered;
 /** Через сколько считать запрос завершения Windows отменённым, если процесс жив. */
 export const SHUTDOWN_QUERY_MS = 60_000;
 /**
@@ -521,7 +520,7 @@ export class ClientHost {
       api: this.api,
       choose: () =>
         dialog.showOpenDialog(o.main.win, {
-          title: 'Прикрепить файлы (до 50 МБ каждый)',
+          title: S.attachTitle,
           properties: ['openFile', 'multiSelections'],
         }),
       clipboardImage: async () => {
@@ -547,10 +546,9 @@ export class ClientHost {
     this.toasts = new CustomToasts({
       beforeShow: (spec) => this.beforeNotice(spec),
       onReply: async (spec, text) => {
-        if (desktopShutdown.locked)
-          return { ok: false, error: 'Дождитесь завершения проверки обновления.' };
+        if (desktopShutdown.locked) return { ok: false, error: S.waitUpdateCheck };
         const n = this.notices.get(spec);
-        if (!n?.chatId || !this.owned(n)) return { ok: false, error: 'Вход изменился.' };
+        if (!n?.chatId || !this.owned(n)) return { ok: false, error: S.loginChanged };
         if (n.lastText !== text || !n.requestId) {
           n.lastText = text;
           n.requestId = randomUUID();
@@ -885,13 +883,13 @@ export class ClientHost {
     const health = await this.api.health();
     if (this.destroyed || boot !== this.boot) return;
     if (!health.ok || health.data.status !== 'ok') {
-      this.offline(health.ok ? 'Сервер временно недоступен.' : health.error);
+      this.offline(health.ok ? S.serverUnavailable : health.error);
       return;
     }
     this.state.serverVersion = health.data.version;
     if (!supportedServerVersion(health.data.version)) {
       this.state.connection = 'incompatible';
-      this.state.error = `Нужен Schema Teams ${MINIMUM_SERVER_VERSION} или новее.`;
+      this.state.error = S.serverTooOld(MINIMUM_SERVER_VERSION);
       this.publish();
       return;
     }
@@ -1013,7 +1011,7 @@ export class ClientHost {
       .then((health) => {
         if (this.destroyed || epoch !== this.api.epoch || !this.state.user) return;
         if (!health.ok || health.data.status !== 'ok') {
-          this.offline(health.ok ? 'Сервер временно недоступен.' : health.error);
+          this.offline(health.ok ? S.serverUnavailable : health.error);
           return;
         }
         // Сервер отвечает: остаёмся «в сети»; дозапрос — по таймеру 30 с или при
@@ -1221,8 +1219,7 @@ export class ClientHost {
       this.state.morningWarning = null;
     } catch {
       this.morningSaveWarning = ticket;
-      this.state.morningWarning =
-        'Утренний обзор показан, но сохранить отметку не удалось. После перезапуска возможен повтор.';
+      this.state.morningWarning = S.morningSaveFailed;
     }
     this.publish();
   }
@@ -1267,11 +1264,11 @@ export class ClientHost {
       if (!ticket || !this.morningValid(ticket)) return;
       this.showNotice(
         ticket.key,
-        'Доброе утро',
+        S.morningTitle,
         [
-          result.data.dueToday ? `Сроки сегодня: ${result.data.dueToday}` : null,
-          result.data.review ? `На проверке: ${result.data.review}` : null,
-          result.data.newRemarks ? `Новых замечаний: ${result.data.newRemarks}` : null,
+          result.data.dueToday ? S.morningDue(result.data.dueToday) : null,
+          result.data.review ? S.morningReview(result.data.review) : null,
+          result.data.newRemarks ? S.morningRemarks(result.data.newRemarks) : null,
         ]
           .filter(Boolean)
           .join(' · '),
@@ -1765,13 +1762,13 @@ export class ClientHost {
       id: 'pause-return:' + record.key,
       key: record.key,
       groupId: 'pause-return',
-      title: 'Таймер на паузе',
+      title: S.pauseReturnTitle,
       body:
         this.o.settings.get().notifications.preview && this.state.timer
-          ? `${record.returnKind === 'unlock' ? 'Не учтено: ' : 'Пауза с '}${new Date(record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${record.returnKind === 'unlock' ? ' — ' : record.returnKind === 'wake' ? '. Система возобновила работу ' : record.returnKind === 'screensaver' ? '. Заставка больше не обнаружена ' : '. Снова подключились '}${new Date(record.returnedAt ?? record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.\n${[this.state.timer.task.mark, this.state.timer.task.title].filter(Boolean).join(' · ').slice(0, 100)} · ${timerClock(elapsedAt(this.state.timer, this.state.timerObservedAt ?? Date.now()))}`
-          : 'Пауза подтверждена сервером. Продолжите таймер или проверьте трудозатраты.',
+          ? `${S.pauseReturnFrom(record.returnKind === 'unlock')}${new Date(record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}${S.pauseReturnUntil(record.returnKind)}${new Date(record.returnedAt ?? record.at).toLocaleString('ru-RU', { timeZone: this.state.bureau?.timeZone ?? 'UTC', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}.\n${[this.state.timer.task.mark, this.state.timer.task.title].filter(Boolean).join(' · ').slice(0, 100)} · ${timerClock(elapsedAt(this.state.timer, this.state.timerObservedAt ?? Date.now()))}`
+          : S.pauseReturnHidden,
       hasReply: false,
-      buttons: ['Продолжить', 'Закончить и проверить'],
+      buttons: [S.desktopResume, S.pauseReturnFinish],
       delayMs: 0,
     };
     this.recoveryNotices.add(record.key);
@@ -1834,8 +1831,7 @@ export class ClientHost {
         from: now,
         to: now,
         durable: true,
-        message:
-          'Нет свежего подтверждённого времени сервера для автопаузы. Время начала отсутствия не восстановлено. Проверьте время вручную.',
+        message: S.absenceNoServerTime,
       };
     if (this.storageWarning || this.pauseOutbox.health.blocked || !this.pauseReturns.healthy)
       return {
@@ -1843,8 +1839,7 @@ export class ClientHost {
         from: now,
         to: now,
         durable: true,
-        message:
-          'Не удалось надёжно сохранить команду паузы или подтверждение её показа. Автопауза не считается завершённой. Проверьте время вручную; запись очереди не сбрасывается.',
+        message: S.absenceStorage,
       };
     if (this.pauseOutbox.health.recovered || this.pauseReturns.recovered)
       return {
@@ -1863,10 +1858,10 @@ export class ClientHost {
         durable: true,
         message:
           record.status === 'candidate' || record.reviewReason === 'unconfirmed-query'
-            ? 'Завершение Windows не подтверждено. По этому запросу пауза автоматически не отправляется; проверьте время вручную.'
+            ? S.absenceQuery
             : record.status === 'pending' || record.status === 'unknown'
-              ? 'Подтверждение паузы пока не получено. Сохраняется исходная команда; после восстановления связи возможен повтор. Если время проверено вручную, отмените дальнейший повтор ниже.'
-              : 'Пауза не подтверждена или исходный таймер изменился. Автоматический повтор остановлен. Проверьте интервалы вручную.',
+              ? S.absencePending
+              : S.absenceRejected,
       };
     const returned = this.pauseReturns.list(scope)[0];
     if (!returned && this.saverUncertain && this.state.timer?.state === 'run')
@@ -1875,8 +1870,7 @@ export class ClientHost {
         from: now,
         to: now,
         durable: true,
-        message:
-          'Состояние экранной заставки неизвестно. Автопауза по этому датчику не подтверждена; при необходимости поставьте таймер на паузу вручную.',
+        message: S.absenceScreensaver,
       };
     return returned
       ? {
@@ -1885,8 +1879,7 @@ export class ClientHost {
           to: now,
           durable: true,
           // Запись живёт, только пока таймер стоит на этой паузе (settleEndedPauseReturns).
-          message:
-            'Пауза после отсутствия подтверждена сервером. Продолжение выполняется только по вашей команде.',
+          message: S.absenceConfirmed,
         }
       : null;
   }
@@ -1966,12 +1959,12 @@ export class ClientHost {
       id: ticket.id,
       key: ticket.id,
       groupId: ticket.id,
-      title: 'Таймер ещё идёт',
+      title: S.timerReminderTitle,
       body: settings.notifications.preview
-        ? `${taskLabel}\n${timerClock(elapsedAt(timer, this.state.timerObservedAt ?? Date.now()))} с ${start}`
-        : 'Таймер ещё идёт. Проверьте трудозатраты.',
+        ? `${taskLabel}\n${S.reminderSince(timerClock(elapsedAt(timer, this.state.timerObservedAt ?? Date.now())), start)}`
+        : S.reminderHidden,
       hasReply: false,
-      buttons: ['■ Закончить работу', 'Ещё работаю'],
+      buttons: [S.reminderFinish, S.timerStillWorking],
       delayMs: 0,
     };
     this.reminderId = spec.id;
@@ -2015,7 +2008,7 @@ export class ClientHost {
         if (this.state.timerControl) this.observeServerTime(parse.object(data).serverNow);
       } catch {
         this.state.timerReady = false;
-        this.state.timerError = 'Не удалось прочитать состояние таймера.';
+        this.state.timerError = S.timerReadFailed;
       }
       this.publish();
       return;
@@ -2157,8 +2150,8 @@ export class ClientHost {
         return;
       this.showNotice(
         `focus:${epoch}:${previous}`,
-        'Пока вы были в фокусе',
-        `${result.data.messages} сообщений в ${result.data.chats.length} чатах · упоминаний: ${result.data.mentions}`,
+        S.focusSummaryTitle,
+        S.focusSummary(result.data.messages, result.data.chats.length, result.data.mentions),
         { epoch, owner: this.api.owner, chatId: null, mention: false, ordinary: true },
       );
     });
@@ -2194,10 +2187,10 @@ export class ClientHost {
   /** Текст уведомления по ТЗ 5.3: в группе и чате объекта — «Фамилия И.О.: текст». */
   private messageNoticeText(message: ChatMessage, count: number): string {
     const kind = this.state.chats.find((c) => c.id === message.chatId)?.kind;
-    const text = message.text || 'Новое вложение';
+    const text = message.text || S.newAttachment;
     const author = message.author?.shortName;
     const line = kind && kind !== 'direct' && author ? `${author}: ${text}` : text;
-    return `${count > 1 ? `${count} новых сообщений\n` : ''}${line}`;
+    return `${count > 1 ? `${S.newMessages(count)}\n` : ''}${line}`;
   }
   private displayMessageNotice(message: ChatMessage, count: number, serverQuiet = false): void {
     const owner = this.api.owner;
@@ -2205,7 +2198,7 @@ export class ClientHost {
     const title =
       this.state.chats.find((c) => c.id === message.chatId)?.title ??
       message.author?.shortName ??
-      'Новое сообщение';
+      S.desktopNewMessage;
     this.showNotice(`chat:${message.chatId}`, title, this.messageNoticeText(message, count), {
       epoch: this.api.epoch,
       owner,
@@ -2250,12 +2243,12 @@ export class ClientHost {
     this.showNotice(
       `notification:${item.id}`,
       item.event === 'timer_stopped'
-        ? 'Вчерашний таймер остановлен в полночь'
+        ? S.timerStoppedTitle
         : item.event === 'album_issued'
-          ? 'Альбом выдан'
+          ? S.albumIssuedTitle
           : item.event === 'remarks_closed'
-            ? 'Все замечания закрыты'
-            : (item.subject ?? item.task?.title ?? 'Schema Teams'),
+            ? S.remarksClosedTitle
+            : (item.subject ?? item.task?.title ?? S.appName),
       item.reason ??
         item.changes.map((c) => `${c.field}: ${c.from ?? '—'} → ${c.to ?? '—'}`).join('\n'),
       {
@@ -2283,16 +2276,16 @@ export class ClientHost {
       body: this.o.settings.get().notifications.preview
         ? body
         : notice.timerStopped
-          ? 'Запись трудозатрат требует проверки.'
+          ? S.timerStoppedHidden
           : notice.morning
-            ? 'Откройте «Мою работу», чтобы посмотреть сводку.'
-            : 'Новое сообщение',
+            ? S.morningHidden
+            : S.desktopNewMessage,
       hasReply: notice.chatId !== null,
       buttons: notice.timerStopped
-        ? ['Проверить запись', 'Прочитано']
+        ? [S.checkEntry, S.desktopRead]
         : notice.chatId || notice.notificationId
-          ? ['Открыть', 'Прочитано']
-          : ['Открыть'],
+          ? [S.desktopOpen, S.desktopRead]
+          : [S.desktopOpen],
       delayMs: 0,
     };
     this.notices.set(spec, notice);
@@ -2437,7 +2430,7 @@ export class ClientHost {
     if (this.destroyed) return failure('stale_session');
     if (desktopShutdown.locked) return failure('update_in_progress');
     if (mode === 'finish' && (!this.state.user || this.state.connection !== 'online')) {
-      const error = 'Нет связи. Подключитесь к серверу, чтобы закончить работу.';
+      const error = S.finishOffline;
       this.state.error = error;
       this.o.main.show();
       this.trayWindow?.hide();
@@ -2579,10 +2572,10 @@ export class ClientHost {
             code: 'report_error',
             error:
               r.kind === 'report.capture'
-                ? 'Не удалось сделать снимок. Выберите источник и повторите.'
+                ? S.reportCaptureFailed
                 : r.kind === 'report.export'
-                  ? 'Не удалось сохранить архив. Проверьте папку и подготовьте файлы заново.'
-                  : 'Не удалось подготовить диагностику. Проверьте выбранные файлы и повторите.',
+                  ? S.reportExportFailed
+                  : S.reportPrepareFailed,
             retryable: true,
           };
         }
@@ -2599,7 +2592,7 @@ export class ClientHost {
           return {
             ok: false,
             code: 'inventory_error',
-            error: 'Не удалось проверить стандартные папки Revit. Повторите позже.',
+            error: S.revitFoldersFailed,
             retryable: true,
           };
         }
@@ -2671,7 +2664,7 @@ export class ClientHost {
         return {
           ok: false,
           code: 'logs_error',
-          error: 'Не удалось открыть папку журналов.',
+          error: S.logsOpenFailed,
           retryable: false,
         };
       case 'init':
@@ -2681,7 +2674,7 @@ export class ClientHost {
           return {
             ok: false,
             code: 'busy',
-            error: 'Дождитесь завершения выхода.',
+            error: S.waitQuit,
             retryable: false,
           };
         this.login?.show();
@@ -2861,7 +2854,7 @@ export class ClientHost {
           return {
             ok: false,
             code: 'support_unresolved',
-            error: 'Результат прежней отправки пока неизвестен. Сначала проверьте отправку.',
+            error: S.supportUnresolved,
             retryable: false,
           };
         try {
@@ -2870,8 +2863,7 @@ export class ClientHost {
           return {
             ok: false,
             code: 'open_error',
-            error:
-              'Не удалось открыть обратную связь. Архив сохранён; передайте его администратору вручную.',
+            error: S.feedbackOpenFailed,
             retryable: false,
           };
         }
@@ -2915,7 +2907,7 @@ export class ClientHost {
           return {
             ok: false,
             code: 'settings_error',
-            error: 'Не удалось сохранить настройку. Повторите действие.',
+            error: S.settingSaveFailed,
             retryable: false,
           };
         }
@@ -3339,7 +3331,7 @@ export class ClientHost {
       if (!this.o.main.win.isDestroyed())
         this.o.main.win.setOverlayIcon(
           overlay ? nativeImage.createFromBuffer(encodePng(badgeBitmap(n))) : null,
-          `Непрочитанных: ${n}`,
+          S.desktopUnread(n),
         );
     }
     const signedOut = ['signedOut', 'passwordChange'].includes(this.state.connection);
@@ -3395,9 +3387,7 @@ export class ClientHost {
       return {
         ok: false,
         code: 'settings_error',
-        error: applyAuto
-          ? 'Не удалось применить автозапуск или сохранить настройку. Проверьте автозапуск Windows.'
-          : 'Не удалось сохранить настройки. Повторите действие.',
+        error: applyAuto ? S.autostartSaveFailed : S.settingsSaveFailed,
         retryable: false,
       };
     }

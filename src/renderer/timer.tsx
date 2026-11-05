@@ -20,6 +20,7 @@ import {
 import { request } from './bridge';
 import './timer.css';
 import { TimerSettings } from './timerSettings';
+import { T } from './timerStrings';
 
 export function TimerElapsed({
   timer,
@@ -50,10 +51,10 @@ export function TimerCard({
 }) {
   const timer = snapshot.timer;
   return (
-    <section className="timer-card" aria-label="Таймер работы">
+    <section className="timer-card" aria-label={T.cardLabel}>
       <div className="timer-card-top">
         <Timer size={20} />
-        <b>Учёт времени</b>
+        <b>{T.title}</b>
         {timer && (
           <TimerElapsed
             timer={timer}
@@ -71,13 +72,13 @@ export function TimerCard({
             {timer.task.place} ·{' '}
             {snapshot.timerReady && snapshot.connection === 'online'
               ? timer.state === 'run'
-                ? 'Идёт работа'
-                : 'На паузе'
-              : 'Состояние не подтверждено'}
+                ? T.running
+                : T.paused
+              : T.unconfirmed}
           </small>
         </>
       ) : (
-        <p>{snapshot.timerReady ? 'Таймер не запущен' : 'Состояние таймера не получено'}</p>
+        <p>{snapshot.timerReady ? T.notStarted : T.notReceived}</p>
       )}
       {snapshot.timerError && (
         <p className="timer-error" role="status">
@@ -85,16 +86,13 @@ export function TimerCard({
         </p>
       )}
       {snapshot.timerAbsence && (
-        <p className="timer-warning">
-          {snapshot.timerAbsence.message ??
-            'После блокировки или сна проверьте время: автоматическая пауза не подтверждена.'}
-        </p>
+        <p className="timer-warning">{snapshot.timerAbsence.message ?? T.absenceShort}</p>
       )}
       <div className="timer-actions">
         <button onClick={() => onOpen(timer ? 'finish' : 'pick')}>
-          {timer ? 'Открыть таймер' : 'Начать работу'}
+          {timer ? T.openTimer : T.startWork}
         </button>
-        {timer && <button onClick={() => onOpen('pick')}>Сменить задачу</button>}
+        {timer && <button onClick={() => onOpen('pick')}>{T.changeTask}</button>}
       </div>
     </section>
   );
@@ -256,8 +254,7 @@ export function TimerPanel({
   useEffect(() => {
     if (!prepareExpected || preparedOnOpen.current || !valid || busy.current) return;
     preparedOnOpen.current = true;
-    if (!matchesTimer(timer, prepareExpected))
-      setError('Таймер изменился после возвращения. Обновите состояние и проверьте задачу.');
+    if (!matchesTimer(timer, prepareExpected)) setError(T.changedAfterReturn);
     else void prepare();
   }, [prepareExpected, valid]);
   async function prepare(next: TimeTask | null = null) {
@@ -309,7 +306,7 @@ export function TimerPanel({
       }),
     );
     if (result?.ok) {
-      setFeedback('Работа начата.');
+      setFeedback(T.started);
       setPrepared(null);
       setNextTask(null);
     }
@@ -323,12 +320,12 @@ export function TimerPanel({
       setExtendConfirm(false);
       setFeedback(
         kind === 'timer.reset'
-          ? 'Таймер сброшен без записи.'
+          ? T.resetDone
           : kind === 'timer.pause'
-            ? 'Таймер на паузе.'
+            ? T.pausedDone
             : kind === 'timer.extend'
-              ? 'К началу работы добавлено 15 минут.'
-              : 'Работа продолжена.',
+              ? T.extendDone
+              : T.resumed,
       );
     }
   }
@@ -346,7 +343,7 @@ export function TimerPanel({
         return {
           ok: false,
           code: 'validation',
-          error: 'Проверьте строки и пересечения интервалов.',
+          error: T.rowsInvalid,
           row: checked.data.problems[0]?.row,
           retryable: false,
         } as const;
@@ -366,16 +363,13 @@ export function TimerPanel({
     setResetConfirm(false);
     const target = nextTask;
     setNextTask(null);
-    setFeedback('Трудозатраты записаны.');
+    setFeedback(T.saved);
     if (target) {
       const begun = await run(() =>
         request({ kind: 'timer.start', epoch, taskId: target.id, expected: null }),
       );
-      if (begun?.ok) setFeedback('Трудозатраты записаны. Новая задача начата.');
-      else if (begun)
-        setFeedback(
-          'Трудозатраты записаны. Запуск новой задачи не подтверждён — обновите состояние.',
-        );
+      if (begun?.ok) setFeedback(T.savedAndStarted);
+      else if (begun) setFeedback(T.savedStartUnknown);
     }
   }
   function changeRow(index: number, change: Partial<TimerRow>) {
@@ -425,14 +419,14 @@ export function TimerPanel({
         <header>
           <Timer size={24} />
           <div>
-            <h2 id="timer-title">Учёт времени</h2>
-            <small>Один таймер на всех ваших устройствах</small>
+            <h2 id="timer-title">{T.title}</h2>
+            <small>{T.subtitle}</small>
           </div>
           <button
             ref={close}
             className="icon-button"
             disabled={pending}
-            aria-label="Закрыть таймер"
+            aria-label={T.close}
             onClick={onClose}
           >
             <X size={21} />
@@ -441,14 +435,12 @@ export function TimerPanel({
         <div className="timer-body">
           {snapshot.timerAbsence && (
             <div className="timer-warning" role="status">
-              <b>Проверьте время после возвращения</b>
+              <b>{T.absenceTitle}</b>
               <p>
                 {snapshot.timerAbsence.message ?? (
                   <>
-                    Компьютер был заблокирован или спал:{' '}
-                    {new Date(snapshot.timerAbsence.from).toLocaleString('ru-RU')} —{' '}
-                    {new Date(snapshot.timerAbsence.to).toLocaleString('ru-RU')}. Автоматическая
-                    пауза не подтверждена. При записи исключите время отсутствия вручную.
+                    {T.absenceLead} {new Date(snapshot.timerAbsence.from).toLocaleString('ru-RU')} —{' '}
+                    {new Date(snapshot.timerAbsence.to).toLocaleString('ru-RU')}. {T.absenceTail}
                   </>
                 )}
               </p>
@@ -462,9 +454,7 @@ export function TimerPanel({
                   })
                 }
               >
-                {snapshot.timerAbsence.durable
-                  ? 'Проверено, отменить повтор'
-                  : 'Предупреждение прочитано'}
+                {snapshot.timerAbsence.durable ? T.absenceDurable : T.absenceRead}
               </button>
             </div>
           )}
@@ -473,9 +463,9 @@ export function TimerPanel({
               <span className={`timer-state ${timer.state}`}>
                 {snapshot.timerReady && online
                   ? timer.state === 'run'
-                    ? 'Идёт работа'
-                    : 'На паузе'
-                  : 'Состояние не подтверждено'}
+                    ? T.running
+                    : T.paused
+                  : T.unconfirmed}
               </span>
               <TimerElapsed
                 timer={timer}
@@ -494,60 +484,47 @@ export function TimerPanel({
                   }
                 >
                   {timer.state === 'run' ? <Pause size={17} /> : <Play size={17} />}{' '}
-                  {timer.state === 'run' ? 'Пауза' : 'Продолжить'}
+                  {timer.state === 'run' ? T.pause : T.resume}
                 </button>
                 <button
                   className="timer-primary"
                   disabled={!valid || Boolean(prepared)}
                   onClick={() => void prepare()}
                 >
-                  Закончить и проверить
+                  {T.finishAndCheck}
                 </button>
                 <button disabled={!valid} onClick={() => setResetConfirm(true)}>
                   <Trash size={17} />
-                  Сбросить
+                  {T.reset}
                 </button>
                 <button
                   disabled={!valid || Boolean(prepared)}
                   onClick={() => setExtendConfirm(true)}
                 >
-                  Добавить 15 минут
+                  {T.extend}
                 </button>
                 <button disabled={pending} onClick={() => setShowPicker((value) => !value)}>
-                  Выбрать другую задачу
+                  {T.pickOther}
                 </button>
               </div>
             </div>
           )}
-          {snapshot.timerControl !== true && (
-            <p className="timer-warning">Сервер не подтвердил безопасное управление таймером.</p>
-          )}
+          {snapshot.timerControl !== true && <p className="timer-warning">{T.noControl}</p>}
           {!snapshot.timerReady && (
             <p className="timer-error" role="status">
-              {snapshot.timerError || 'Состояние таймера ещё не подтверждено.'}
+              {snapshot.timerError || T.notConfirmedYet}
             </p>
           )}
           {!online && (
             <p className="timer-warning" role="status">
-              Нет связи. Изменение таймера и запись недоступны. Последнее состояние показано для
-              справки.
+              {T.offline}
             </p>
           )}
           {(error || uncertain) && (
             <div className="timer-error" role="alert">
               <p>{error}</p>
-              {uncertain && (
-                <p>
-                  Результат действия неизвестен. Повтор автоматически не отправляется. Обновите
-                  состояние, затем заново проверьте интервалы.
-                </p>
-              )}
-              {rowError !== null && (
-                <p>
-                  Проверьте строку {rowError + 1}: дату, интервалы и пересечения с уже записанным
-                  временем.
-                </p>
-              )}
+              {uncertain && <p>{T.uncertain}</p>}
+              {rowError !== null && <p>{T.checkRow(rowError + 1)}</p>}
             </div>
           )}
           {feedback && (
@@ -556,68 +533,62 @@ export function TimerPanel({
             </p>
           )}
           <button disabled={!online || pending} onClick={() => void refresh()}>
-            Обновить состояние
+            {T.refresh}
           </button>
           {resetConfirm && (
             <div className="timer-warning" role="alert">
-              <b>Сбросить таймер без записи трудозатрат?</b>
-              <p>Накопленные интервалы будут удалены.</p>
+              <b>{T.resetQuestion}</b>
+              <p>{T.resetHint}</p>
               <div className="timer-actions">
                 <button disabled={!valid} onClick={() => void control('timer.reset')}>
-                  Да, сбросить
+                  {T.resetYes}
                 </button>
                 <button disabled={pending} onClick={() => setResetConfirm(false)}>
-                  Отмена
+                  {T.cancel}
                 </button>
               </div>
             </div>
           )}
           {extendConfirm && (
             <div className="timer-warning" role="alert">
-              <b>Добавить 15 минут перед началом работы?</b>
-              <p>
-                Начало первого интервала сдвинется на 15 минут назад, отработанное время увеличится
-                на 15 минут. Это не перенос напоминания или конца рабочего дня.
-              </p>
+              <b>{T.extendQuestion}</b>
+              <p>{T.extendHint}</p>
               <div className="timer-actions">
                 <button disabled={!valid} onClick={() => void control('timer.extend')}>
-                  Да, добавить 15 минут
+                  {T.extendYes}
                 </button>
                 <button disabled={pending} onClick={() => setExtendConfirm(false)}>
-                  Отмена добавления
+                  {T.extendCancel}
                 </button>
               </div>
             </div>
           )}
           {prepared ? (
-            <section className="timer-finish" aria-label="Запись трудозатрат">
-              <h3>Записать в трудозатраты</h3>
+            <section className="timer-finish" aria-label={T.finishLabel}>
+              <h3>{T.finishTitle}</h3>
               <p>
                 {prepared.proposal.task.mark} · {prepared.proposal.task.title}
               </p>
+              <p>{T.actual(timerClock(prepared.proposal.elapsedSec))}</p>
               <p>
-                Фактически: {timerClock(prepared.proposal.elapsedSec)} · округление предложено
-                сервером до получаса.
-              </p>
-              <p>
-                Окончание работы зафиксировано:{' '}
+                {T.cutoffLead}{' '}
                 {new Date(prepared.cutoffAt).toLocaleString(
                   'ru-RU',
                   snapshot.bureau ? { timeZone: snapshot.bureau.timeZone } : undefined,
                 )}
-                {snapshot.bureau ? ` (${snapshot.bureau.timeZone})` : ''}. Подготовка не меняет
-                состояние таймера.
+                {snapshot.bureau ? ` (${snapshot.bureau.timeZone})` : ''}
+                {T.cutoffTail}
               </p>
               {prepared.problems.length > 0 && (
                 <div className="timer-warning" role="status">
-                  Предупреждения предложения сервера:{' '}
+                  {T.proposalProblems}{' '}
                   {prepared.problems
-                    .map((problem) => `Строка ${problem.row + 1}: ${problem.message}`)
+                    .map((problem) => T.rowProblem(problem.row + 1, problem.message))
                     .join(' ')}
                 </div>
               )}
               {!stale && timerRowsValid(rows) && !rowCheck && !validationError && (
-                <p role="status">Проверяем изменённые строки на сервере…</p>
+                <p role="status">{T.validating}</p>
               )}
               {validationError && (
                 <div className="timer-error" role="alert">
@@ -626,18 +597,18 @@ export function TimerPanel({
                     disabled={!online || pending || stale}
                     onClick={() => setValidationAttempt((value) => value + 1)}
                   >
-                    Повторить проверку строк
+                    {T.retryValidation}
                   </button>
                 </div>
               )}
               {rowCheck?.signature === rowsSignature &&
                 rowCheck.value.problems.map((problem, index) => (
                   <p key={index} className="timer-error" role="alert">
-                    Строка {problem.row + 1}: {problem.message}
+                    {T.rowProblem(problem.row + 1, problem.message)}
                   </p>
                 ))}
               <details>
-                <summary>Фактические интервалы (часовой пояс компьютера)</summary>
+                <summary>{T.segments}</summary>
                 <ul>
                   {prepared.proposal.segments.map((s, i) => (
                     <li key={i}>
@@ -649,27 +620,22 @@ export function TimerPanel({
               </details>
               {expired && (
                 <p className="timer-warning" role="alert">
-                  Срок проверки истёк. Закройте проверку и подготовьте её заново.
+                  {T.expired}
                 </p>
               )}
               {stale && !expired && (
                 <p className="timer-warning" role="alert">
-                  Таймер изменился. Эти интервалы больше нельзя отправить. Закройте проверку и
-                  откройте её заново.
+                  {T.stale}
                 </p>
               )}
-              {rows.length === 0 && (
-                <p className="timer-warning">
-                  После округления нет интервалов для записи. Продолжите работу или сбросьте таймер.
-                </p>
-              )}
+              {rows.length === 0 && <p className="timer-warning">{T.noRows}</p>}
               <div className="timer-rows">
                 {rows.map((row, index) => (
                   <div className={`timer-row${rowError === index ? ' invalid' : ''}`} key={index}>
                     <label>
-                      Дата {index + 1}
+                      {T.date(index + 1)}
                       <input
-                        aria-label={`Дата ${index + 1}`}
+                        aria-label={T.date(index + 1)}
                         type="date"
                         min={options?.editableFrom}
                         max={prepared.proposal.today}
@@ -679,9 +645,9 @@ export function TimerPanel({
                       />
                     </label>
                     <label>
-                      С
+                      {T.from}
                       <select
-                        aria-label={`С ${index + 1}`}
+                        aria-label={T.fromRow(index + 1)}
                         value={row.from}
                         disabled={pending || uncertain}
                         onChange={(e) => changeRow(index, { from: Number(e.target.value) })}
@@ -690,9 +656,9 @@ export function TimerPanel({
                       </select>
                     </label>
                     <label>
-                      До
+                      {T.to}
                       <select
-                        aria-label={`До ${index + 1}`}
+                        aria-label={T.toRow(index + 1)}
                         value={row.to}
                         disabled={pending || uncertain}
                         onChange={(e) => changeRow(index, { to: Number(e.target.value) })}
@@ -701,7 +667,7 @@ export function TimerPanel({
                       </select>
                     </label>
                     <button
-                      aria-label={`Удалить строку ${index + 1}`}
+                      aria-label={T.deleteRow(index + 1)}
                       disabled={pending || uncertain}
                       onClick={() => setRows((old) => old.filter((_, i) => i !== index))}
                     >
@@ -711,9 +677,9 @@ export function TimerPanel({
                 ))}
               </div>
               <label className="timer-note">
-                Примечание
+                {T.note}
                 <textarea
-                  aria-label="Примечание"
+                  aria-label={T.note}
                   maxLength={500}
                   value={note}
                   disabled={pending || uncertain}
@@ -724,7 +690,7 @@ export function TimerPanel({
               </label>
               {nextTask && (
                 <p>
-                  После подтверждённой записи начнётся:{' '}
+                  {T.nextTask}{' '}
                   <b>
                     {nextTask.mark} · {nextTask.title}
                   </b>
@@ -736,7 +702,7 @@ export function TimerPanel({
                   disabled={!valid || stale || !timerRowsValid(rows) || !rowsValidated}
                   onClick={() => void finish()}
                 >
-                  {nextTask ? 'Записать и начать новую' : 'Записать'}
+                  {nextTask ? T.saveAndStart : T.save}
                 </button>
                 <button
                   disabled={pending}
@@ -746,27 +712,27 @@ export function TimerPanel({
                     setUncertain(false);
                   }}
                 >
-                  Закрыть проверку
+                  {T.closeCheck}
                 </button>
               </div>
             </section>
           ) : showPicker || !timer ? (
-            <section className="timer-picker" aria-label="Выбор задачи">
-              <h3>{timer ? 'Выбрать задачу' : 'Начать работу'}</h3>
+            <section className="timer-picker" aria-label={T.pickerLabel}>
+              <h3>{timer ? T.pickTask : T.startWork}</h3>
               <label className="timer-search">
                 <Search size={18} />
                 <input
-                  aria-label="Поиск задачи для таймера"
-                  placeholder="Марка, задача или объект"
+                  aria-label={T.search}
+                  placeholder={T.searchPlaceholder}
                   maxLength={200}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                 />
               </label>
               {!options ? (
-                <p>Загрузите список доступных задач кнопкой «Обновить состояние».</p>
+                <p>{T.loadTasks}</p>
               ) : tasks.length === 0 ? (
-                <p>Подходящих доступных задач нет.</p>
+                <p>{T.noTasks}</p>
               ) : (
                 <div className="timer-task-list">
                   {tasks.map((task, index) => {
@@ -776,13 +742,13 @@ export function TimerPanel({
                         []
                       ).includes(task.id),
                       previous = tasks[index - 1],
-                      group = recent ? 'Недавние' : task.place || 'Личные задачи',
+                      group = recent ? T.recent : task.place || T.personalTasks,
                       previousGroup = previous
                         ? (options?.recentTaskIds ?? snapshot.recentTimeTaskIds ?? []).includes(
                             previous.id,
                           )
-                          ? 'Недавние'
-                          : previous.place || 'Личные задачи'
+                          ? T.recent
+                          : previous.place || T.personalTasks
                         : null;
                     return (
                       <div key={task.id}>
@@ -793,9 +759,9 @@ export function TimerPanel({
                           onClick={() => void start(task)}
                         >
                           <span>
-                            <b>{task.mark || 'Задача'}</b>
+                            <b>{task.mark || T.task}</b>
                             <strong>{task.title}</strong>
-                            <small>{task.place || 'Личная задача'}</small>
+                            <small>{task.place || T.personalTask}</small>
                           </span>
                           <Play size={19} />
                         </button>
@@ -807,16 +773,13 @@ export function TimerPanel({
             </section>
           ) : null}
           <TimerSettings snapshot={snapshot} workdayEnd={options?.workday.end} />
-          <p className="timer-footnote">
-            Управление подтверждается сервером. Проверка интервалов не ставит таймер на паузу;
-            запись завершает работу на момент подготовки.
-          </p>
+          <p className="timer-footnote">{T.footnote}</p>
           <button
             className="timer-site"
             disabled={!online || pending}
             onClick={() => void request({ kind: 'open.site', epoch, path: '/time' })}
           >
-            <ExternalLink size={17} /> Все трудозатраты на сайте
+            <ExternalLink size={17} /> {T.allOnSite}
           </button>
         </div>
       </section>
