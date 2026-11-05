@@ -57,19 +57,23 @@ export function applicationLog(text: string): string {
 }
 /** Revit journals can contain model data; remove quoted values, credentials and local/network paths. */
 export function revitLog(text: string): string {
-  return text
-    .replace(/"(?:[^"\r\n]|"")*"/g, '"[значение скрыто]"')
-    .replace(
-      /^.*(?:password|passwd|authorization|cookie|csrf|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|bearer).*$/gim,
-      '[строка с данными доступа исключена]',
-    )
-    .replace(/(?:https?:\/\/|[A-Za-z]:[\\/]|\\\\)[^\s<>]+/gi, '[путь или адрес скрыт]')
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[почта скрыта]')
-    .replace(
-      /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9-]{20,}|stt_[A-Za-z0-9_-]{43})\b/g,
-      '[токен скрыт]',
-    )
-    .replace(/\p{Cc}/gu, (character) => ('\r\n\t'.includes(character) ? character : ''));
+  return (
+    text
+      .replace(/"(?:[^"\r\n]|"")*"/g, '"[значение скрыто]"')
+      .replace(
+        /^.*(?:password|passwd|authorization|cookie|csrf|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|bearer).*$/gim,
+        '[строка с данными доступа исключена]',
+      )
+      // В путях бывают пробелы (`C:\Users\Имя Фамилия\…`), поэтому путь скрывается до конца
+      // строки или до знака, которого в пути Windows быть не может (" < > | * ?).
+      .replace(/(?:https?:\/\/|[A-Za-z]:[\\/]|\\\\)[^\r\n"<>|*?]*/gi, '[путь или адрес скрыт]')
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[почта скрыта]')
+      .replace(
+        /\b(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9-]{20,}|stt_[A-Za-z0-9_-]{43})\b/g,
+        '[токен скрыт]',
+      )
+      .replace(/\p{Cc}/gu, (character) => ('\r\n\t'.includes(character) ? character : ''))
+  );
 }
 export async function applicationLogs(root: string): Promise<LogSnapshot[]> {
   const snapshots: LogSnapshot[] = [];

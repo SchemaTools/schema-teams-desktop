@@ -96,6 +96,30 @@ describe('Диагностические журналы', () => {
     expect(output).not.toMatch(/my model|private|server|example.org|dummy|hidden/);
     expect(output).not.toContain(String.fromCharCode(0));
   });
+  it('masks Revit journal paths with spaces up to the end of line or a forbidden path character', () => {
+    const output = revitLog(
+      [
+        String.raw`' 0:< Opening C:\Users\Иванова Анна\AppData\Local\Temp\Объект А.rvt`,
+        String.raw`Jrn.Data D:\Проекты\ЖК Тестовый\АР.rvt|Normal operation`,
+        "' Path \\\\server\\Общая папка\\Объект Б\\КР.rvt <done>",
+        'C:/Users/Петров Пётр/Desktop/Модель 2.rvt',
+      ].join('\r\n'),
+    );
+    for (const hidden of [
+      'Иванова',
+      'Анна',
+      'Объект',
+      'Тестовый',
+      'АР.rvt',
+      'Общая',
+      'Петров',
+      'Модель',
+    ])
+      expect(output).not.toContain(hidden);
+    expect(output).toContain('Normal operation');
+    expect(output).toContain('<done>');
+    expect(output.split('\r\n')).toHaveLength(4);
+  });
   it('reads only five fixed application names and bounds each tail', async () => {
     const root = dir();
     writeFileSync(join(root, 'app.log'), 'secret'.repeat(200000));
