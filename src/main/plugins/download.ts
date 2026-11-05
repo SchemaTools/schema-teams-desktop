@@ -10,8 +10,15 @@ export interface PluginDownloadOptions {
   signal?: AbortSignal;
   current: () => boolean;
   onUnauthorized?: () => void;
+  /** Общий потолок всей загрузки, не больше PLUGIN_TOTAL_TIMEOUT_MS. */
   timeoutMs?: number;
+  /** Простой: столько нет ответа или очередной порции данных. */
+  idleTimeoutMs?: number;
 }
+/** Как у обновления приложения: нет ни одного байта 60 с — загрузка прерывается. */
+export const PLUGIN_IDLE_TIMEOUT_MS = 60 * 1000;
+/** Общий потолок: 200 МиБ за 30 минут — около 0,1 МиБ/с, хватает и для удалённой работы. */
+export const PLUGIN_TOTAL_TIMEOUT_MS = 30 * 60 * 1000;
 /** Main-only bounded reader. Never exposes binary bytes or arbitrary URLs through IPC. */
 export async function downloadPlugin(
   build: PluginBuild,
@@ -49,7 +56,15 @@ export async function downloadPlugin(
     abort = () => controller.abort();
   o.signal?.addEventListener('abort', abort, { once: true });
   if (o.signal?.aborted) abort();
-  const timer = setTimeout(abort, o.timeoutMs ?? 120000);
+  const total = Math.min(o.timeoutMs ?? PLUGIN_TOTAL_TIMEOUT_MS, PLUGIN_TOTAL_TIMEOUT_MS),
+    idle = Math.min(o.idleTimeoutMs ?? PLUGIN_IDLE_TIMEOUT_MS, total);
+  const timer = setTimeout(abort, total);
+  // Простой отсчитывается заново после ответа сервера и после каждой порции данных.
+  let idleTimer = setTimeout(abort, idle);
+  const alive = () => {
+    clearTimeout(idleTimer);
+    if (!controller.signal.aborted) idleTimer = setTimeout(abort, idle);
+  };
   let directory: string | undefined,
     part: string | undefined,
     target: string | undefined,
@@ -85,6 +100,7 @@ export async function downloadPlugin(
         signal: controller.signal,
       }),
     );
+    alive();
     check();
     if (response.status === 401) o.onUnauthorized?.();
     if (response.status !== 200 || response.redirected) {
@@ -114,6 +130,7 @@ export async function downloadPlugin(
     try {
       while (true) {
         const chunk = await wait(reader.read());
+        alive();
         check();
         if (chunk.done) break;
         received += chunk.value.byteLength;
@@ -159,6 +176,7 @@ export async function downloadPlugin(
     throw error;
   } finally {
     clearTimeout(timer);
+    clearTimeout(idleTimer);
     o.signal?.removeEventListener('abort', abort);
     await reader?.cancel().catch(() => {});
     if (!reader) await response?.body?.cancel().catch(() => {});

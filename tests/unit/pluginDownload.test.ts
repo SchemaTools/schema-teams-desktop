@@ -190,3 +190,50 @@ describe('main-only streaming plugin download', () => {
     expect(await readdir(p)).toEqual([]);
   });
 });
+describe('plugin download idle timeout and total ceiling', () => {
+  it('slow but live stream outlasts the idle timeout; silence longer than idle aborts', async () => {
+    const slow = await downloadPlugin(build(), {
+      root: await root(),
+      current: () => true,
+      idleTimeoutMs: 60,
+      timeoutMs: 5000,
+      fetch: async () => {
+        let i = 0;
+        return new Response(
+          new ReadableStream({
+            async pull(c) {
+              await new Promise((r) => setTimeout(r, 30));
+              if (i < bytes.length) c.enqueue(bytes.subarray(i, ++i));
+              else c.close();
+            },
+          }),
+          { headers: { 'content-length': String(bytes.length) } },
+        );
+      },
+    });
+    expect(await readFile(slow)).toEqual(Buffer.from(bytes));
+    const p = await root();
+    await expect(
+      downloadPlugin(build(), {
+        root: p,
+        current: () => true,
+        idleTimeoutMs: 40,
+        timeoutMs: 5000,
+        fetch: async () =>
+          new Response(
+            new ReadableStream({
+              pull: () => new Promise(() => {}),
+            }),
+            { headers: { 'content-length': String(bytes.length) } },
+          ),
+      }),
+    ).rejects.toThrow('download_aborted');
+    expect(await readdir(p)).toEqual([]);
+  });
+  it('defaults are 60 s idle and a 30 min ceiling', async () => {
+    const { PLUGIN_IDLE_TIMEOUT_MS, PLUGIN_TOTAL_TIMEOUT_MS } =
+      await import('../../src/main/plugins/download');
+    expect(PLUGIN_IDLE_TIMEOUT_MS).toBe(60000);
+    expect(PLUGIN_TOTAL_TIMEOUT_MS).toBe(1800000);
+  });
+});

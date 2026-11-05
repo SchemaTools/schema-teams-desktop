@@ -1,6 +1,7 @@
 import { app, net } from 'electron';
+import { localDataPath } from '../localData';
 import { spawn } from 'node:child_process';
-import { basename, isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { rmdir } from 'node:fs/promises';
 import { cleanupDesktopDownloads } from './downloadDesktop';
 import {
@@ -45,22 +46,12 @@ function handoff(ownedInstaller: string): Promise<void> {
     });
   });
 }
-/**
- * Папка загрузок обновлений — в %LOCALAPPDATA%, а не в перемещаемом профиле Roaming:
- * установщик на 100+ МиБ не должен уезжать с профилем на сервер. В Electron 44 нет
- * app.getPath для Local (sessionData по умолчанию совпадает с userData), а путь
- * «appData\..\Local» ломается при перенаправлении Roaming, поэтому берётся
- * переменная LOCALAPPDATA, которую Windows задаёт каждому сеансу. Имя подпапки —
- * как у профиля (`Schema Teams`). Без переменной — прежнее место в userData.
- */
+/** Папка загрузок обновлений — в %LOCALAPPDATA% (см. localDataPath), без переменной — в userData. */
 export function desktopUpdatesRoot(
   env: NodeJS.ProcessEnv = process.env,
   userData = app.getPath('userData'),
 ): string {
-  const local = env.LOCALAPPDATA;
-  return local && isAbsolute(local)
-    ? join(local, basename(userData), 'desktop-updates')
-    : join(userData, 'desktop-updates');
+  return localDataPath('desktop-updates', env, userData);
 }
 /** При запуске: старые загрузки в новой папке и в прежней (Roaming) удаляются. */
 export async function cleanupDesktopUpdateStaging(): Promise<void> {

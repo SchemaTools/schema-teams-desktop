@@ -3,12 +3,14 @@ using System.IO;
 using System.Diagnostics;
 using System.Collections.Generic;
 // Read-only local checks. Never starts/stops Revit or changes filesystem/trust state.
+// Процессы Revit считаются только в своём сеансе Windows: на RDS чужой Revit не задерживает обновление.
 internal static class PluginSafety {
   static int Main(string[] args) {
     try {
       if(args.Length==1 && args[0]=="processes") {
-        var ids=new List<int>();
-        foreach(var p in Process.GetProcessesByName("Revit")) { using(p) {ids.Add(p.Id);if(ids.Count>4096)throw new InvalidOperationException();} }
+        var ids=new List<int>();int session;
+        using(var self=Process.GetCurrentProcess()) session=self.SessionId;
+        foreach(var p in Process.GetProcessesByName("Revit")) { using(p) {if(p.SessionId!=session)continue;ids.Add(p.Id);if(ids.Count>4096)throw new InvalidOperationException();} }
         ids.Sort();Console.WriteLine("{\"v\":1,\"state\":\""+(ids.Count==0?"idle":"busy")+"\",\"pids\":["+String.Join(",",ids)+"]}");return 0;
       }
       if(args.Length==2 && args[0]=="path" && Path.IsPathRooted(args[1]) && args[1].Length<=32760 && args[1].IndexOf('\0')<0) {
