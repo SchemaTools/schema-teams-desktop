@@ -19,6 +19,7 @@ import type {
   SupportAttemptView,
 } from '../../shared/report';
 import { supportPayloadValid } from '../../shared/report';
+import { CorruptStateError, knownKeys, quarantineFile, readRecoverable } from '../quarantine';
 
 export interface SupportScope {
   serverHash: string;
@@ -42,6 +43,8 @@ export interface SupportIntent extends SupportScope {
 export interface SupportStorage {
   read(): string | null;
   replace(text: string): void;
+  /** Испорченный файл — в карантин `<имя>.corrupt-<время>`; без метода хранилище блокируется. */
+  quarantine?(): string;
 }
 export const SUPPORT_LEDGER_LIMIT = 512 * 1024;
 const hash = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
@@ -63,26 +66,38 @@ const keys = (v: Record<string, unknown>, allowed: string[]) =>
   Object.keys(v).every((k) => allowed.includes(k));
 const checksum = (records: unknown) =>
   createHash('sha256').update(JSON.stringify(records)).digest('hex');
+const INTENT_KEYS = [
+  'schema',
+  'serverHash',
+  'ownerId',
+  'id',
+  'previewId',
+  'chatId',
+  'payload',
+  'key',
+  'files',
+  'firstAt',
+  'retryNotAfter',
+  'status',
+  'mayHaveCommitted',
+  'reason',
+  'receipt',
+];
+/** Поля записи от более новой версии отбрасываются; известные проверяются строго. */
+const knownIntent = (v: unknown): unknown => {
+  if (!object(v)) return v;
+  const r = knownKeys<Record<string, unknown>>(v, INTENT_KEYS);
+  if (Array.isArray(r.files))
+    r.files = r.files.map((f: unknown) =>
+      object(f) ? knownKeys(f, ['name', 'size', 'sha256', 'fileId']) : f,
+    );
+  if (object(r.receipt)) r.receipt = knownKeys(r.receipt, ['chatId', 'messageId']);
+  return r;
+};
 function valid(v: unknown): v is SupportIntent {
   if (
     !object(v) ||
-    !keys(v, [
-      'schema',
-      'serverHash',
-      'ownerId',
-      'id',
-      'previewId',
-      'chatId',
-      'payload',
-      'key',
-      'files',
-      'firstAt',
-      'retryNotAfter',
-      'status',
-      'mayHaveCommitted',
-      'reason',
-      'receipt',
-    ]) ||
+    !keys(v, INTENT_KEYS) ||
     v.schema !== 1 ||
     !hash(v.serverHash) ||
     !positiveId(v.ownerId) ||
@@ -151,7 +166,7 @@ export function supportStorage(file: string): SupportStorage {
         throw e;
       }
       try {
-        if (fstatSync(fd).size > SUPPORT_LEDGER_LIMIT) throw Error('support-size');
+        if (fstatSync(fd).size > SUPPORT_LEDGER_LIMIT) throw new CorruptStateError('support-size');
         const bytes = Buffer.alloc(SUPPORT_LEDGER_LIMIT + 1);
         let size = 0;
         while (size < bytes.length) {
@@ -159,7 +174,7 @@ export function supportStorage(file: string): SupportStorage {
           if (!n) break;
           size += n;
         }
-        if (size > SUPPORT_LEDGER_LIMIT) throw Error('support-size');
+        if (size > SUPPORT_LEDGER_LIMIT) throw new CorruptStateError('support-size');
         return bytes.subarray(0, size).toString('utf8');
       } finally {
         closeSync(fd);
@@ -186,53 +201,74 @@ export function supportStorage(file: string): SupportStorage {
         }
       }
     },
+    quarantine: () => quarantineFile(file),
   };
 }
-/** No transport or auto-send. A failed/corrupt store blocks new independent requests. */
+function parseLedger(text: string): SupportIntent[] {
+  if (Buffer.byteLength(text) > SUPPORT_LEDGER_LIMIT) throw Error('support-size');
+  const raw: unknown = JSON.parse(text);
+  // Контрольная сумма считается по записям как они есть, до отбрасывания новых полей.
+  if (
+    !object(raw) ||
+    !hash(raw.sha256) ||
+    raw.sha256 !== checksum(raw.records) ||
+    raw.schema !== 1 ||
+    !Array.isArray(raw.records) ||
+    raw.records.length > 16
+  )
+    throw Error('support-data');
+  const records: unknown[] = raw.records.map(knownIntent);
+  if (
+    !records.every(valid) ||
+    new Set(records.map((r) => r.id)).size !== records.length ||
+    new Set(records.map((r) => r.key)).size !== records.length ||
+    new Set(
+      records
+        .filter((r) => ['intent', 'unresolved', 'review'].includes(r.status))
+        .map((r) => `${r.serverHash}:${r.ownerId}`),
+    ).size !== records.filter((r) => ['intent', 'unresolved', 'review'].includes(r.status)).length
+  )
+    throw Error('support-data');
+  return records;
+}
+/**
+ * No transport or auto-send. A failed store blocks new independent requests; a corrupt
+ * file is quarantined and the ledger starts empty with a one-time warning (recovered).
+ */
 export class SupportLedger {
   private records: SupportIntent[] = [];
   private blocked = false;
+  private wasRecovered = false;
   get healthy(): boolean {
     return !this.blocked;
   }
+  /** Файл был испорчен, отправлен в карантин и начат заново. */
+  get recovered(): boolean {
+    return this.wasRecovered;
+  }
+  acknowledgeRecovery(): void {
+    this.wasRecovered = false;
+  }
   constructor(private readonly storage: SupportStorage) {
-    try {
-      const text = storage.read();
-      if (text === null) return;
-      if (Buffer.byteLength(text) > SUPPORT_LEDGER_LIMIT) throw Error('support-size');
-      const raw: unknown = JSON.parse(text);
-      if (
-        !object(raw) ||
-        !keys(raw, ['schema', 'records', 'sha256']) ||
-        !hash(raw.sha256) ||
-        raw.sha256 !== checksum(raw.records) ||
-        raw.schema !== 1 ||
-        !Array.isArray(raw.records) ||
-        raw.records.length > 16 ||
-        !raw.records.every(valid) ||
-        new Set(raw.records.map((r) => r.id)).size !== raw.records.length ||
-        new Set(raw.records.map((r) => r.key)).size !== raw.records.length ||
-        new Set(
-          raw.records
-            .filter((r) => ['intent', 'unresolved', 'review'].includes(r.status))
-            .map((r) => `${r.serverHash}:${r.ownerId}`),
-        ).size !==
-          raw.records.filter((r) => ['intent', 'unresolved', 'review'].includes(r.status)).length
-      )
-        throw Error('support-data');
-      this.records = raw.records;
-      const changed = this.records.some((r) => r.status === 'intent');
-      if (changed)
-        this.save(
-          this.records.map((r) =>
-            r.status === 'intent'
-              ? { ...r, status: 'unresolved', mayHaveCommitted: true, reason: 'unknown' }
-              : r,
-          ),
-        );
-    } catch {
+    const loaded = readRecoverable(storage, parseLedger);
+    if (loaded.kind === 'blocked') {
       this.blocked = true;
+      return;
     }
+    if (loaded.kind === 'recovered') {
+      this.wasRecovered = true;
+      return;
+    }
+    if (!loaded.value) return;
+    this.records = loaded.value;
+    if (this.records.some((r) => r.status === 'intent'))
+      this.save(
+        this.records.map((r) =>
+          r.status === 'intent'
+            ? { ...r, status: 'unresolved', mayHaveCommitted: true, reason: 'unknown' }
+            : r,
+        ),
+      );
   }
   private save(records: SupportIntent[]): boolean {
     if (this.blocked || records.length > 16 || !records.every(valid)) return false;

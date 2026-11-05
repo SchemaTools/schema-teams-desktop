@@ -24,10 +24,16 @@ export const LOG_MESSAGES = [
   'ошибка обновления',
   'пропущены данные сервера',
   'тихие часы не проверены',
+  'хранилище сброшено',
+  'записи паузы удалены',
+  'не удалось сохранить недавние задачи',
+  'не удалось сохранить таймер этого компьютера',
 ] as const;
 // Мягкий разбор (ТЗ 3.3): только вид пропущенного элемента, без содержимого.
 const SKIPPED = new Set(['chat', 'message', 'reaction', 'file', 'link', 'card', 'mention']);
 const QUIET_REASONS = new Set(['settings_unavailable', 'no_timezone', 'invalid_settings']);
+// Испорченный файл состояния отправлен в карантин (ТЗ 13): только имя хранилища.
+const STORES = new Set(['pause-outbox', 'pause-returns', 'support-ledger']);
 const states = new Set([
   'noServer',
   'connecting',
@@ -159,6 +165,15 @@ export function projectLog(message: string, raw?: Record<string, unknown>): LogP
       details.kind = String(raw.kind);
     if (raw && safeMessage === 'тихие часы не проверены' && QUIET_REASONS.has(String(raw.reason)))
       details.reason = String(raw.reason);
+    if (raw && safeMessage === 'хранилище сброшено' && STORES.has(String(raw.store)))
+      details.store = String(raw.store);
+    if (
+      raw &&
+      safeMessage === 'записи паузы удалены' &&
+      typeof raw.count === 'string' &&
+      /^[1-9][0-9]{0,3}$/.test(raw.count)
+    )
+      details.count = raw.count;
     if (
       raw &&
       safeMessage === 'событие клиента' &&

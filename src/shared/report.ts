@@ -48,6 +48,8 @@ export interface SupportAttemptView {
 export interface ReportSupportState {
   available: boolean;
   error: string | null;
+  /** Разовое предупреждение: состояние отправки было повреждено и сброшено. Не блокирует. */
+  warning?: string | null;
   attempt: SupportAttemptView | null;
 }
 export function supportPayloadValid(v: unknown): v is SupportPayload {

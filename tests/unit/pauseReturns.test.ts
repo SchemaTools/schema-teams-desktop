@@ -149,3 +149,68 @@ it('keeps the first aggregate-clear boundary when a later source arrives during 
     returnedAt: '2026-10-30T04:10:00.000Z',
   });
 });
+
+describe('Ревью PR #6: карантин, новые поля, снятие и уборка записей', () => {
+  const quarantinable = (text: string) => {
+    let current: string | null = text;
+    const moved: string[] = [];
+    return {
+      moved,
+      storage: {
+        read: () => current,
+        replace: (next: string) => {
+          current = next;
+        },
+        quarantine: () => {
+          moved.push(current ?? '');
+          current = null;
+          return 'returns.json.corrupt-test';
+        },
+      } satisfies PauseOutboxStorage,
+    };
+  };
+  it('испорченный файл уходит в карантин, хранилище пустое и пишет дальше', () => {
+    const disk = quarantinable('[{"broken"');
+    const store = new PauseReturns('memory', disk.storage);
+    expect(disk.moved).toEqual(['[{"broken"']);
+    expect(store.healthy).toBe(true);
+    expect(store.recovered).toBe(true);
+    expect(store.put(record())).toBe(true);
+    store.acknowledgeRecovery();
+    expect(store.recovered).toBe(false);
+  });
+  it('неизвестные ключи более новой версии игнорируются', () => {
+    const item = record();
+    const disk = quarantinable(
+      JSON.stringify([{ ...item, device: 'newer', expected: { ...item.expected, extra: 1 } }]),
+    );
+    const store = new PauseReturns('memory', disk.storage);
+    expect(disk.moved).toEqual([]);
+    expect(store.recovered).toBe(false);
+    expect(store.list(item)).toEqual([item]);
+  });
+  it('settleEnded снимает только записи своего входа, решённые по снимку', () => {
+    const store = new PauseReturns('memory', memory()),
+      own = record(),
+      other = { ...record(), key: 'return-other', ownerId: 2 };
+    store.put(own);
+    store.put(other);
+    expect(store.settleEnded(own, () => false)).toBe(0);
+    expect(store.settleEnded(own, () => true)).toBe(1);
+    expect(store.list(own)).toEqual([]);
+    expect(store.list(other)).toEqual([other]);
+  });
+  it('prune убирает чужой сервер, чужого пользователя и записи старше недели', () => {
+    const store = new PauseReturns('memory', memory()),
+      own = record(),
+      at = Date.parse(own.at);
+    store.put(own);
+    store.put({ ...record(), key: 'return-owner2', ownerId: 2 });
+    store.put({ ...record(), key: 'return-server', serverScopeHash: 'b'.repeat(64) });
+    expect(store.prune(own, at)).toBe(2);
+    expect(store.list(own)).toEqual([own]);
+    expect(store.prune(own, at + 7 * 24 * 3600_000)).toBe(0);
+    expect(store.prune(own, at + 7 * 24 * 3600_000 + 1)).toBe(1);
+    expect(store.list(own)).toEqual([]);
+  });
+});

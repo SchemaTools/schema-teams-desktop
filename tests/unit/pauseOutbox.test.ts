@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,6 +7,8 @@ import {
   PAUSE_OUTBOX_MAX_BYTES,
   PAUSE_OUTBOX_MAX_RECORDS,
   PAUSE_REPLAY_WINDOW_MS,
+  PAUSE_CLOCK_TOLERANCE_MS,
+  PAUSE_RETENTION_MS,
   PauseOutbox,
   type PauseReplayGate,
 } from '../../src/main/timer/pauseOutbox';
@@ -61,11 +63,16 @@ function fixture() {
   const dir = mkdtempSync(join(tmpdir(), 'pause-outbox-test-'));
   dirs.push(dir);
   const file = join(dir, 'outbox.json');
+  const quarantined = () =>
+    readdirSync(dir)
+      .filter((name) => name.startsWith('outbox.json.corrupt-20'))
+      .map((name) => readFileSync(join(dir, name), 'utf8'));
   let now = clock;
   let key = 0;
   const options = { now: () => now, newKey: () => `operation-${++key}` };
   return {
     file,
+    quarantined,
     options,
     open: () => new PauseOutbox(file, options),
     tick: (ms: number) => {
@@ -218,8 +225,37 @@ describe('durable PauseOutbox, main process only', () => {
     const lock = box.capture(scope, expected, '2026-10-30T10:17:00.000Z', 'lock');
     expect(lock?.key).not.toBe(candidate?.key);
     expect(lock?.at).toBe('2026-10-30T10:17:00.000Z');
-    expect(box.list(scope)[0]?.status).toBe('cancelled');
+    // Заменённый запрос завершения убран: не занимает место и не даёт предупреждения.
+    expect(box.list(scope)).toEqual([lock]);
     expect(f.open().replay(scope, gate)).toEqual([lock]);
+  });
+
+  it('removes a cancelled query without trace and frees its slot', () => {
+    const f = fixture(),
+      box = f.open();
+    for (let i = 0; i < PAUSE_OUTBOX_MAX_RECORDS - 1; i++)
+      box.capture(scope, { ...expected, timerId: 100 + i }, at, 'lock');
+    const candidate = required(box.capture(scope, expected, at, 'query-session-end'));
+    expect(box.cancelQuery(scope, candidate.key)).toBe(true);
+    expect(f.open().list(scope)).toHaveLength(PAUSE_OUTBOX_MAX_RECORDS - 1);
+    expect(
+      f
+        .open()
+        .list(scope)
+        .some((r) => r.key === candidate.key),
+    ).toBe(false);
+    expect(box.capture(scope, { ...expected, timerId: 999 }, at, 'lock')).not.toBeNull();
+  });
+
+  it('drops cancelled records written by an older version on reopen', () => {
+    const f = fixture();
+    const record = required(f.open().capture(scope, expected, at, 'query-session-end'));
+    writeFileSync(
+      f.file,
+      JSON.stringify({ schema: 1, records: [{ ...record, status: 'cancelled' }] }),
+    );
+    expect(f.open().list(scope)).toEqual([]);
+    expect(JSON.parse(readFileSync(f.file, 'utf8')).records).toEqual([]);
   });
 
   it.each([400, 401, 403, 409, 429])(
@@ -287,38 +323,90 @@ describe('durable PauseOutbox, main process only', () => {
     expect(f.open().list(scope)).toEqual([b]);
   });
 
-  it.each(['{bad', '{"schema":2,"records":[]}', '{"schema":1,"records":[],"token":"secret"}'])(
-    'blocks corrupt/unknown data without replacing or discarding existing file',
+  it.each(['{bad', '{"schema":2,"records":[]}', '{"schema":1,"records":{}}'])(
+    'quarantines corrupt data %s, keeps its bytes and starts empty with a one-time warning',
     (contents) => {
       const f = fixture();
       writeFileSync(f.file, contents);
       const box = f.open();
-      expect(box.health.blocked).toBe('read');
-      expect(box.capture(scope, expected, at, 'lock')).toBeNull();
-      expect(box.replay(scope, gate)).toEqual([]);
-      expect(readFileSync(f.file, 'utf8')).toBe(contents);
+      expect(box.health).toEqual({ blocked: null, recovered: true });
+      expect(f.quarantined()).toEqual([contents]);
+      expect(box.list(scope)).toEqual([]);
+      const record = box.capture(scope, expected, at, 'lock');
+      expect(record).not.toBeNull();
+      expect(f.open().list(scope)).toEqual([record]);
+      expect(f.open().health.recovered).toBe(false);
+      box.acknowledgeRecovery();
+      expect(box.health.recovered).toBe(false);
     },
   );
 
-  it('rejects unknown/malformed envelopes and oversized file without loss', () => {
+  it('ignores unknown keys from a newer version instead of treating them as corruption', () => {
+    const f = fixture();
+    const record = required(f.open().capture(scope, expected, at, 'lock'));
+    writeFileSync(
+      f.file,
+      JSON.stringify({
+        schema: 1,
+        records: [{ ...record, origin: 'newer', expected: { ...expected, extra: 1 } }],
+        generation: 2,
+      }),
+    );
+    const box = f.open();
+    expect(box.health).toEqual({ blocked: null, recovered: false });
+    expect(box.list(scope)).toEqual([record]);
+    expect(f.quarantined()).toEqual([]);
+  });
+
+  it('a disk read failure blocks without quarantine; a storage without quarantine stays blocked', () => {
+    const contents = '{bad';
+    let renamed = 0;
+    const failing = new PauseOutbox('memory', {
+      storage: {
+        read: () => {
+          throw Object.assign(new Error('busy'), { code: 'EBUSY' });
+        },
+        replace: () => undefined,
+        quarantine: () => String(++renamed),
+      },
+    });
+    expect(failing.health.blocked).toBe('read');
+    expect(renamed).toBe(0);
+    const legacy = new PauseOutbox('memory', {
+      storage: { read: () => contents, replace: () => undefined },
+    });
+    expect(legacy.health).toEqual({ blocked: 'read', recovered: false });
+    const brokenRename = new PauseOutbox('memory', {
+      storage: {
+        read: () => contents,
+        replace: () => undefined,
+        quarantine: () => {
+          throw new Error('EPERM');
+        },
+      },
+    });
+    expect(brokenRename.health.blocked).toBe('read');
+  });
+
+  it('quarantines malformed envelopes and an oversized file without losing their bytes', () => {
     const f = fixture();
     const record = f.open().capture(scope, expected, at, 'lock');
     const badRecords = [
-      { ...record, token: 'not-allowed' },
       { ...record, expected: { ...expected, revision: -1 } },
       { ...record, status: 'confirmed' },
       { ...record, status: 'review', reviewReason: 'invented' },
     ];
+    const kept: string[] = [];
     for (const bad of badRecords) {
       const contents = JSON.stringify({ schema: 1, records: [bad] });
       writeFileSync(f.file, contents);
-      expect(f.open().health.blocked).toBe('read');
-      expect(readFileSync(f.file, 'utf8')).toBe(contents);
+      expect(f.open().health.recovered).toBe(true);
+      kept.push(contents);
     }
     const tooBig = ' '.repeat(PAUSE_OUTBOX_MAX_BYTES + 1);
     writeFileSync(f.file, tooBig);
-    expect(f.open().health.blocked).toBe('read');
-    expect(readFileSync(f.file, 'utf8')).toBe(tooBig);
+    expect(f.open().health).toEqual({ blocked: null, recovered: true });
+    expect(f.quarantined().sort()).toEqual([...kept, tooBig].sort());
   });
 
   it('does not lose existing commands or claim capture/removal when durable write fails', () => {
@@ -380,7 +468,7 @@ describe('durable PauseOutbox, main process only', () => {
     expect(f.open().list(scope)).toHaveLength(PAUSE_OUTBOX_MAX_RECORDS);
   });
 
-  it('rejects invalid captures, duplicate keys and future-created replay safely', () => {
+  it('rejects invalid captures, quarantines duplicate keys and expires far-future records', () => {
     const f = fixture(),
       box = f.open();
     expect(
@@ -392,23 +480,42 @@ describe('durable PauseOutbox, main process only', () => {
     const raw = JSON.parse(readFileSync(f.file, 'utf8')) as { records: unknown[] };
     raw.records.push(raw.records[0]);
     writeFileSync(f.file, JSON.stringify(raw));
-    expect(f.open().health.blocked).toBe('read');
+    expect(f.open().health.recovered).toBe(true);
     writeFileSync(f.file, JSON.stringify({ schema: 1, records: raw.records.slice(0, 1) }));
+    // Перекалибровка serverNow на несколько секунд назад — не повод снимать команду.
+    f.tick(-PAUSE_CLOCK_TOLERANCE_MS);
+    expect(f.open().replay(scope, gate)).toHaveLength(1);
     f.tick(-1);
     expect(f.open().replay(scope, gate)).toEqual([]);
     expect(f.open().list(scope)[0]?.reviewReason).toBe('expired');
   });
-});
 
-it.each([500, 503, 599])('HTTP %s is durable review and never automatically replayed', (status) => {
-  const f = fixture(),
-    box = f.open(),
-    record = required(box.capture(scope, expected, at, 'lock'));
-  box.settle(scope, record.key, { kind: 'http-failure', status });
-  expect(f.open().replay(scope, gate)).toEqual([]);
-  expect(f.open().list(scope)[0]).toMatchObject({
-    key: record.key,
-    status: 'review',
-    reviewReason: 'server-error',
+  it('prunes foreign server/owner and week-old records, keeping the current scope', () => {
+    const f = fixture(),
+      box = f.open();
+    const own = required(box.capture(scope, expected, at, 'lock'));
+    box.capture({ ...scope, ownerId: 18 }, expected, at, 'lock');
+    box.capture({ ...scope, serverScopeHash: 'b'.repeat(64) }, expected, at, 'lock');
+    expect(box.prune(scope, clock)).toBe(2);
+    expect(f.open().list({ ...scope, ownerId: 18 })).toEqual([]);
+    expect(f.open().list(scope)).toEqual([own]);
+    expect(box.prune(scope, clock + PAUSE_RETENTION_MS)).toBe(0);
+    expect(box.prune(scope, clock + PAUSE_RETENTION_MS + 1)).toBe(1);
+    expect(f.open().list(scope)).toEqual([]);
   });
 });
+
+it.each([500, 503, 599])(
+  'HTTP %s keeps the command unknown and replays it with the same key within the window',
+  (status) => {
+    const f = fixture(),
+      box = f.open(),
+      record = required(box.capture(scope, expected, at, 'lock'));
+    box.settle(scope, record.key, { kind: 'http-failure', status });
+    expect(f.open().list(scope)[0]).toEqual({ ...record, status: 'unknown' });
+    expect(f.open().replay(scope, gate)).toEqual([{ ...record, status: 'unknown' }]);
+    f.tick(PAUSE_REPLAY_WINDOW_MS);
+    expect(f.open().replay(scope, gate)).toEqual([]);
+    expect(f.open().list(scope)[0]).toMatchObject({ key: record.key, reviewReason: 'expired' });
+  },
+);

@@ -38,6 +38,8 @@ const disk = () =>
     'support_storage',
     'Не удалось сохранить состояние отправки. Не отправляйте повторно; проверьте место на диске и перезапустите приложение.',
   );
+export const SUPPORT_RECOVERED =
+  'Сохранённое состояние отправки было повреждено и сброшено. Проверьте в чате поддержки, дошло ли прежнее обращение.';
 const definitive = new Set([
   'validation',
   'bad_request',
@@ -73,6 +75,7 @@ export class SupportSender {
       error: this.o.ledger.healthy
         ? null
         : 'Сохранённое состояние отправки недоступно. Результат прежнего обращения может быть неизвестен. Перезапустите приложение после проверки диска.',
+      warning: this.o.ledger.recovered ? SUPPORT_RECOVERED : null,
       attempt,
     };
   }
@@ -164,6 +167,8 @@ export class SupportSender {
         retryNotAfter: new Date(now + 24 * 3600000 - margin).toISOString(),
       });
       if (!intent) return disk();
+      // Новое обращение начато — разовое предупреждение о сброшенном состоянии снято.
+      this.o.ledger.acknowledgeRecovery();
       return await this.deliver(current, intent, false);
     } catch {
       return bad(

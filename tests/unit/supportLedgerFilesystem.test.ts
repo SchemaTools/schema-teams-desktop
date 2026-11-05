@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   SUPPORT_LEDGER_LIMIT,
   SupportLedger,
@@ -95,7 +95,7 @@ describe('SupportLedger real filesystem storage', () => {
   });
 
   it.each(['malformed', 'checksum', 'oversized'] as const)(
-    'blocks %s journal without changing even one byte or creating a replacement',
+    'quarantines %s journal byte-for-byte and starts empty with a one-time warning',
     (kind) => {
       const f = fixture();
       const ledger = f.open();
@@ -111,13 +111,33 @@ describe('SupportLedger real filesystem storage', () => {
       );
       writeFileSync(f.file, bad);
       const reopened = f.open();
-      expect(reopened.healthy).toBe(false);
-      expect(reopened.locked(scope)).toBe(true);
-      expect(reopened.begin(input())).toBeNull();
-      expect(readFileSync(f.file)).toEqual(bad);
-      expect(readdirSync(join(f.root, 'journal'))).toEqual(['support.json']);
+      expect(reopened.healthy).toBe(true);
+      expect(reopened.recovered).toBe(true);
+      expect(reopened.current(scope)).toBeNull();
+      const names = readdirSync(join(f.root, 'journal'));
+      expect(names).toHaveLength(1);
+      expect(names[0]).toMatch(/^support[.]json[.]corrupt-20/);
+      expect(readFileSync(join(f.root, 'journal', names[0] ?? ''))).toEqual(bad);
+      expect(reopened.begin(input())).not.toBeNull();
+      expect(f.open().recovered).toBe(false);
     },
   );
+
+  it('ignores unknown keys from a newer version instead of quarantining', () => {
+    const f = fixture();
+    required(f.open().begin(input()));
+    const raw = JSON.parse(readFileSync(f.file, 'utf8'));
+    raw.records[0].origin = 'newer';
+    raw.records[0].files[0].mime = 'application/zip';
+    raw.generation = 2;
+    raw.sha256 = createHash('sha256').update(JSON.stringify(raw.records)).digest('hex');
+    writeFileSync(f.file, JSON.stringify(raw));
+    const reopened = f.open();
+    expect(reopened.healthy).toBe(true);
+    expect(reopened.recovered).toBe(false);
+    expect(reopened.current(scope)?.status).toBe('unresolved');
+    expect(readdirSync(join(f.root, 'journal'))).toEqual(['support.json']);
+  });
 
   it('real rename failure blocks writes, preserves prior bytes and foreign sentinel, cleans temp', () => {
     const f = fixture();

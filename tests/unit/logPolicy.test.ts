@@ -177,3 +177,23 @@ describe('Fixed diagnostic projection', () => {
     ).toEqual({ errorType: 'Error' });
   });
 });
+
+describe('Ревью PR #6: записи о хранилищах паузы и поддержки', () => {
+  it('сброс хранилища — только имя хранилища; удаление записей — только число', () => {
+    expect(projectLog('хранилище сброшено', { store: 'pause-outbox', path: 'C:/x' })).toEqual({
+      message: 'хранилище сброшено',
+      details: { store: 'pause-outbox' },
+    });
+    expect(projectLog('хранилище сброшено', { store: 'другое' }).details).toEqual({});
+    expect(projectLog('записи паузы удалены', { count: '3', owner: '7' }).details).toEqual({
+      count: '3',
+    });
+    expect(projectLog('записи паузы удалены', { count: 'много' }).details).toEqual({});
+    expect(projectLog('не удалось сохранить недавние задачи').message).toBe(
+      'не удалось сохранить недавние задачи',
+    );
+    expect(projectLog('не удалось сохранить таймер этого компьютера').message).toBe(
+      'не удалось сохранить таймер этого компьютера',
+    );
+  });
+});

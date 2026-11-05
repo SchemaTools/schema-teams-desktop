@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -391,43 +391,29 @@ test('no-support fallback opens only actual mine URL and reveals exact approved 
     false,
   );
 });
-test('corrupt ledger blocks send and feedback fallback even through IPC; local export still works', async () => {
+// Ревью PR #6: испорченная книга отправки больше не блокирует поддержку навсегда —
+// файл уходит в карантин `<имя>.corrupt-<время>` байт в байт, книга начинается заново,
+// пользователь один раз видит понятное предупреждение.
+test('corrupt ledger is quarantined byte-for-byte; one-time warning, sending is not blocked', async () => {
   configure(false);
   writeFileSync(join(profile, 'support-send-ledger.json'), '{broken');
   const page = await launch();
   await open(page);
-  await expect(panel(page).getByRole('alert')).toContainText(
-    'Сохранённое состояние отправки недоступно',
+  await expect(panel(page).getByRole('status').first()).toContainText(
+    'Сохранённое состояние отправки было повреждено и сброшено',
   );
-  const result = await page.evaluate(async () => {
-    const state = await window.teams.request({ kind: 'init' });
-    if (!state.ok) throw Error('No snapshot');
-    const preview = await window.teams.request({
-      kind: 'report.prepare',
-      options: {
-        description: 'Локальный архив',
-        applicationLogs: false,
-        revitYear: null,
-        includeScreenshot: false,
-      },
-    });
-    if (!preview.ok) throw Error('No preview');
-    const saved = await window.teams.request({ kind: 'report.export', id: preview.data.id });
-    if (!saved.ok || !saved.data) throw Error('No export');
-    return window.teams.request({
-      kind: 'report.fallback',
-      epoch: state.data.epoch,
-      id: saved.data.id,
-    });
+  await expect(panel(page).getByRole('alert')).toHaveCount(0);
+  const quarantined = readdirSync(profile).filter((name) =>
+    name.startsWith('support-send-ledger.json.corrupt-'),
+  );
+  expect(quarantined).toHaveLength(1);
+  expect(readFileSync(join(profile, quarantined[0] ?? ''), 'utf8')).toBe('{broken');
+  const state = await page.evaluate(async () => {
+    const snapshot = await window.teams.request({ kind: 'init' });
+    if (!snapshot.ok) throw Error('No snapshot');
+    return snapshot.data.reportSupport;
   });
-  expect(result).toMatchObject({ ok: false, code: 'support_storage' });
-  expect(existsSync(target)).toBe(true);
-  expect(
-    await active().evaluate(() => {
-      const g = globalThis as typeof globalThis & { d7External: string[]; d7Revealed: string[] };
-      return [g.d7External.length, g.d7Revealed.length];
-    }),
-  ).toEqual([0, 0]);
+  expect(state?.error ?? null).toBeNull();
   expect(uploads()).toHaveLength(0);
   expect(posts()).toHaveLength(0);
 });

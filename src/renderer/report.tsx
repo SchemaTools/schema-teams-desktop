@@ -237,6 +237,11 @@ export function ReportPanel({
               {support.error}
             </p>
           )}
+          {!support?.error && support?.warning && (
+            <p role="status" className="preferences-error">
+              {support.warning}
+            </p>
+          )}
           {attempt && (
             <section className="report-note" aria-label="Состояние обращения">
               <p role="status">

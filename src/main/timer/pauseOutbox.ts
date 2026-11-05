@@ -12,16 +12,22 @@ import {
 import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { expectedValid, positiveId, utcInstant, type TimerExpected } from '../../shared/time';
+import { CorruptStateError, knownKeys, quarantineFile, readRecoverable } from '../quarantine';
 
 export const PAUSE_OUTBOX_MAX_BYTES = 64 * 1024;
 export const PAUSE_OUTBOX_MAX_RECORDS = 64;
 export const PAUSE_REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** Допуск на перекалибровку serverNow: запись «из будущего» в пределах 30 с не просрочена. */
+export const PAUSE_CLOCK_TOLERANCE_MS = 30_000;
+/** Записи чужого сервера, чужого пользователя и старше недели убираются (prune). */
+export const PAUSE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface PauseScope {
   readonly serverScopeHash: string;
   readonly ownerId: number;
 }
 export type PauseEvent = 'lock' | 'suspend' | 'screensaver' | 'query-session-end' | 'session-end';
+/** 'cancelled' остаётся только для чтения файлов прежних версий: такие записи убираются. */
 export type PauseStatus = 'candidate' | 'pending' | 'unknown' | 'review' | 'cancelled';
 export type PauseReviewReason =
   | 'unconfirmed-query'
@@ -58,6 +64,8 @@ export interface PauseOutboxStorage {
   read(): string | null;
   /** Must preserve the previous file on failure before atomic replacement. */
   replace(contents: string): void;
+  /** Испорченный файл — в карантин `<имя>.corrupt-<время>`; без метода хранилище блокируется. */
+  quarantine?(): string;
 }
 
 /** Small synchronous persistence for a session-end callback; no user-profile files in tests. */
@@ -67,7 +75,8 @@ export function atomicPauseStorage(file: string): PauseOutboxStorage {
       try {
         const fd = openSync(file, 'r');
         try {
-          if (fstatSync(fd).size > PAUSE_OUTBOX_MAX_BYTES) throw new Error('outbox-size');
+          if (fstatSync(fd).size > PAUSE_OUTBOX_MAX_BYTES)
+            throw new CorruptStateError('outbox-size');
           const bytes = Buffer.alloc(PAUSE_OUTBOX_MAX_BYTES + 1);
           let length = 0;
           while (length < bytes.length) {
@@ -75,7 +84,7 @@ export function atomicPauseStorage(file: string): PauseOutboxStorage {
             if (!read) break;
             length += read;
           }
-          if (length > PAUSE_OUTBOX_MAX_BYTES) throw new Error('outbox-size');
+          if (length > PAUSE_OUTBOX_MAX_BYTES) throw new CorruptStateError('outbox-size');
           return bytes.subarray(0, length).toString('utf8');
         } finally {
           closeSync(fd);
@@ -105,6 +114,7 @@ export function atomicPauseStorage(file: string): PauseOutboxStorage {
         }
       }
     },
+    quarantine: () => quarantineFile(file),
   };
 }
 
@@ -137,23 +147,36 @@ const reasons: readonly string[] = [
 const freeze = (record: PauseEnvelope): PauseEnvelope =>
   Object.freeze({ ...record, expected: Object.freeze({ ...record.expected }) });
 
+const ENVELOPE_KEYS = [
+  'schema',
+  'serverScopeHash',
+  'ownerId',
+  'expected',
+  'at',
+  'key',
+  'eventKind',
+  'createdAt',
+  'status',
+  'reviewReason',
+] as const;
+/** Поля более новой версии отбрасываются; известные поля проверяются строго. */
+function envelopeKnown(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const r = knownKeys<Record<string, unknown>>(raw as Record<string, unknown>, ENVELOPE_KEYS);
+  if (r.expected && typeof r.expected === 'object' && !Array.isArray(r.expected))
+    r.expected = knownKeys(r.expected as Record<string, unknown>, [
+      'timerId',
+      'revision',
+      'currentSegmentFrom',
+    ]);
+  return r;
+}
+
 function envelopeValid(raw: unknown): raw is PauseEnvelope {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
   const r = raw as Record<string, unknown>;
-  const allowed = [
-    'schema',
-    'serverScopeHash',
-    'ownerId',
-    'expected',
-    'at',
-    'key',
-    'eventKind',
-    'createdAt',
-    'status',
-    'reviewReason',
-  ];
   return (
-    Object.keys(r).every((k) => allowed.includes(k)) &&
+    Object.keys(r).every((k) => (ENVELOPE_KEYS as readonly string[]).includes(k)) &&
     r.schema === 1 &&
     typeof r.serverScopeHash === 'string' &&
     /^[a-f0-9]{64}$/.test(r.serverScopeHash) &&
@@ -175,10 +198,25 @@ function envelopeValid(raw: unknown): raw is PauseEnvelope {
   );
 }
 
+function parseOutbox(text: string): PauseEnvelope[] {
+  if (Buffer.byteLength(text, 'utf8') > PAUSE_OUTBOX_MAX_BYTES) throw new Error('size');
+  const raw: unknown = JSON.parse(text);
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('format');
+  const doc = raw as Record<string, unknown>;
+  // Лишние поля документа от более новой версии не считаются порчей.
+  if (doc.schema !== 1 || !Array.isArray(doc.records)) throw new Error('schema');
+  const records: unknown[] = doc.records.map(envelopeKnown);
+  if (records.length > PAUSE_OUTBOX_MAX_RECORDS || !records.every(envelopeValid))
+    throw new Error('records');
+  if (new Set(records.map((r) => r.key)).size !== records.length) throw new Error('duplicate-key');
+  return records;
+}
+
 /** Single main-process writer. Do not share this file across processes or live store instances. */
 export class PauseOutbox {
   private records: readonly PauseEnvelope[] = [];
   private blocked: 'read' | 'write' | null = null;
+  private wasRecovered = false;
   private readonly storage: PauseOutboxStorage;
   private readonly now: () => number;
   private readonly newKey: () => string;
@@ -195,42 +233,56 @@ export class PauseOutbox {
     this.storage = options.storage ?? atomicPauseStorage(file);
     this.now = options.now ?? Date.now;
     this.newKey = options.newKey ?? randomUUID;
-    try {
-      const text = this.storage.read();
-      if (text === null) return;
-      if (Buffer.byteLength(text, 'utf8') > PAUSE_OUTBOX_MAX_BYTES) throw new Error('size');
-      const raw: unknown = JSON.parse(text);
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('format');
-      const doc = raw as Record<string, unknown>;
-      if (Object.keys(doc).length !== 2 || doc.schema !== 1 || !Array.isArray(doc.records))
-        throw new Error('schema');
-      if (doc.records.length > PAUSE_OUTBOX_MAX_RECORDS || !doc.records.every(envelopeValid))
-        throw new Error('records');
-      if (new Set(doc.records.map((r) => r.key)).size !== doc.records.length)
-        throw new Error('duplicate-key');
-      this.records = doc.records.map(freeze);
-    } catch {
+    const loaded = readRecoverable(this.storage, parseOutbox);
+    if (loaded.kind === 'blocked') {
       this.blocked = 'read';
       return;
     }
+    if (loaded.kind === 'recovered') {
+      this.wasRecovered = true;
+      return;
+    }
+    if (!loaded.value) return;
+    this.records = loaded.value.map(freeze);
     // A query is not evidence that shutdown happened. Reopening cannot confirm it.
-    if (this.records.some((r) => r.status === 'candidate'))
+    // Отменённый запрос завершения (прежние версии) места в очереди не занимает.
+    if (this.records.some((r) => r.status === 'candidate' || r.status === 'cancelled'))
       this.commit(
-        this.records.map((r) =>
-          r.status === 'candidate'
-            ? freeze({ ...r, status: 'review', reviewReason: 'unconfirmed-query' })
-            : r,
-        ),
+        this.records
+          .filter((r) => r.status !== 'cancelled')
+          .map((r) =>
+            r.status === 'candidate'
+              ? freeze({ ...r, status: 'review', reviewReason: 'unconfirmed-query' })
+              : r,
+          ),
       );
   }
 
-  get health(): Readonly<{ blocked: 'read' | 'write' | null }> {
-    return Object.freeze({ blocked: this.blocked });
+  get health(): Readonly<{ blocked: 'read' | 'write' | null; recovered: boolean }> {
+    return Object.freeze({ blocked: this.blocked, recovered: this.wasRecovered });
+  }
+
+  /** Предупреждение о сброшенной очереди показано и закрыто пользователем. */
+  acknowledgeRecovery(): void {
+    this.wasRecovered = false;
   }
 
   list(scope: PauseScope): readonly PauseEnvelope[] {
     if (!scopeValid(scope)) return Object.freeze([]);
     return Object.freeze(this.records.filter((r) => sameScope(r, scope)));
+  }
+
+  /**
+   * Убирает записи чужого сервера и пользователя (вход сменился) и старше недели.
+   * Возвращает число удалённых записей; при сбое записи — 0 и блокировка, как у commit.
+   */
+  prune(scope: PauseScope, now = Date.now()): number {
+    if (this.blocked || !scopeValid(scope) || !Number.isFinite(now)) return 0;
+    const kept = this.records.filter(
+      (r) => sameScope(r, scope) && now - Date.parse(r.createdAt) <= PAUSE_RETENTION_MS,
+    );
+    const removed = this.records.length - kept.length;
+    return removed && this.commit(kept) ? removed : 0;
   }
 
   /** Persists before returning a command. null means no durable command was captured. */
@@ -261,7 +313,11 @@ export class PauseOutbox {
         return this.confirmSessionEnd(scope, previous.key);
       if (previous.status !== 'candidate' || eventKind === 'query-session-end') return previous;
     }
-    if (this.records.length >= PAUSE_OUTBOX_MAX_RECORDS) return null;
+    // Lock/suspend is separate evidence from a cancellable shutdown query. Keep its actual time;
+    // the superseded query is removed and does not occupy a queue slot.
+    const base =
+      previous?.status === 'candidate' ? this.records.filter((r) => r !== previous) : this.records;
+    if (base.length >= PAUSE_OUTBOX_MAX_RECORDS) return null;
     const record: PauseEnvelope = {
       schema: 1,
       ...scope,
@@ -274,12 +330,7 @@ export class PauseOutbox {
     };
     if (!envelopeValid(record) || this.records.some((r) => r.key === record.key)) return null;
     const frozen = freeze(record);
-    // Lock/suspend is separate evidence from a cancellable shutdown query. Keep its actual time.
-    const records =
-      previous?.status === 'candidate'
-        ? this.records.map((r) => (r === previous ? freeze({ ...r, status: 'cancelled' }) : r))
-        : this.records;
-    return this.commit([...records, frozen]) ? frozen : null;
+    return this.commit([...base, frozen]) ? frozen : null;
   }
 
   confirmSessionEnd(scope: PauseScope, key: string): PauseEnvelope | null {
@@ -289,11 +340,13 @@ export class PauseOutbox {
     return this.replace(r, next) ? next : null;
   }
 
+  /**
+   * Завершение Windows отменено (процесс жив, сеанс продолжается): кандидат удаляется
+   * без следа — ни предупреждения, ни места в очереди.
+   */
   cancelQuery(scope: PauseScope, key: string): boolean {
     const r = this.find(scope, key);
-    return (
-      !!r && r.status === 'candidate' && this.replace(r, freeze({ ...r, status: 'cancelled' }))
-    );
+    return !!r && r.status === 'candidate' && this.commit(this.records.filter((v) => v !== r));
   }
 
   /** Caller explicitly chooses stale review after its fresh CAS observation; never retargets. */
@@ -318,11 +371,14 @@ export class PauseOutbox {
     )
       return Object.freeze([]);
     const now = this.now();
+    // Срок — время хранения ключа идемпотентности сервером (24 ч). Запись «из будущего»
+    // в пределах допуска — следствие перекалибровки serverNow, а не подделка часов.
     const expired = this.records.filter(
       (r) =>
         sameScope(r, scope) &&
         ['pending', 'unknown'].includes(r.status) &&
-        (now - Date.parse(r.createdAt) >= PAUSE_REPLAY_WINDOW_MS || now < Date.parse(r.createdAt)),
+        (now - Date.parse(r.createdAt) >= PAUSE_REPLAY_WINDOW_MS ||
+          now < Date.parse(r.createdAt) - PAUSE_CLOCK_TOLERANCE_MS),
     );
     if (
       expired.length &&
@@ -340,6 +396,10 @@ export class PauseOutbox {
     );
   }
 
+  /**
+   * 4xx — окончательный отказ (review). 5xx и сеть — исход неизвестен: команда остаётся
+   * в очереди с тем же ключом идемпотентности и повторяется, пока не истечёт срок replay.
+   */
   settle(scope: PauseScope, key: string, outcome: PauseOutcome): boolean {
     const r = this.find(scope, key);
     if (!r || !['pending', 'unknown'].includes(r.status)) return false;
@@ -353,15 +413,13 @@ export class PauseOutbox {
       r,
       terminal
         ? freeze({ ...r, status: 'review', reviewReason: 'terminal-http' })
-        : outcome.kind === 'http-failure' && outcome.status >= 500 && outcome.status < 600
-          ? freeze({ ...r, status: 'review', reviewReason: 'server-error' })
-          : outcome.kind === 'review'
-            ? freeze({ ...r, status: 'review', reviewReason: 'unconfirmed-result' })
-            : freeze({ ...r, status: 'unknown' }),
+        : outcome.kind === 'review'
+          ? freeze({ ...r, status: 'review', reviewReason: 'unconfirmed-result' })
+          : freeze({ ...r, status: 'unknown' }),
     );
   }
 
-  /** Explicit review dismissal only; no automatic removal of failed or foreign records. */
+  /** Explicit review dismissal only; foreign records are removed by prune on scope change. */
   dismissReviewed(scope: PauseScope, key: string): boolean {
     const r = this.find(scope, key);
     return (
