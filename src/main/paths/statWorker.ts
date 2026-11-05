@@ -3,6 +3,8 @@
 import { stat } from 'node:fs/promises';
 import { validateUncPath } from './validate';
 
+// Хост уже проверен PathService по списку серверов бюро или подтверждён пользователем:
+// процесс запускается только после этого, сам он списка не знает.
 process.parentPort.once('message', async (event: { data: unknown }) => {
   const raw = event.data;
   const path = raw && typeof raw === 'object' && 'path' in raw ? validateUncPath(raw.path) : null;

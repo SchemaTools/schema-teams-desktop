@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { pathNeedsReveal, validateUncPath } from '../../src/main/paths/validate';
+import {
+  pathNeedsReveal,
+  uncHost,
+  uncHostTrusted,
+  validateUncPath,
+} from '../../src/main/paths/validate';
 
 const root = String.raw`\\server\share`;
 const separator = '\\';
@@ -217,5 +222,33 @@ describe('pathNeedsReveal', () => {
       'file:///file.rvt',
     ])
       expect(pathNeedsReveal(path)).toBe(true);
+  });
+});
+
+describe('серверы бюро для путей (NTLM уходит только им)', () => {
+  const teams = new URL('http://teams-host.test:8080/');
+  it('uncHost берёт хост только у проверенного пути', () => {
+    expect(uncHost(unc('Объект А'))).toBe('server');
+    expect(uncHost('C:/file.rvt')).toBeNull();
+    expect(uncHost(separator.repeat(2) + '?' + separator + 'UNC')).toBeNull();
+  });
+  it('список сборки и хост сервера Teams — без учёта регистра', () => {
+    expect(uncHostTrusted('FileServer', ['fileserver'], null)).toBe(true);
+    expect(uncHostTrusted('fileserver', ['FILESERVER'], null)).toBe(true);
+    expect(uncHostTrusted('Teams-Host.test', [], teams)).toBe(true);
+  });
+  it('чужие имена, IP не из списка и пустой список — только с подтверждением', () => {
+    expect(uncHostTrusted('attacker', ['fileserver'], teams)).toBe(false);
+    expect(uncHostTrusted('fileserver.example.test', ['fileserver'], teams)).toBe(false);
+    expect(uncHostTrusted('fileserver', ['fileserver.example.test'], teams)).toBe(false);
+    expect(uncHostTrusted('192.0.2.10', ['fileserver'], teams)).toBe(false);
+    expect(uncHostTrusted('192.0.2.10', ['192.0.2.10'], null)).toBe(true);
+    expect(uncHostTrusted('fileserver', [], null)).toBe(false);
+  });
+  it('юникодное имя сравнивается с punycode из адреса сервера', () => {
+    const idn = new URL('http://сервер.test/');
+    expect(idn.hostname).toMatch(/^xn--/);
+    expect(uncHostTrusted('Сервер.test', [], idn)).toBe(true);
+    expect(uncHostTrusted('сервер.test', ['СЕРВЕР.test'], null)).toBe(true);
   });
 });

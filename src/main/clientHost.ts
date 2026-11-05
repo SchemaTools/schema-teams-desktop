@@ -48,6 +48,8 @@ import { CustomToasts } from './notifications/toasts';
 import type { ToastSpec } from './notifications/types';
 import { WindowsNotificationPolicy } from './desktop/notificationState';
 import { PathService } from './paths/service';
+import { confirmForeignHost } from './paths/dialog';
+import { uncHostTrusted } from './paths/validate';
 import { AttachmentService } from './files/service';
 import { UploadService } from './files/uploads';
 import { statusBitmap, badgeBitmap } from './desktop/statusBitmap';
@@ -93,6 +95,8 @@ interface Options {
   pausePersistence?: { outbox: PauseOutbox; returns: PauseReturns };
   main: MainWindow;
   server: URL | null;
+  /** Серверы бюро для путей из сборки (UNC_HOSTS); хост сервера Teams добавляется сам. */
+  uncHosts?: readonly string[];
   settings: SettingsStore;
   log: Logger;
   tray: Tray;
@@ -547,7 +551,11 @@ export class ClientHost {
       onTimerAudit: (audit) => o.log.info('команда таймера', { ...audit }),
       onPluginAudit: (audit) => o.log.info('плагины', { ...audit }),
     });
-    this.paths = new PathService({ log: o.log });
+    this.paths = new PathService({
+      log: o.log,
+      trusted: (host) => uncHostTrusted(host, o.uncHosts ?? [], o.server),
+      confirm: (host) => confirmForeignHost(host, o.main.win),
+    });
     this.files = new AttachmentService({
       api: this.api,
       downloads: () => app.getPath('downloads'),

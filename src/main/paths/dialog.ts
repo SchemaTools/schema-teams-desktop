@@ -1,7 +1,37 @@
-import { BrowserWindow, clipboard, ipcMain, type IpcMainInvokeEvent } from 'electron';
+import {
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  type IpcMainInvokeEvent,
+  type MessageBoxOptions,
+} from 'electron';
 import { join } from 'node:path';
 import { pathDialogPage } from './dialogPage';
 import { windowImage } from '../icons';
+import { S } from '../strings';
+
+/**
+ * Подтверждение пути к хосту не из списка серверов бюро. Системное окно Windows:
+ * хост показывается только текстом, по умолчанию выбрана «Отмена», Esc — тоже отмена.
+ */
+export async function confirmForeignHost(host: string, parent?: BrowserWindow): Promise<boolean> {
+  const options: MessageBoxOptions = {
+    type: 'warning',
+    title: S.pathForeignTitle,
+    message: S.pathForeignMessage(host),
+    detail: S.pathForeignDetail,
+    buttons: [S.pathForeignOpen, S.pathForeignCancel],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  };
+  const { response } =
+    parent && !parent.isDestroyed()
+      ? await dialog.showMessageBox(parent, options)
+      : await dialog.showMessageBox(options);
+  return response === 0;
+}
 
 export class PathDialog {
   private win?: BrowserWindow;

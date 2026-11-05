@@ -99,6 +99,7 @@ function start(): void {
     client = new ClientHost({
       main,
       server: selected,
+      uncHosts: build.uncHosts,
       partition,
       settings,
       log,

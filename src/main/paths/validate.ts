@@ -1,3 +1,4 @@
+import { domainToASCII } from 'node:url';
 // UNC передаётся Win32 Shell как путь, не как URL. Ничего не декодируем и
 // не нормализуем: неоднозначные варианты должны быть отклонены до fs/Shell.
 // Правила имён: https://learn.microsoft.com/windows/win32/fileio/naming-a-file
@@ -104,4 +105,34 @@ export function pathNeedsReveal(path: string, kind: 'file' | 'directory' = 'file
   if (dot < 0) return kind === 'file';
   // Верхний регистр также ловит Unicode-варианты вроде длинной s в расширении JS.
   return REVEAL_EXTENSIONS.has(name.slice(dot + 1).toUpperCase());
+}
+
+/** Хост проверенного пути `\\хост\share\…` или null для негодного пути. */
+export function uncHost(path: string): string | null {
+  const valid = validateUncPath(path);
+  return valid === null ? null : (valid.slice(2).split('\\')[0] ?? null);
+}
+
+// Хост сравнивается в нижнем регистре и в ASCII-записи: IDN из адреса сервера URL
+// уже переводит в punycode, а в пути из чата может прийти юникод.
+function hostKey(host: string): string {
+  const lower = host.toLowerCase();
+  return domainToASCII(lower) || lower;
+}
+
+/**
+ * Можно ли обращаться к хосту по SMB без подтверждения (ТЗ, 7.2; решение 05.11.2026):
+ * Windows при обращении к `\\хост\…` сама отдаёт хосту NTLM-ответ учётной записи,
+ * поэтому без вопроса — только серверы бюро из сборки и хост сервера Teams.
+ * Совпадение точное: короткое имя и полное доменное имя — разные записи списка;
+ * IP-адрес не из списка тоже идёт через подтверждение.
+ */
+export function uncHostTrusted(
+  host: string,
+  allowed: readonly string[],
+  server: URL | null,
+): boolean {
+  const target = hostKey(host);
+  if (server && hostKey(server.hostname) === target) return true;
+  return allowed.some((item) => hostKey(item) === target);
 }

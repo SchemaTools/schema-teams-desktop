@@ -1,18 +1,37 @@
 // Адрес сервера (ТЗ, 9.1): зашит в сборку из закрытого .env, может быть поправлен в настройках.
 // Переменная окружения SCHEMA_TEAMS_SERVER_URL — для разработки и сквозных тестов.
+// Список серверов бюро для путей `\\сервер\…` (ТЗ, 7.2) — тоже из закрытого .env (UNC_HOSTS).
 import { readFileSync } from 'node:fs';
 import { parseServerUrl } from './navigation';
 
 export interface BuildConfig {
   serverUrl?: string;
+  /** Имена или IP серверов бюро, к которым пути открываются без подтверждения. */
+  uncHosts?: string[];
+}
+
+/** Разбор списка `host1,host2`: пробелы и пустые элементы отбрасываются, заглушки `<…>` — тоже. */
+export function parseUncHosts(value: unknown): string[] {
+  const items = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  const hosts = new Set<string>();
+  for (const item of items) {
+    if (typeof item !== 'string') continue;
+    const host = item.trim().toLowerCase();
+    if (host && !host.includes('<') && host.length <= 253) hosts.add(host);
+  }
+  return [...hosts];
 }
 
 export function readBuildConfig(file: string): BuildConfig {
   try {
     const raw: unknown = JSON.parse(readFileSync(file, 'utf8'));
     if (typeof raw === 'object' && raw !== null) {
-      const v = (raw as Record<string, unknown>).serverUrl;
-      return typeof v === 'string' ? { serverUrl: v } : {};
+      const record = raw as Record<string, unknown>;
+      const config: BuildConfig = {};
+      if (typeof record.serverUrl === 'string') config.serverUrl = record.serverUrl;
+      const uncHosts = parseUncHosts(record.uncHosts);
+      if (uncHosts.length) config.uncHosts = uncHosts;
+      return config;
     }
   } catch {
     // файла нет — сборка без адреса

@@ -75,4 +75,11 @@ export const S = {
   pathCopy: 'Скопировать путь',
   pathCopied: 'Скопировано',
   pathUnderstood: 'Понятно',
+  // Путь к хосту не из списка серверов бюро (ТЗ, 7.2; решение 05.11.2026)
+  pathForeignTitle: 'Сервер не из списка бюро',
+  pathForeignMessage: (host: string) => `Это не сервер бюро: ${host}. Всё равно открыть?`,
+  pathForeignDetail:
+    'Windows передаст этому компьютеру данные вашей учётной записи для входа. Открывайте, только если доверяете отправителю.',
+  pathForeignOpen: 'Открыть',
+  pathForeignCancel: 'Отмена',
 } as const;

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { readBuildConfig, resolveServerUrl } from '../../src/main/config';
+import { parseUncHosts, readBuildConfig, resolveServerUrl } from '../../src/main/config';
 
 describe('адрес сервера', () => {
   it('порядок: окружение, настройки, сборка; негодные пропускаются', () => {
@@ -20,5 +20,29 @@ describe('адрес сервера', () => {
     expect(readBuildConfig(join(dir, 'нет.json'))).toEqual({});
     writeFileSync(join(dir, 'b.json'), '{"serverUrl":"http://c.test"}');
     expect(readBuildConfig(join(dir, 'b.json'))).toEqual({ serverUrl: 'http://c.test' });
+  });
+});
+
+describe('серверы бюро для путей из сборки', () => {
+  it('разбор UNC_HOSTS: регистр, пробелы, повторы, заглушки и мусор', () => {
+    expect(parseUncHosts(' FileServer , fileserver,,backup-host ')).toEqual([
+      'fileserver',
+      'backup-host',
+    ]);
+    expect(parseUncHosts(['Host-A', 7, null, '<FILE_SERVER_HOST>'])).toEqual(['host-a']);
+    expect(parseUncHosts(undefined)).toEqual([]);
+  });
+  it('файл сборки отдаёт список, пустой список не добавляет поле', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cfg-'));
+    writeFileSync(
+      join(dir, 'b.json'),
+      '{"serverUrl":"http://c.test","uncHosts":["FileServer","<FILE_SERVER_HOST>"]}',
+    );
+    expect(readBuildConfig(join(dir, 'b.json'))).toEqual({
+      serverUrl: 'http://c.test',
+      uncHosts: ['fileserver'],
+    });
+    writeFileSync(join(dir, 'e.json'), '{"serverUrl":"http://c.test","uncHosts":[]}');
+    expect(readBuildConfig(join(dir, 'e.json'))).toEqual({ serverUrl: 'http://c.test' });
   });
 });

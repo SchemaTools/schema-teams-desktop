@@ -8,7 +8,7 @@ import { PathService } from '../../src/main/paths/service';
 const root = String.raw`\\server\share`;
 const file = root + String.raw`\Объект А\Модель.rvt`;
 const folder = root + String.raw`\Объект А`;
-function harness() {
+function harness(trustedHost = true) {
   const probe = {
     inspect: vi.fn<(path: string) => Promise<PathKind | null>>().mockResolvedValue('file'),
     cancelAll: vi.fn<() => void>(),
@@ -23,7 +23,17 @@ function harness() {
     showItemInFolder: vi.fn<(path: string) => void>(),
   };
   const log = { info: vi.fn<(message: string, details?: Record<string, unknown>) => void>() };
-  return { service: new PathService({ probe, dialog, shell, log }), probe, dialog, shell, log };
+  const trusted = vi.fn<(host: string) => boolean>().mockReturnValue(trustedHost);
+  const confirm = vi.fn<(host: string) => Promise<boolean>>().mockResolvedValue(false);
+  return {
+    service: new PathService({ probe, dialog, shell, log, trusted, confirm }),
+    probe,
+    dialog,
+    shell,
+    log,
+    trusted,
+    confirm,
+  };
 }
 
 describe('PathService', () => {
@@ -45,6 +55,76 @@ describe('PathService', () => {
     expect(shell.showItemInFolder).not.toHaveBeenCalled();
     expect(dialog.show).not.toHaveBeenCalled();
     expect(JSON.stringify(log.info.mock.calls)).not.toContain('file://server');
+  });
+
+  it.each([false, 'reject'] as const)(
+    'хост не из списка: без подтверждения (%s) нет ни stat, ни Shell',
+    async (answer) => {
+      const { service, probe, shell, dialog, log, trusted, confirm } = harness(false);
+      if (answer === 'reject') confirm.mockRejectedValue(new Error('dialog failure fixture'));
+      else confirm.mockResolvedValue(answer);
+      await expect(service.open({ path: file, reveal: true })).resolves.toBe('blocked');
+      expect(trusted).toHaveBeenCalledExactlyOnceWith('server');
+      expect(confirm).toHaveBeenCalledExactlyOnceWith('server');
+      expect(probe.inspect).not.toHaveBeenCalled();
+      expect(shell.showItemInFolder).not.toHaveBeenCalled();
+      expect(shell.openPath).not.toHaveBeenCalled();
+      expect(dialog.show).not.toHaveBeenCalled();
+      expect(log.info).toHaveBeenCalledWith('открытие пути', {
+        path: file,
+        result: 'blocked',
+        reason: 'foreign-host-declined',
+      });
+    },
+  );
+
+  it('хост не из списка: stat начинается только после явного «Открыть»', async () => {
+    const { service, probe, shell, log, confirm } = harness(false);
+    let answer: ((value: boolean) => void) | undefined;
+    confirm.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const request = service.open({ path: file, reveal: true });
+    await Promise.resolve();
+    expect(probe.inspect).not.toHaveBeenCalled();
+    if (!answer) throw new Error('Подтверждение не запрошено');
+    answer(true);
+    await expect(request).resolves.toBe('ok');
+    expect(probe.inspect).toHaveBeenCalledExactlyOnceWith(file);
+    expect(shell.showItemInFolder).toHaveBeenCalledExactlyOnceWith(file);
+    expect(log.info).toHaveBeenCalledWith('открытие пути', {
+      path: file,
+      result: 'ok',
+      reason: 'foreign-host-confirmed',
+    });
+  });
+
+  it('reset во время вопроса: позднее «Открыть» ничего не делает', async () => {
+    const { service, probe, shell, confirm } = harness(false);
+    let answer: ((value: boolean) => void) | undefined;
+    confirm.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const request = service.open({ path: file, reveal: true });
+    await Promise.resolve();
+    service.reset();
+    answer?.(true);
+    await expect(request).resolves.toBe('blocked');
+    expect(probe.inspect).not.toHaveBeenCalled();
+    expect(shell.showItemInFolder).not.toHaveBeenCalled();
+  });
+
+  it('доверенный хост открывается без вопроса', async () => {
+    const { service, confirm, probe } = harness(true);
+    await expect(service.open({ path: file, reveal: true })).resolves.toBe('ok');
+    expect(confirm).not.toHaveBeenCalled();
+    expect(probe.inspect).toHaveBeenCalledOnce();
   });
 
   it.each(['file', 'directory'] as const)(
