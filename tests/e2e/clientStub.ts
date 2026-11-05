@@ -67,6 +67,9 @@ export interface FixtureState {
   lostAckOnce: boolean;
   sendDelayMs: number;
   socketConnections: number;
+  /** Сокет отклоняется (REST продолжает работать): проверка «в сети» без WebSocket. */
+  socketBlocked: boolean;
+  socketTransports: string[];
   socketCookies: string[];
   focusUntil: string | null;
   calls: FixtureCall[];
@@ -154,7 +157,9 @@ export const fixtureMessage = (
   poll: null,
 });
 
-export async function startClientStub() {
+export async function startClientStub(
+  options: { socketTransports?: ('websocket' | 'polling')[] } = {},
+) {
   const files = new Map<number, { bytes: Buffer; mime: string; status?: number }>();
   const state: FixtureState = {
     desktopConfig: null,
@@ -184,6 +189,8 @@ export async function startClientStub() {
     lostAckOnce: false,
     sendDelayMs: 0,
     socketConnections: 0,
+    socketBlocked: false,
+    socketTransports: [],
     socketCookies: [],
     focusUntil: null,
     calls: [],
@@ -310,9 +317,16 @@ export async function startClientStub() {
       else res.end();
     });
   });
-  const io = new Server(server, { transports: ['websocket'], serveClient: false });
+  const io = new Server(server, {
+    transports: options.socketTransports ?? ['websocket'],
+    serveClient: false,
+  });
   io.use((socket, next) => {
     const user = userOf(socket.request);
+    if (state.socketBlocked) {
+      next(new Error('blocked'));
+      return;
+    }
     if (!user) {
       next(new Error('unauthenticated'));
       return;
@@ -323,6 +337,7 @@ export async function startClientStub() {
   });
   io.on('connection', (socket) => {
     state.socketConnections++;
+    state.socketTransports.push(socket.conn.transport.name);
     socket.on('chat:typing', (data: { chatId?: unknown }) => {
       if (typeof data?.chatId === 'number') state.typingReceived.push(data.chatId);
     });
@@ -1106,14 +1121,17 @@ export async function startClientStub() {
         );
         const around = Number(url.searchParams.get('around')) || null;
         const index = around === null ? -1 : found.findIndex((m) => m.id === around);
+        // Как на сервере: after — следующие 50 после курсора, иначе — последние 50.
         const start =
           index >= 0
             ? Math.max(0, Math.min(index - 25, found.length - 50))
-            : Math.max(0, found.length - 50);
+            : after
+              ? 0
+              : Math.max(0, found.length - 50);
         const items = found.slice(start, start + 50);
         json(res, 200, {
           items,
-          hasMore: start > 0,
+          hasMore: after ? true : start > 0,
           hasNewer: start + items.length < found.length,
         });
         return;
@@ -1243,6 +1261,17 @@ export async function startClientStub() {
     },
     emit: (name: string, data: unknown, userId = 1) => io.to(`user:${userId}`).emit(name, data),
     disconnect: () => io.disconnectSockets(true),
+    /** Новые сообщения без событий сокета (как во время разрыва). */
+    pushMany: (count: number, chatId = 4) => {
+      const list: ChatMessage[] = [];
+      for (let index = 0; index < count; index++) {
+        const message = fixtureMessage(nextId++, chatId, `Пропущенное ${index + 1}`, 2);
+        conversations.get(chatId)?.push(message);
+        list.push(message);
+      }
+      unread.set(chatId, (unread.get(chatId) ?? 0) + count);
+      return list;
+    },
     pushTimer: (timer: WorkTimer | null, userId = 1) => {
       state.timers[userId] = timer;
       io.to(`user:${userId}`).emit(
