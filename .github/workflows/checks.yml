@@ -16,4 +16,27 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm test
-# Сквозные тесты и сборка установщика — на Windows, локально перед PR (`npm run check`, `npm run dist`)
+  windows:
+    # Помощники C# (csc.exe из .NET Framework), плагинные проверки Windows, сборка и сквозные Playwright Electron
+    runs-on: windows-latest
+    steps:
+      # Файлы — с LF, как в репозитории и на Linux: Prettier и разбор текстов в тестах не видят CRLF
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      # Electron на Windows-раннере работает без xvfb; повтор упавшего теста — только в CI (переменная CI, playwright.config.ts)
+      - run: npx playwright test
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: test-results/
+          if-no-files-found: ignore
