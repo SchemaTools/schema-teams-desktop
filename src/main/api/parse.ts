@@ -24,6 +24,37 @@ import type { SupportReceipt } from '../../shared/report';
 import { isoDay } from '../../shared/time';
 
 export class InvalidData extends Error {}
+/** Что пропущено при мягком разборе (ТЗ 3.3): вид элемента, без содержимого. */
+export type SkippedKind = 'chat' | 'message' | 'reaction' | 'file' | 'link' | 'card' | 'mention';
+let skipped: ((kind: SkippedKind) => void) | undefined;
+/** Владелец журнала подписывается один раз; сам разбор не знает о журнале. */
+export function onSkipped(listener: ((kind: SkippedKind) => void) | undefined): void {
+  skipped = listener;
+}
+/** Мягкий разбор списка: негодный элемент пропускается с записью в журнал, а не роняет весь ответ. */
+const tolerant = <T>(
+  value: unknown,
+  parse: (v: unknown) => T,
+  kind: SkippedKind,
+  max = 10000,
+): T[] => {
+  if (!Array.isArray(value)) throw new InvalidData();
+  const result: T[] = [];
+  for (const item of value.slice(0, max)) {
+    try {
+      result.push(parse(item));
+    } catch {
+      skipped?.(kind);
+    }
+  }
+  if (value.length > max) skipped?.(kind);
+  return result;
+};
+/** Необязательное поле: нет — значение по умолчанию, есть — проверяется. */
+const optional = <T>(value: unknown, parse: (v: unknown) => T, fallback: T): T =>
+  value === undefined ? fallback : parse(value);
+/** Служебные сообщения бывают длиннее лимита отправки 4000 — разумный верхний предел. */
+export const MESSAGE_TEXT_LIMIT = 64000;
 export function morning(v: unknown): MorningSummary {
   const x = object(v);
   if (!isoDay(x.date)) throw new InvalidData();
@@ -142,7 +173,8 @@ export function notificationPush(v: unknown): NotificationPush {
 }
 export function list(v: unknown): ChatList {
   const x = object(v);
-  return { items: array(x.items, summary), unreadTotal: count(x.unreadTotal) };
+  // Неизвестный вид чата или негодная строка — пропускается этот чат, а не весь список.
+  return { items: tolerant(x.items, summary, 'chat'), unreadTotal: count(x.unreadTotal) };
 }
 export const file = (v: unknown): ChatFile => {
   const x = object(v);
@@ -189,50 +221,70 @@ const poll = (v: unknown): ChatPoll => {
 };
 export function message(v: unknown): ChatMessage {
   const x = object(v);
+  // Обязательны id, чат, время и текст; остальное необязательно, негодные элементы
+  // списков пропускаются (ТЗ 3.3, мягкая деградация).
+  const list = <T>(value: unknown, parse: (v: unknown) => T, kind: SkippedKind, max?: number) =>
+    value === undefined ? [] : tolerant(value, parse, kind, max);
   return {
     id: id(x.id),
     chatId: id(x.chatId),
-    author: nullable(x.author, person),
-    text: text(x.text, 4000),
+    author: optional(x.author, (v) => nullable(v, person), null),
+    text: text(x.text, MESSAGE_TEXT_LIMIT),
     at: date(x.at),
-    editedAt: nullable(x.editedAt, date),
-    deleted: flag(x.deleted),
-    replyTo: nullable(x.replyTo, (v) => {
-      const y = object(v);
-      return {
-        id: id(y.id),
-        authorShortName: nullable(y.authorShortName, text),
-        preview: text(y.preview),
-        deleted: flag(y.deleted),
-      };
-    }),
-    files: array(x.files, file, 10),
-    mentions: array(x.mentions, id, 10000),
-    links: array(x.links, (v) => {
-      const y = object(v);
-      return { text: text(y.text), taskId: id(y.taskId), title: text(y.title) };
-    }),
-    canEdit: flag(x.canEdit),
-    reactions: array(x.reactions, reaction, 100),
-    cards: array(
+    editedAt: optional(x.editedAt, (v) => nullable(v, date), null),
+    deleted: optional(x.deleted, flag, false),
+    replyTo: optional(
+      x.replyTo,
+      (v) =>
+        nullable(v, (v) => {
+          const y = object(v);
+          return {
+            id: id(y.id),
+            authorShortName: optional(y.authorShortName, (v) => nullable(v, text), null),
+            preview: text(y.preview),
+            deleted: optional(y.deleted, flag, false),
+          };
+        }),
+      null,
+    ),
+    files: list(x.files, file, 'file', 100),
+    mentions: list(x.mentions, id, 'mention'),
+    links: list(
+      x.links,
+      (v) => {
+        const y = object(v);
+        return { text: text(y.text), taskId: id(y.taskId), title: text(y.title) };
+      },
+      'link',
+    ),
+    canEdit: optional(x.canEdit, flag, false),
+    reactions: list(x.reactions, reaction, 'reaction', 100),
+    cards: list(
       x.cards,
       (v) => {
         const y = object(v);
         return { type: text(y.type, 100), id: id(y.id) };
       },
-      50,
+      'card',
+      100,
     ),
-    sticker: nullable(x.sticker, (v) => {
-      const y = object(v);
-      return { id: id(y.id), fileId: nullable(y.fileId, id) };
-    }),
-    poll: nullable(x.poll, poll),
+    sticker: optional(
+      x.sticker,
+      (v) =>
+        nullable(v, (v) => {
+          const y = object(v);
+          return { id: id(y.id), fileId: nullable(y.fileId, id) };
+        }),
+      null,
+    ),
+    poll: optional(x.poll, (v) => nullable(v, poll), null),
   };
 }
 export function messages(v: unknown): MessagePage {
   const x = object(v);
+  // Размер страницы задаёт сервер (сейчас 50); больше — не ошибка.
   return {
-    items: array(x.items, message, 50),
+    items: tolerant(x.items, message, 'message'),
     hasMore: flag(x.hasMore),
     hasNewer: flag(x.hasNewer),
   };

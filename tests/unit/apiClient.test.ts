@@ -336,9 +336,13 @@ describe('TeamsApi: конечные маршруты и недоверенны�
           unexpected: 'private',
         }),
       )
-      .mockResolvedValueOnce(json({ items: [{ ...chat, unread: -1 }], unreadTotal: 3 }));
+      .mockResolvedValueOnce(json({ items: [{ ...chat, unread: -1 }], unreadTotal: 3 }))
+      .mockResolvedValueOnce(json({ items: [chat], unreadTotal: -1 }));
     await api.authenticate();
     expect(await api.listChats()).toEqual({ ok: true, data: { items: [chat], unreadTotal: 3 } });
+    // С 05.11.2026 (ревью PR #6, Ч5): негодная строка чата пропускается, список не падает;
+    // негодное обязательное поле самого списка — по-прежнему ошибка.
+    expect(await api.listChats()).toEqual({ ok: true, data: { items: [], unreadTotal: 3 } });
     expect(await api.listChats()).toMatchObject({ ok: false, code: 'invalid_data' });
   });
   it('история вокруг сообщения использует явный курсор, а не смещение', async () => {
