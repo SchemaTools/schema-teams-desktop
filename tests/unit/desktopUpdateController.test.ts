@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => process.cwd() } }));
 import {
   DesktopUpdateController,
+  failureCode,
   type DesktopUpdateContext,
   type DesktopDraftSummary,
   type DesktopUpdateControllerOptions,
@@ -93,6 +94,7 @@ async function fixture() {
     quit: vi.fn(),
     releaseLease: vi.fn(),
     changed: vi.fn(),
+    failed: vi.fn(),
     options: undefined as unknown as DesktopUpdateControllerOptions,
     controller: undefined as unknown as DesktopUpdateController,
     offer: '',
@@ -108,6 +110,7 @@ async function fixture() {
     handoff: f.handoff,
     quit: f.quit,
     onChange: f.changed,
+    onFailure: f.failed,
     fetch: f.fetch as typeof fetch,
     pathAllowed: async () => true,
     verify: f.verify,
@@ -186,6 +189,14 @@ describe('Desktop updater orchestration: inert temp files, injected signer, runn
     expect(projection).not.toContain(f.release.sha256);
     expect(projection).not.toContain(f.pins[0]);
   });
+  it('ошибки подготовки и запуска уходят в журнал кодом, подробнее публичного', async () => {
+    const f = await fixture();
+    f.fetch.mockImplementation(async () => new Response('x', { status: 500 }));
+    expect((await f.controller.prepare(f.offer)).error).toBe('update_failed');
+    expect(f.failed).toHaveBeenCalledExactlyOnceWith({ stage: 'prepare', code: 'download_http' });
+    expect(failureCode(new Error('C:/private ENOENT'))).toBe('update_failed');
+    expect(failureCode(new Error('update_busy'))).toBe('update_busy');
+  });
   it.each(['windows', 'packaged'] as const)(
     'denies %s=false before helper/network/staging',
     async (key) => {
@@ -193,6 +204,7 @@ describe('Desktop updater orchestration: inert temp files, injected signer, runn
       changeContext(f, { [key]: false });
       f.offer = f.controller.setOffer(f.release, 'owner-A') ?? '';
       expect((await f.controller.prepare(f.offer)).error).toBe('update_environment');
+      expect(f.failed).toHaveBeenCalledWith({ stage: 'prepare', code: 'update_environment' });
       expect(f.verify).not.toHaveBeenCalled();
       expect(f.read).not.toHaveBeenCalled();
       expect(f.fetch).not.toHaveBeenCalled();

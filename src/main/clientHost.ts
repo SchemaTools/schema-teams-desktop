@@ -360,6 +360,7 @@ export class ClientHost {
     onChange: () => {
       if (!this.destroyed) this.publish();
     },
+    onFailure: (failure) => this.o.log.warn('ошибка обновления', { ...failure }),
   });
   private readonly configuration: ServerConfigurationService;
   private readonly inventory: RevitInventoryService;

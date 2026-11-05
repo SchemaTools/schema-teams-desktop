@@ -26,7 +26,10 @@ vi.mock('../../src/main/desktop/updateController', () => ({
     }
   },
 }));
-import { createProductionDesktopUpdateController } from '../../src/main/desktop/updateFactory';
+import {
+  createProductionDesktopUpdateController,
+  desktopUpdatesRoot,
+} from '../../src/main/desktop/updateFactory';
 afterEach(() => {
   vi.clearAllMocks();
   f.captured = undefined;
@@ -57,6 +60,23 @@ function child() {
   f.spawn.mockReturnValue(child);
   return child;
 }
+describe('Папка загрузок обновлений', () => {
+  const local = join(process.cwd(), 'local-app-data-fixture');
+  const profile = join(process.cwd(), 'roaming-fixture', 'Schema Teams');
+  it('лежит в LOCALAPPDATA под именем профиля, а не в перемещаемом userData', () => {
+    expect(desktopUpdatesRoot({ LOCALAPPDATA: local }, profile)).toBe(
+      join(local, 'Schema Teams', 'desktop-updates'),
+    );
+  });
+  it.each([undefined, '', 'relative-path'])(
+    'без годной LOCALAPPDATA (%s) — прежнее место в userData',
+    (value) => {
+      expect(desktopUpdatesRoot({ LOCALAPPDATA: value }, profile)).toBe(
+        join(profile, 'desktop-updates'),
+      );
+    },
+  );
+});
 describe('Fixed production updater adapter: mocked constructor and process boundary only', () => {
   it('uses only its own executable/version/root and fixed empty publisher policy', () => {
     const o = factory();
@@ -70,7 +90,7 @@ describe('Fixed production updater adapter: mocked constructor and process bound
       windows: process.platform === 'win32',
     });
     expect(o.publisherPins()).toEqual([]);
-    expect(o.stagingRoot).toBe(join('own-data', 'desktop-updates'));
+    expect(o.stagingRoot).toBe(desktopUpdatesRoot());
     expect(o.verify).toBeUndefined();
     expect(o.pathAllowed).toBeUndefined();
     expect(o.now).toBeUndefined();

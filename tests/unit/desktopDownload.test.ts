@@ -3,11 +3,15 @@ import { createServer, type Server } from 'node:http';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile, lstat, symlink } from 'node:fs/promises';
 import { join, resolve, relative, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
   downloadDesktopRelease,
   discardDesktopDownload,
   claimDesktopDownload,
   DESKTOP_MAX_BYTES,
+  DESKTOP_IDLE_TIMEOUT_MS,
+  DESKTOP_TOTAL_TIMEOUT_MS,
+  cleanupDesktopDownloads,
   type DesktopDownloadOptions,
   type DesktopDownloadProgress,
 } from '../../src/main/desktop/downloadDesktop';
@@ -132,6 +136,23 @@ async function fixture(mode = 'good', payload = data) {
     if (mode === 'truncated') {
       res.write(payload.subarray(0, 3));
       res.destroy();
+      return;
+    }
+    if (mode === 'stall') {
+      res.write(payload.subarray(0, 3));
+      return;
+    }
+    if (mode === 'trickle') {
+      // Медленно, но без простоя: четыре порции с паузой 40 мс.
+      const step = Math.ceil(payload.length / 4);
+      let offset = 0;
+      const next = () => {
+        res.write(payload.subarray(offset, offset + step));
+        offset += step;
+        if (offset >= payload.length) res.end();
+        else setTimeout(next, 40);
+      };
+      next();
       return;
     }
     res.end(payload);
@@ -286,6 +307,45 @@ describe('Desktop public download — real local HTTP and temp filesystem', () =
       expect(await readFile(join(directory, 'foreign.bin'), 'utf8')).toBe('preserve');
     },
   );
+  it('простой без данных прерывает загрузку при большом общем потолке', async () => {
+    const directory = await root();
+    const f = await fixture('stall');
+    const started = performance.now();
+    await expect(
+      downloadDesktopRelease(release(), {
+        ...options(directory, f.origin),
+        idleTimeoutMs: 80,
+        timeoutMs: DESKTOP_TOTAL_TIMEOUT_MS,
+      }),
+    ).rejects.toThrow();
+    expect(performance.now() - started).toBeLessThan(5000);
+    expect(await readdir(directory)).toEqual([]);
+  });
+  it('медленная живая загрузка дольше тайм-аута простоя завершается', async () => {
+    const directory = await root();
+    const f = await fixture('trickle');
+    const started = performance.now();
+    const receipt = await downloadDesktopRelease(release(), {
+      ...options(directory, f.origin),
+      idleTimeoutMs: 100,
+    });
+    expect(performance.now() - started).toBeGreaterThan(100);
+    expect(await readFile(receipt.file)).toEqual(data);
+  });
+  it('по умолчанию простой 60 с и потолок 30 минут; негодные значения отклоняются', async () => {
+    expect(DESKTOP_IDLE_TIMEOUT_MS).toBe(60_000);
+    expect(DESKTOP_TOTAL_TIMEOUT_MS).toBe(30 * 60_000);
+    const directory = await root();
+    for (const extra of [
+      { timeoutMs: DESKTOP_TOTAL_TIMEOUT_MS + 1 },
+      { idleTimeoutMs: 0 },
+      { timeoutMs: 1000, idleTimeoutMs: 2000 },
+      { idleTimeoutMs: 1.5 },
+    ])
+      await expect(
+        downloadDesktopRelease(release(), { ...options(directory), ...extra }),
+      ).rejects.toThrow('download_options');
+  });
   it('rejects hash mismatch after actual HTTP/disk write without false verified progress', async () => {
     const directory = await root();
     const f = await fixture();
@@ -595,5 +655,77 @@ describe('Synthetic transport/fault boundaries with real staged filesystem', () 
       },
     });
     expect(await readFile(receipt.file)).toEqual(data);
+  });
+});
+
+describe('короткие имена Windows 8.3', () => {
+  it.runIf(process.platform === 'win32')(
+    'папка загрузок, записанная коротким именем, не считается переадресацией',
+    async () => {
+      const long = join(await root(), 'Long update download folder');
+      await mkdir(long);
+      const short = spawnSync(
+        'cmd.exe',
+        ['/d', '/s', '/c', `"for %I in ("${long}") do @echo %~sI"`],
+        // Кавычки внутри /c Node иначе экранирует, и cmd получает испорченную строку.
+        { encoding: 'utf8', windowsVerbatimArguments: true },
+      ).stdout.trim();
+      // Если 8.3 на томе отключены, проверять нечего.
+      if (!/~[0-9]+$/.test(short)) return;
+      const receipt = await downloadDesktopRelease(release(), {
+        ...options(short),
+        fetch: async () => response(),
+      });
+      expect(await readFile(receipt.file)).toEqual(data);
+      expect(await discardDesktopDownload(receipt)).toBe(true);
+    },
+  );
+});
+describe('уборка старых загрузок при запуске', () => {
+  it('удаляет свои файлы прежних запусков и пустые папки, чужое и текущие — оставляет', async () => {
+    const directory = await root();
+    const stale = join(directory, 'desktop-AbC123');
+    await mkdir(stale);
+    await writeFile(join(stale, 'installer.part'), 'part');
+    const handed = join(directory, 'desktop-Zz9999');
+    await mkdir(handed);
+    await writeFile(join(handed, 'installer.exe'), 'exe');
+    const foreign = join(directory, 'desktop-Foreig');
+    await mkdir(foreign);
+    await writeFile(join(foreign, 'installer.exe'), 'exe');
+    await writeFile(join(foreign, 'notes.txt'), 'preserve');
+    const other = join(directory, 'other-folder');
+    await mkdir(other);
+    await writeFile(join(directory, 'desktop-file1'), 'not a directory');
+    // Загрузка этого запуска (получена до уборки) не удаляется.
+    const current = await downloadDesktopRelease(release(), {
+      ...options(directory),
+      fetch: async () => response(),
+    });
+    expect(await cleanupDesktopDownloads(directory)).toBe(2);
+    expect((await readdir(directory)).sort()).toEqual(
+      [
+        dirname(current.file).slice(directory.length + 1),
+        'desktop-Foreig',
+        'desktop-file1',
+        'other-folder',
+      ].sort(),
+    );
+    expect(await readdir(foreign)).toEqual(['notes.txt']);
+    expect(await readFile(current.file)).toEqual(data);
+  });
+  it.runIf(process.platform === 'win32')(
+    'папку-ссылку (junction) не обходит и не удаляет её цель',
+    async () => {
+      const directory = await root(),
+        outside = await root();
+      await writeFile(join(outside, 'installer.exe'), 'preserve');
+      await symlink(outside, join(directory, 'desktop-Link01'), 'junction');
+      expect(await cleanupDesktopDownloads(directory)).toBe(0);
+      expect(await readFile(join(outside, 'installer.exe'), 'utf8')).toBe('preserve');
+    },
+  );
+  it('нет папки — нечего убирать', async () => {
+    expect(await cleanupDesktopDownloads(join(await root(), 'missing'))).toBe(0);
   });
 });

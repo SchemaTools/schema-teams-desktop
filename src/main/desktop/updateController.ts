@@ -47,11 +47,17 @@ export interface DesktopUpdateControllerOptions {
   handoff: (ownedInstaller: string) => Promise<void>;
   quit: () => void;
   onChange: (view: DesktopUpdateView) => void;
+  /** Журнал: код ошибки подготовки или запуска (`update_*`, `download_*`), без путей и текста ОС. */
+  onFailure?: (failure: Readonly<DesktopUpdateFailure>) => void;
   /** Main monotonic clock; test seam only. Wall clock is never an ACK lifetime. */
   now?: () => number;
   fetch?: typeof globalThis.fetch;
   pathAllowed?: DesktopTrustOptions['pathAllowed'];
   verify?: DesktopTrustOptions['verify'];
+}
+export interface DesktopUpdateFailure {
+  readonly stage: 'prepare' | 'launch';
+  readonly code: string;
 }
 interface Offer {
   readonly id: string;
@@ -116,6 +122,11 @@ const publicError = (error: unknown) => {
   ].includes(code)
     ? code
     : 'update_failed';
+};
+/** Код для журнала подробнее публичного: видно, на каком шаге загрузки отказ. */
+export const failureCode = (error: unknown): string => {
+  const code = error instanceof Error ? error.message : '';
+  return /^(?:update|download)_[a-z_]{1,40}$/.test(code) ? code : publicError(error);
 };
 
 /** Orchestration core only. Host must bind its lifetime/quiescence and the
@@ -279,7 +290,7 @@ export class DesktopUpdateController {
       this.value = { ...this.value, phase: 'ready', fraction: 1 };
       this.emit();
     } catch (error) {
-      await this.fail(job, error);
+      await this.fail(job, error, 'prepare');
     }
     return this.state;
   }
@@ -308,6 +319,7 @@ export class DesktopUpdateController {
       };
     } catch (error) {
       this.value = { ...this.value, error: publicError(error) };
+      this.report('launch', error);
     }
     this.emit();
     return this.state;
@@ -382,7 +394,7 @@ export class DesktopUpdateController {
       this.o.quit();
     } catch (error) {
       artifact?.finish(false);
-      if (!job.handedOff) await this.fail(job, error);
+      if (!job.handedOff) await this.fail(job, error, 'launch');
     } finally {
       quiescence?.release();
     }
@@ -480,10 +492,16 @@ export class DesktopUpdateController {
     if (raw === null || tuple(desktopRelease(raw)) !== tuple(job.offer.release))
       throw Error('update_offer_changed');
   }
-  private async fail(job: Job, error: unknown): Promise<void> {
+  private async fail(
+    job: Job,
+    error: unknown,
+    stage: DesktopUpdateFailure['stage'],
+  ): Promise<void> {
     job.abort.abort();
     if (job.receipt && !job.handedOff) await discardDesktopDownload(job.receipt);
+    // Отменённое или заменённое задание — не ошибка обновления.
     if (this.job !== job) return;
+    this.report(stage, error);
     this.job = undefined;
     this.value = {
       ...this.value,
@@ -493,6 +511,13 @@ export class DesktopUpdateController {
       error: publicError(error),
     };
     this.emit();
+  }
+  private report(stage: DesktopUpdateFailure['stage'], error: unknown): void {
+    try {
+      this.o.onFailure?.(Object.freeze({ stage, code: failureCode(error) }));
+    } catch {
+      /* Журнал не меняет исход обновления. */
+    }
   }
   private emit(): void {
     try {

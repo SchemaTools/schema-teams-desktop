@@ -1,11 +1,16 @@
-import { lstat, mkdir, mkdtemp, open, realpath, rename, rmdir, unlink } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readdir, rename, rmdir, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, lstatSync, unlinkSync, rmdirSync } from 'node:fs';
 import { desktopRelease } from '../api/updates';
+import { nodePathSafe } from '../plugins/transactionFs';
 import type { DesktopRelease } from '../../shared/updates';
 
 export const DESKTOP_MAX_BYTES = 512 * 1024 * 1024;
+/** Нет ни одного байта столько времени — загрузка прерывается (медленная, но живая сеть — нет). */
+export const DESKTOP_IDLE_TIMEOUT_MS = 60 * 1000;
+/** Общий потолок: 512 МиБ за 30 минут — около 0,3 МиБ/с, хватает и для удалённой работы. */
+export const DESKTOP_TOTAL_TIMEOUT_MS = 30 * 60 * 1000;
 export interface DesktopDownloadProgress {
   readonly bytes: number;
   readonly total: number;
@@ -19,7 +24,10 @@ export interface DesktopDownloadOptions {
   current: (release: Readonly<DesktopRelease>, serverOrigin: string) => boolean;
   signal?: AbortSignal;
   onProgress?: (progress: Readonly<DesktopDownloadProgress>) => void;
+  /** Общий потолок всей загрузки, не больше DESKTOP_TOTAL_TIMEOUT_MS. */
   timeoutMs?: number;
+  /** Простой: столько нет ответа или очередной порции данных, не больше timeoutMs. */
+  idleTimeoutMs?: number;
   fetch?: typeof globalThis.fetch;
 }
 /** Main-memory receipt only; never an installer permission or restart handoff. */
@@ -50,6 +58,8 @@ interface CompletedDownload {
   holder?: symbol;
 }
 const completedDownloads = new WeakMap<DesktopDownloadReceipt, CompletedDownload>();
+/** Папки загрузок этого запуска: уборка старых их не трогает, даже если загрузка ещё идёт. */
+const sessionDirectories = new Set<string>();
 /** Main-only lease. Cleanup cannot remove an artifact during validation/handoff. */
 export function claimDesktopDownload(receipt: DesktopDownloadReceipt): Readonly<{
   identity: Readonly<DesktopDownloadIdentity>;
@@ -142,7 +152,20 @@ export async function discardDesktopDownload(receipt: DesktopDownloadReceipt): P
   }
 }
 const same = (a: Identity, b: Identity) => a.dev === b.dev && a.ino === b.ino;
-const samePath = (a: string, b: string) => relative(a, b) === '';
+const key = (path: string) => resolve(path).toLowerCase();
+/**
+ * Путь не переадресован ни одним компонентом (junction, симлинк, subst). Сравнение
+ * с realpath — через общую проверку плагинов: короткое имя 8.3 (TEMP вида
+ * `C:\Users\ABCDEF~1`) переадресацией не считается.
+ */
+const notRedirected = async (path: string) => {
+  try {
+    await nodePathSafe(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const contained = (root: string, child: string) => {
   const value = relative(root, child);
   return !!value && !isAbsolute(value) && value !== '..' && !value.startsWith(`..${sep}`);
@@ -175,7 +198,8 @@ export async function downloadDesktopRelease(
   const onProgress = options.onProgress;
   const externalSignal = options.signal;
   const fetcher = options.fetch ?? globalThis.fetch;
-  const timeoutMs = options.timeoutMs ?? 120000;
+  const timeoutMs = options.timeoutMs ?? DESKTOP_TOTAL_TIMEOUT_MS;
+  const idleTimeoutMs = options.idleTimeoutMs ?? Math.min(DESKTOP_IDLE_TIMEOUT_MS, timeoutMs);
   const suppliedOrigin = options.serverOrigin;
   const origin = new URL(suppliedOrigin);
   if (
@@ -188,7 +212,10 @@ export async function downloadDesktopRelease(
     ![origin.origin, `${origin.origin}/`].includes(suppliedOrigin) ||
     !Number.isSafeInteger(timeoutMs) ||
     timeoutMs < 1 ||
-    timeoutMs > 120000 ||
+    timeoutMs > DESKTOP_TOTAL_TIMEOUT_MS ||
+    !Number.isSafeInteger(idleTimeoutMs) ||
+    idleTimeoutMs < 1 ||
+    idleTimeoutMs > timeoutMs ||
     typeof current !== 'function' ||
     typeof fetcher !== 'function' ||
     (onProgress !== undefined && typeof onProgress !== 'function') ||
@@ -202,6 +229,12 @@ export async function downloadDesktopRelease(
   externalSignal?.addEventListener('abort', abort, { once: true });
   if (externalSignal?.aborted) abort();
   const timer = setTimeout(abort, timeoutMs);
+  // Простой отсчитывается заново после ответа сервера и после каждой порции данных.
+  let idleTimer = setTimeout(abort, idleTimeoutMs);
+  const alive = () => {
+    clearTimeout(idleTimer);
+    if (!controller.signal.aborted) idleTimer = setTimeout(abort, idleTimeoutMs);
+  };
   let directory: string | undefined;
   let directoryIdentity: Identity | undefined;
   let rootIdentity: Identity | undefined;
@@ -262,8 +295,8 @@ export async function downloadDesktopRelease(
       !same(directoryIdentity, stat) ||
       stat.isSymbolicLink() ||
       !stat.isDirectory() ||
-      !samePath(await realpath(root), root) ||
-      !samePath(await realpath(directory), directory)
+      !(await notRedirected(root)) ||
+      !(await notRedirected(directory))
     )
       throw Error('download_root');
   };
@@ -282,6 +315,7 @@ export async function downloadDesktopRelease(
       return value;
     });
     response = await wait(fetched);
+    alive();
     check();
     if (response.status !== 200 || response.redirected || (response.url && response.url !== url))
       throw Error('download_http');
@@ -302,11 +336,12 @@ export async function downloadDesktopRelease(
     check();
     await safeAncestors(root);
     check();
-    if (!samePath(await realpath(root), root)) throw Error('download_root');
+    if (!(await notRedirected(root))) throw Error('download_root');
     check();
     rootIdentity = await lstat(root, { bigint: true });
     check();
     directory = await mkdtemp(join(root, 'desktop-'));
+    sessionDirectories.add(key(directory));
     directoryIdentity = await lstat(directory, { bigint: true });
     check();
     await safeDirectory();
@@ -321,6 +356,7 @@ export async function downloadDesktopRelease(
       check();
       while (true) {
         const chunk = await wait(reader.read());
+        alive();
         check();
         if (chunk.done) break;
         received += chunk.value.byteLength;
@@ -399,6 +435,7 @@ export async function downloadDesktopRelease(
     return receipt;
   } finally {
     clearTimeout(timer);
+    clearTimeout(idleTimer);
     externalSignal?.removeEventListener('abort', abort);
     abort();
     if (reader) void reader.cancel().catch(() => {});
@@ -422,4 +459,47 @@ export async function downloadDesktopRelease(
       }
     }
   }
+}
+
+const STALE_FILES = new Set(['installer.part', 'installer.exe']);
+/**
+ * Уборка при запуске: папки `desktop-*` прежних запусков (недокачанные и переданные
+ * установщику файлы) копятся по 100+ МиБ. Удаляются только свои имена файлов —
+ * обычные файлы без жёстких ссылок, затем папка без рекурсии; чужое, ссылки и
+ * занятые файлы (установщик ещё работает) остаются. Папки текущего запуска не трогаются.
+ * Возвращает число удалённых папок; ошибки не выходят наружу.
+ */
+export async function cleanupDesktopDownloads(root: string): Promise<number> {
+  let removed = 0;
+  try {
+    const base = resolve(root);
+    await safeAncestors(base);
+    const baseStat = await statOrNull(base);
+    if (!baseStat?.isDirectory() || baseStat.isSymbolicLink()) return 0;
+    if (!(await notRedirected(base))) return 0;
+    for (const name of await readdir(base)) {
+      const directory = join(base, name);
+      if (!/^desktop-[A-Za-z0-9]{6}$/.test(name) || sessionDirectories.has(key(directory)))
+        continue;
+      try {
+        const stat = await lstat(directory, { bigint: true });
+        if (!stat.isDirectory() || stat.isSymbolicLink()) continue;
+        for (const file of await readdir(directory)) {
+          const path = join(directory, file);
+          const info = await lstat(path, { bigint: true });
+          if (STALE_FILES.has(file) && info.isFile() && !info.isSymbolicLink() && info.nlink === 1n)
+            await unlink(path);
+        }
+        // Повторная сверка папки перед rmdir: подменённую ссылку не удаляем.
+        if (!same(stat, await lstat(directory, { bigint: true }))) continue;
+        await rmdir(directory);
+        removed++;
+      } catch {
+        /* Занятый файл или чужое содержимое — папка остаётся до следующего запуска. */
+      }
+    }
+  } catch {
+    /* Нет папки или она недоступна — убирать нечего. */
+  }
+  return removed;
 }

@@ -16,6 +16,7 @@ import { parseServerUrl } from './navigation';
 import { switchServer } from './desktop/switchServer';
 import { scanRevit } from './desktop/revitInventory';
 import { reportBackend } from './diagnostics/backend';
+import { cleanupDesktopUpdateStaging } from './desktop/updateFactory';
 
 export const APP_ID = 'SchemaTeams.Desktop';
 /** Ключ автозапуска: окно не показывается, только значок (ТЗ, 4.4) */
@@ -89,6 +90,8 @@ function start(): void {
     onQuit: () => app.quit(),
     onMenu: (bounds) => client?.showMenu(bounds),
   });
+  // Старые загрузки обновлений (прошлые запуски) убираются в фоне, текущих ещё нет.
+  void cleanupDesktopUpdateStaging().catch(() => {});
   const environmentServer = parseServerUrl(devEnv('SCHEMA_TEAMS_SERVER_URL'));
   function mount(notice?: string): void {
     if (quitting || !tray) return;
