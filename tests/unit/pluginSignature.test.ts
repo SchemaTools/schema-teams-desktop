@@ -11,6 +11,7 @@ vi.mock('electron', () => ({ app: appMock }));
 vi.mock('node:os', () => osMock);
 import {
   APPROVED_PLUGIN_PUBLISHER_DER_SHA256,
+  BUREAU_PUBLISHER_DER_SHA256,
   evaluatePublisherTrust,
   verifyPluginSignature,
   verifyDesktopSignature,
@@ -148,8 +149,13 @@ describe('signature wrapper, mocked process runner (not WinTrust evidence)', () 
   it('publisher admission requires actual valid result AND explicit nonempty matching pins', async () => {
     answer(valid);
     const verdict = await verifyPluginSignature('C:/stage/plugin.dll', hash);
-    expect(APPROVED_PLUGIN_PUBLISHER_DER_SHA256).toEqual([]);
-    expect(evaluatePublisherTrust(verdict, APPROVED_PLUGIN_PUBLISHER_DER_SHA256)).toBe(false);
+    // в работе — только сертификат бюро (решение 05.11); подписанный другим ключом не проходит
+    expect(APPROVED_PLUGIN_PUBLISHER_DER_SHA256).toEqual([BUREAU_PUBLISHER_DER_SHA256]);
+    expect(Object.isFrozen(APPROVED_PLUGIN_PUBLISHER_DER_SHA256)).toBe(true);
+    expect(evaluatePublisherTrust(verdict, APPROVED_PLUGIN_PUBLISHER_DER_SHA256)).toBe(
+      verdict.signerDerSha256 === BUREAU_PUBLISHER_DER_SHA256,
+    );
+    expect(evaluatePublisherTrust(verdict, [])).toBe(false);
     expect(evaluatePublisherTrust(verdict, ['c'.repeat(64)])).toBe(false);
     expect(evaluatePublisherTrust(verdict, [pin])).toBe(true);
     expect(evaluatePublisherTrust({ ...verdict, verdict: 'unknown' }, [pin])).toBe(false);

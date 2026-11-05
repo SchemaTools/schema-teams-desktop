@@ -25,7 +25,12 @@ export type SignatureVerdict = {
 };
 
 // Main-controlled policy. No runtime env/settings/renderer/source-package trust inputs.
-export const APPROVED_PLUGIN_PUBLISHER_DER_SHA256: readonly string[] = Object.freeze([]);
+/** SHA-256 сертификата бюро «Schema Bureau Revit Plugins» (DER, действует до 07.10.2036) — решение 05.11. */
+export const BUREAU_PUBLISHER_DER_SHA256 =
+  'd944e76a16374738c475a425fe0ab9eae7cb470cf27371c63b2f19e9d256d51a';
+export const APPROVED_PLUGIN_PUBLISHER_DER_SHA256: readonly string[] = Object.freeze([
+  BUREAU_PUBLISHER_DER_SHA256,
+]);
 const sha256 = /^[a-f0-9]{64}$/;
 const unknown = (): SignatureVerdict => ({
   v: 1,

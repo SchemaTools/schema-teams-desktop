@@ -33,6 +33,7 @@
 - `npm run typecheck`, `npm run lint` (ESLint и Prettier), `npm run format`.
 - `npm run check` — всё перед PR: типы, линт, модульные и сквозные тесты.
 - `npm run dist` — установщик `release/Schema Teams Setup <версия>.exe`.
+- `npm run dist:signed` — то же с подписью сертификатом бюро «Schema Bureau Revit Plugins» из хранилища «Личное» и проверкой подписи; только на компьютере, где сертификат с ключом.
 - `npm run build` на Windows собирает помощники `native/*.cs` компилятором `csc.exe` из .NET Framework 4 (`%WINDIR%\Microsoft.NET\Framework64\v4.0.30319`). CI — на Ubuntu и Windows (`.github/workflows/checks.yml`); сквозные тесты и сборка — в Windows-job.
 - Тихая установка для проверки — установщик с ключом `/S`; удаление — `%LOCALAPPDATA%\Programs\Schema Teams\Uninstall Schema Teams.exe /S`.
 

@@ -4,7 +4,7 @@ import { SupportLedger } from '../../src/main/diagnostics/ledger';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi, type Mock } from 'vitest';
 import type { IpcMainInvokeEvent, Tray } from 'electron';
 import type { ApiResult, FocusState } from '../../src/shared/client';
 import type { ClientSnapshot, DesktopRequest } from '../../src/shared/desktop';
@@ -32,6 +32,8 @@ const liveTimer = <T extends { serverNow: string }>(timer: T): T => ({
 });
 type Handler = (event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>;
 const h = vi.hoisted(() => ({
+  /** Подмена «доверенный издатель настроен»: undefined — как в работе. */
+  trustAvailable: undefined as boolean | undefined,
   handlers: new Map<string, Handler>(),
   api: { epoch: 7, owner: 1 as number | null },
   mutation: { active: 0, revision: 0 },
@@ -157,6 +159,13 @@ vi.mock('electron', async () => {
     screen: { getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
     session: { fromPartition: () => ses },
     shell: { beep: h.beep, openExternal: h.openExternal },
+  };
+});
+vi.mock('../../src/main/plugins/production', async (original) => {
+  const real = await original<typeof import('../../src/main/plugins/production')>();
+  return {
+    ...real,
+    pluginInstallationAvailable: () => h.trustAvailable ?? real.pluginInstallationAvailable(),
   };
 });
 vi.mock('../../src/main/mainWindow', () => ({
@@ -3094,8 +3103,13 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
     expect(requestValid({ kind: 'plugins.recover', epoch: 7 })).toBe(false);
   });
   it.skipIf(process.platform !== 'win32')(
-    'a direct install intent cannot bypass the unconfigured production trust policy',
+    'a direct install intent cannot bypass an unconfigured trust policy',
     async () => {
+      // в работе список доверия задан (сертификат бюро, 05.11); здесь — как без него
+      h.trustAvailable = false;
+      onTestFinished(() => {
+        h.trustAvailable = undefined;
+      });
       const f = setup();
       await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
       h.plugins.mockClear();

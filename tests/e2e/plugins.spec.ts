@@ -111,12 +111,13 @@ for (const theme of ['light', 'dark'] as const)
       panel = pagePlugins(page);
     await expect(panel.getByRole('heading', { name: 'Планы этажей' })).toBeVisible();
     await expect(panel).toContainText('1.10');
-    await expect(panel).toContainText('доверенный издатель не настроен');
+    // сертификат бюро задан (решение 05.11) — установка доступна
+    await expect(panel).not.toContainText('доверенный издатель не настроен');
     const summary = panel.locator('summary');
     await summary.focus();
     await page.keyboard.press('Enter');
     await expect(panel).toContainText('Исправлены подписи помещений.');
-    await expect(panel.getByRole('button', { name: 'Установить', exact: true })).toBeDisabled();
+    await expect(panel.getByRole('button', { name: 'Установить', exact: true })).toBeEnabled();
     await expect(panel).not.toContainText('всё установлено');
     await page.evaluate(source);
     const contrast = await page.evaluate(async () => {
@@ -282,9 +283,14 @@ for (const theme of ['light', 'dark'] as const)
     plugin.beta = null;
     plugin.stable.sha256 = fileHash(first);
     plugin.stable.size = first.length;
+    // каталог — только после подмены диска: с настроенным доверием очередь стартует сразу при входе
+    const catalog = stub.state.pluginCatalog;
+    stub.state.pluginCatalog = { ...catalog, plugins: [] };
     const page = await launch(theme),
       panel = pagePlugins(page);
     await useTestDisk({ 1: first.toString('base64'), 3: second.toString('base64') });
+    stub.state.pluginCatalog = catalog;
+    stub.emit('desktop:plugins', undefined);
     await expect(
       panel.getByRole('heading', { name: 'Ждут закрытия Revit', exact: true }),
     ).toBeVisible();
@@ -357,10 +363,10 @@ test('empty catalog, forbidden response and retry are honest; no install or back
   await panel.getByRole('button', { name: 'Проверить', exact: true }).click();
   await expect(panel.getByRole('heading', { name: 'Планы этажей' })).toBeVisible();
 });
-test('direct install IPC cannot supply paths or override production trust', async () => {
+test('direct install IPC cannot supply paths; install goes only through the main queue', async () => {
   const page = await launch(),
     panel = pagePlugins(page);
-  await expect(panel.getByRole('button', { name: 'Установить', exact: true })).toBeDisabled();
+  await expect(panel.getByRole('button', { name: 'Установить', exact: true })).toBeEnabled();
   const results = await page.evaluate(async () => {
     const snapshot = await window.teams.request({ kind: 'init' });
     if (!snapshot.ok) throw Error('Snapshot');
@@ -376,9 +382,12 @@ test('direct install IPC cannot supply paths or override production trust', asyn
     } as typeof intent);
     return { valid, forged };
   });
-  expect(results.valid).toMatchObject({ ok: false, code: 'plugin_job_blocked' });
+  // обычный запрос принят в очередь главного процесса; путь из окна не принимается никогда
+  expect(results.valid).toMatchObject({ ok: true });
   expect(results.forged).toMatchObject({ ok: false, code: 'validation' });
-  expect(stub.state.calls.some((c) => c.path.includes('/plugins/files/'))).toBe(false);
+  // сборка из заглушки не подписана сертификатом бюро — установленной она не становится
+  await page.waitForTimeout(2000);
+  await expect(panel).not.toContainText('Установлено');
 });
 test('missing capability never calls catalog; stale IPC epoch is rejected', async () => {
   if (!stub.state.desktopConfig) throw Error('No config');

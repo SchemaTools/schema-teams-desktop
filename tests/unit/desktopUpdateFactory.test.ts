@@ -78,7 +78,7 @@ describe('Папка загрузок обновлений', () => {
   );
 });
 describe('Fixed production updater adapter: mocked constructor and process boundary only', () => {
-  it('uses only its own executable/version/root and fixed empty publisher policy', () => {
+  it('uses only its own executable/version/root and the fixed bureau publisher policy', () => {
     const o = factory();
     expect(o.context()).toEqual({
       stamp: 'A',
@@ -89,7 +89,9 @@ describe('Fixed production updater adapter: mocked constructor and process bound
       packaged: true,
       windows: process.platform === 'win32',
     });
-    expect(o.publisherPins()).toEqual([]);
+    expect(o.publisherPins()).toEqual([
+      'd944e76a16374738c475a425fe0ab9eae7cb470cf27371c63b2f19e9d256d51a',
+    ]);
     expect(o.stagingRoot).toBe(desktopUpdatesRoot());
     expect(o.verify).toBeUndefined();
     expect(o.pathAllowed).toBeUndefined();

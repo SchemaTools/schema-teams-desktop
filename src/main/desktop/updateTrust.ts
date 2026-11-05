@@ -4,6 +4,7 @@ import { lstatSync, type BigIntStats } from 'node:fs';
 import { hashFile } from '../plugins/fsSafe';
 import { windowsPathSafe } from '../plugins/safety';
 import {
+  BUREAU_PUBLISHER_DER_SHA256,
   evaluatePublisherTrust,
   verifyDesktopSignature,
   type SignatureVerdict,
@@ -14,8 +15,14 @@ import {
   type DesktopDownloadReceipt,
 } from './downloadDesktop';
 
-/** Separate Desktop approval; a plugin certificate never grants update execution. */
-export const APPROVED_DESKTOP_PUBLISHER_DER_SHA256: readonly string[] = Object.freeze([]);
+/**
+ * Отдельный список для обновлений приложения (плагинный список сам по себе запуск обновления не
+ * разрешает). По решению руководителя 05.11 приложение подписывается тем же сертификатом бюро,
+ * что и плагины, — поэтому здесь тот же отпечаток.
+ */
+export const APPROVED_DESKTOP_PUBLISHER_DER_SHA256: readonly string[] = Object.freeze([
+  BUREAU_PUBLISHER_DER_SHA256,
+]);
 export interface SignedDesktopFile {
   readonly file: string;
   readonly size: number;

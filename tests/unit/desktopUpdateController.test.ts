@@ -11,7 +11,6 @@ import {
   type DesktopUpdateControllerOptions,
 } from '../../src/main/desktop/updateController';
 import type { DesktopRelease } from '../../src/shared/updates';
-import { APPROVED_DESKTOP_PUBLISHER_DER_SHA256 } from '../../src/main/desktop/updateTrust';
 
 const base = resolve(__dirname, '../../private'),
   roots: string[] = [];
@@ -211,9 +210,9 @@ describe('Desktop updater orchestration: inert temp files, injected signer, runn
       await expect(readdir(join(f.root, 'downloads'))).rejects.toMatchObject({ code: 'ENOENT' });
     },
   );
-  it('empty production publisher policy denies before helper/network/staging', async () => {
+  it('empty publisher policy denies before helper/network/staging', async () => {
     const f = await fixture();
-    f.pins = APPROVED_DESKTOP_PUBLISHER_DER_SHA256;
+    f.pins = [];
     f.offer = f.controller.setOffer(f.release, 'owner-A') ?? '';
     expect((await f.controller.prepare(f.offer)).error).toBe('update_publisher_unconfigured');
     expect(f.verify).not.toHaveBeenCalled();

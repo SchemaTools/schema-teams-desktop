@@ -10,6 +10,7 @@ import {
   APPROVED_DESKTOP_PUBLISHER_DER_SHA256,
   type DesktopTrustOptions,
 } from '../../src/main/desktop/updateTrust';
+import { BUREAU_PUBLISHER_DER_SHA256 } from '../../src/main/plugins/signature';
 import {
   downloadDesktopRelease,
   discardDesktopDownload,
@@ -49,14 +50,18 @@ async function fixture() {
   return { root, app, setup, state, options };
 }
 describe('Desktop trust: actual temp bytes with injected publisher oracle, never executable fixtures', () => {
-  it('separate empty production policy denies before filesystem/helper IO', async () => {
+  it('production policy is exactly the bureau certificate', () => {
+    expect(APPROVED_DESKTOP_PUBLISHER_DER_SHA256).toEqual([BUREAU_PUBLISHER_DER_SHA256]);
+    expect(Object.isFrozen(APPROVED_DESKTOP_PUBLISHER_DER_SHA256)).toBe(true);
+  });
+  it('empty policy denies before filesystem/helper IO', async () => {
     const f = await fixture(),
       pathAllowed = vi.fn(f.options.pathAllowed),
       verify = vi.fn(f.options.verify);
     await expect(
       inspectSignedDesktopFile(f.app, {
         ...f.options,
-        publisherPins: APPROVED_DESKTOP_PUBLISHER_DER_SHA256,
+        publisherPins: [],
         pathAllowed,
         verify,
       }),
