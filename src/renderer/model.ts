@@ -85,6 +85,75 @@ export function mergeMessages(previous: ChatMessage[], incoming: ChatMessage[]):
   for (const message of incoming) messages.set(message.id, message);
   return [...messages.values()].sort((a, b) => a.id - b.id);
 }
+/** Сколько страниц `after` дозапрашивать, чтобы закрыть разрыв, прежде чем заменить ленту. */
+export const GAP_PAGES = 3;
+/**
+ * Стык новейшей страницы с показанной лентой. ID сообщений сквозные по всем чатам, поэтому
+ * разница ID не доказывает ни дыры, ни её отсутствия: стык подтверждён, только если новая
+ * страница начинается не позже последнего показанного сообщения или доходит до начала чата.
+ * `gap` — склеивать нельзя: между лентой и страницей могут быть незагруженные сообщения.
+ */
+export function historyJoin(
+  shown: readonly ChatMessage[],
+  page: { items: readonly ChatMessage[]; hasMore: boolean },
+): 'replace' | 'merge' | 'gap' {
+  const last = shown[shown.length - 1];
+  const first = page.items[0];
+  if (!last) return 'replace';
+  if (!first || !page.hasMore || first.id <= last.id) return 'merge';
+  return 'gap';
+}
+/**
+ * Последний ID, который можно отметить прочитанным: видимый и не дальше `cap` — последнего
+ * сообщения непрерывно загруженного участка (за ним есть незагруженные сообщения).
+ */
+export function readableUpTo(visible: readonly number[], cap: number | null): number {
+  let last = 0;
+  for (const id of visible) if (id > last && (cap === null || id <= cap)) last = id;
+  return last;
+}
+/**
+ * Путь `\\сервер\…` в строке сообщения. В путях бывают пробелы, поэтому путь идёт до конца
+ * строки, но обрывается на « — », « – », « - », на ссылке http(s)://, на `"`, `<`, `>`, `|`,
+ * на закрывающей скобке или «ёлочке» без пары внутри пути и на кавычке, открытой перед путём;
+ * хвостовые пробелы и знаки препинания отбрасываются.
+ */
+export function findUncPath(line: string): { start: number; end: number; path: string } | null {
+  const head = /\\\\[^\\\s"<>|?*/]+\\/.exec(line);
+  if (!head) return null;
+  const start = head.index;
+  let end = line.length;
+  const separator = /\s[—–-]\s|\s(?=https?:\/\/)|["<>|]/.exec(line.slice(start));
+  if (separator) end = start + separator.index;
+  const opener = line[start - 1];
+  const closer = opener
+    ? { "'": "'", '‘': '’', '“': '”', '„': '“', '(': ')', '[': ']', '«': '»' }[opener]
+    : undefined;
+  const pairs: Record<string, string> = { ')': '(', ']': '[', '»': '«' };
+  const depth: Record<string, number> = { '(': 0, '[': 0, '«': 0 };
+  for (let index = start + head[0].length; index < end; index++) {
+    const char = line[index] ?? '';
+    if (closer && char === closer && !(char in pairs && (depth[pairs[char] ?? ''] ?? 0) > 0)) {
+      end = index;
+      break;
+    }
+    if (char in depth) depth[char] = (depth[char] ?? 0) + 1;
+    else if (char in pairs) {
+      const open = pairs[char] ?? '';
+      if (!depth[open]) {
+        end = index;
+        break;
+      }
+      depth[open] = (depth[open] ?? 0) - 1;
+    } else if (char === '”' || char === '’') {
+      end = index;
+      break;
+    }
+  }
+  const path = line.slice(start, end).replace(/[\s.,;:!?]+$/u, '');
+  if (path.length <= head[0].length) return null;
+  return { start, end: start + path.length, path };
+}
 export function chatLink(link: string | null): { chatId: number; messageId?: number } | null {
   if (!link) return null;
   const match = /^\/chat\/(\d+)(?:\?m=(\d+))?$/.exec(link);

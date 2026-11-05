@@ -49,7 +49,10 @@ import {
   chatTitle,
   dateLabel,
   filteredChats,
+  GAP_PAGES,
+  historyJoin,
   mergeMessages,
+  readableUpTo,
   rowDate,
   timeLabel,
   type Folder,
@@ -142,6 +145,10 @@ export function App() {
   const [reportOpen, setReportOpen] = useState(false);
   const menuButton = useRef<HTMLButtonElement>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  /** Последний ID непрерывно загруженного участка, если за ним есть незагруженные (hasNewer). */
+  const readCap = useRef<number | null>(null);
   const [historyLayout, setHistoryLayout] = useState(0);
   const pendingHistoryScroll = useRef<(() => void) | null>(null);
   useLayoutEffect(() => {
@@ -302,6 +309,7 @@ export function App() {
         setDraftOwner(`${next.epoch}:${next.user?.id ?? ''}`);
         readPending.current.clear();
         readUpTo.current.clear();
+        readCap.current = null;
       }
       snapshotRef.current = next;
       if (next.navigateReport && next.navigateReport !== previous.navigateReport) {
@@ -394,6 +402,12 @@ export function App() {
       : undefined;
     const targetAround =
       around ?? (refresh && !nearBottom && visibleId ? Number(visibleId) : undefined);
+    const tail = refresh && nearBottom && targetAround === undefined;
+    const shown = messagesRef.current;
+    const shownLast = shown[shown.length - 1]?.id;
+    // Окно вокруг сообщения (поиск, цитата, уведомление) ещё не дошло до конца чата:
+    // внизу продолжаем его следующей страницей `after`, а не новейшей страницей с дырой.
+    const extend = tail && readCap.current !== null && shownLast !== undefined;
     setLoading(true);
     setMessageError('');
     const [page, info] = await Promise.all([
@@ -403,38 +417,81 @@ export function App() {
         chatId,
         ...(before !== undefined ? { before } : {}),
         ...(targetAround !== undefined ? { around: targetAround } : {}),
+        ...(extend ? { after: shownLast } : {}),
       }),
       request({ kind: 'chat.detail', epoch: captured.epoch, chatId }),
     ]);
-    if (
+    const userId = captured.user.id;
+    const stale = () =>
       ticket !== loadId.current ||
       captured.epoch !== snapshotRef.current.epoch ||
-      captured.user.id !== snapshotRef.current.user?.id ||
-      selectionRef.current !== chatId
-    )
-      return;
-    setLoading(false);
+      userId !== snapshotRef.current.user?.id ||
+      selectionRef.current !== chatId;
+    if (stale()) return;
     if (!page.ok) {
+      setLoading(false);
       setMessageError(page.error);
       return;
     }
     if (!info.ok) {
+      setLoading(false);
       setMessageError(info.error);
       return;
     }
+    // Стык новейшей страницы с лентой (Ч1 ревью PR #6): склеивать только подтверждённый.
+    let incoming = page.data.items;
+    let replace = before === undefined && !refresh;
+    let nextHasMore: boolean | undefined = refresh ? undefined : page.data.hasMore;
+    let nextHasNewer: boolean | undefined =
+      before === undefined && !refresh ? page.data.hasNewer : undefined;
+    if (extend) nextHasNewer = page.data.hasNewer;
+    else if (tail && historyJoin(shown, page.data) === 'gap') {
+      // Дозапрашиваем пропущенное страницами `after` от последнего показанного.
+      let cursor = shownLast ?? 0;
+      const filled: ChatMessage[] = [];
+      let closed = false;
+      for (let step = 0; step < GAP_PAGES && !closed; step++) {
+        const next = await request({
+          kind: 'chat.messages',
+          epoch: captured.epoch,
+          chatId,
+          after: cursor,
+        });
+        if (stale()) return;
+        if (!next.ok) break;
+        filled.push(...next.data.items);
+        const last = next.data.items[next.data.items.length - 1]?.id;
+        closed =
+          !next.data.hasNewer ||
+          last === undefined ||
+          (page.data.items[0] !== undefined && last >= page.data.items[0].id);
+        if (last !== undefined) cursor = last;
+      }
+      if (closed) incoming = [...filled, ...page.data.items];
+      else {
+        // Разрыв не закрылся — лента заменяется новейшей страницей, старое подгрузится вверх.
+        replace = true;
+        nextHasMore = true;
+      }
+      nextHasNewer = false;
+    } else if (tail) nextHasNewer = false;
+    setLoading(false);
     setDetail(info.data);
     displayedSelectionRevision.current = selectionRevision;
     setMessageOwner(`${captured.epoch}:${captured.user.id}`);
     setHistoryChat(chatId);
-    setMessages((old) =>
-      before !== undefined || refresh ? mergeMessages(old, page.data.items) : page.data.items,
-    );
-    if (!refresh) setHasMore(page.data.hasMore);
-    if (before === undefined && !refresh) setHasNewer(page.data.hasNewer);
-    else if (refresh && nearBottom && targetAround === undefined) setHasNewer(false);
+    const merged = replace ? incoming : mergeMessages(messagesRef.current, incoming);
+    messagesRef.current = merged;
+    setMessages(merged);
+    if (nextHasMore !== undefined) setHasMore(nextHasMore);
+    if (nextHasNewer !== undefined) {
+      setHasNewer(nextHasNewer);
+      // Отметка «прочитано» не заходит за последний непрерывно загруженный ID.
+      readCap.current = nextHasNewer ? (incoming[incoming.length - 1]?.id ?? shownLast ?? 0) : null;
+    }
     if (refresh && !nearBottom) {
       const newest = info.data.chat.last?.id ?? 0;
-      const oldNewest = messages[messages.length - 1]?.id ?? 0;
+      const oldNewest = shown[shown.length - 1]?.id ?? 0;
       if (newest > oldNewest)
         setNewMessages((value) => Math.max(value, info.data.chat.unread || 1));
     } else if (!refresh || nearBottom) setNewMessages(0);
@@ -450,7 +507,9 @@ export function App() {
       if (!viewport) return;
       if (before !== undefined)
         viewport.scrollTo({ top: oldTop + viewport.scrollHeight - oldHeight, behavior: 'instant' });
-      else if (refresh && !nearBottom) viewport.scrollTo({ top: oldTop, behavior: 'instant' });
+      // Продолжение окна страницей `after` не перескакивает через ещё не просмотренное.
+      else if (refresh && (!nearBottom || extend))
+        viewport.scrollTo({ top: oldTop, behavior: 'instant' });
       else if (around !== undefined)
         viewport
           .querySelector(`[data-message-id="${around}"]`)
@@ -525,12 +584,14 @@ export function App() {
       )
         return;
       const area = viewport.getBoundingClientRect();
-      let last = 0;
+      const visible: number[] = [];
       for (const element of viewport.querySelectorAll<HTMLElement>('[data-message-id]')) {
         const rect = element.getBoundingClientRect();
         if (rect.top < area.bottom && rect.bottom > area.top)
-          last = Math.max(last, Number(element.dataset.messageId) || 0);
+          visible.push(Number(element.dataset.messageId) || 0);
       }
+      // Не отмечаем прочитанным то, перед чем есть незагруженные сообщения.
+      const last = readableUpTo(visible, readCap.current);
       if (!last || last <= (readUpTo.current.get(chatId) ?? 0)) return;
       const epoch = current.epoch;
       readPending.current.add(chatId);
@@ -594,8 +655,11 @@ export function App() {
       return;
     if (result.ok) {
       if (selectionRef.current === chatId) {
-        setMessages((old) => mergeMessages(old, [result.data]));
-        if (aroundRef.current?.chatId === chatId) {
+        // Лента не дошла до конца чата: своё сообщение не приклеиваем через дыру,
+        // а переходим к последним сообщениям.
+        const gap = readCap.current !== null;
+        if (!gap) setMessages((old) => mergeMessages(old, [result.data]));
+        if (aroundRef.current?.chatId === chatId || gap) {
           aroundRef.current = null;
           setSelectionRevision((value) => value + 1);
         }

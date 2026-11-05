@@ -2,7 +2,7 @@ import { ExternalLink, Check, CheckCheck, File, FolderOpen } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatFile, ChatMessage, ChatReaction } from '../shared/client';
 import { request } from './bridge';
-import { colorClass, initials, timeLabel } from './model';
+import { colorClass, findUncPath, initials, timeLabel } from './model';
 import { R } from './strings';
 import { MessageReactions } from './reactions';
 import { ReactionText } from './reactionStrings';
@@ -72,45 +72,47 @@ function MessageText({
     if (!result.ok) onError(result.error);
     else if (result.data === 'blocked') onError(R.pathBlocked);
   };
+  const links = (line: string) =>
+    line.split(/(https?:\/\/[^\s<>"']+)/g).map((piece, part) =>
+      /^https?:\/\//.test(piece) ? (
+        <a
+          key={part}
+          href={piece}
+          onClick={(event) => {
+            event.preventDefault();
+            void openUrl(piece);
+          }}
+        >
+          {piece}
+        </a>
+      ) : (
+        piece
+      ),
+    );
   return (
     <div className="message-text">
       {text.split('\n').map((line, index) => {
-        const unc = /\\\\[^\\\s]+\\[^\r\n]+/.exec(line);
+        const unc = findUncPath(line);
         if (unc) {
-          const prefix = line.slice(0, unc.index);
-          const path = unc[0];
+          // Путь — плашкой; текст после него (« — см. …», ссылка) остаётся текстом.
+          const suffix = line.slice(unc.end);
           return (
             <div key={index}>
-              {prefix}
+              {links(line.slice(0, unc.start))}
               <div className="path-card" aria-label={R.path}>
                 <FolderOpen size={18} />
-                <code>{path}</code>
-                <button type="button" onClick={() => void pathAction(path)}>
+                <code>{unc.path}</code>
+                <button type="button" onClick={() => void pathAction(unc.path)}>
                   {R.reveal}
                 </button>
               </div>
+              {suffix.trim() && <span className="path-suffix">{links(suffix)}</span>}
             </div>
           );
         }
-        const pieces = line.split(/(https?:\/\/[^\s<>"']+)/g);
         return (
           <span key={index}>
-            {pieces.map((piece, part) =>
-              /^https?:\/\//.test(piece) ? (
-                <a
-                  key={part}
-                  href={piece}
-                  onClick={(event) => {
-                    event.preventDefault();
-                    void openUrl(piece);
-                  }}
-                >
-                  {piece}
-                </a>
-              ) : (
-                piece
-              ),
-            )}
+            {links(line)}
             {index < text.split('\n').length - 1 ? '\n' : ''}
           </span>
         );
