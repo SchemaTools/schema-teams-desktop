@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtemp, mkdir, symlink, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { relativeSafe, ownedPath, nodePathSafe } from '../../src/main/plugins/transactionFs';
 import { PluginTransactionStore, receiptValid } from '../../src/main/plugins/transactionStore';
@@ -101,4 +102,27 @@ describe('transaction Windows paths and durable metadata', () => {
     await symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
     await expect(nodePathSafe(join(link, 'new-file'))).rejects.toThrow('reparse_path');
   });
+  it('junction на соседнюю папку той же родительской папки тоже отклоняется', async () => {
+    const root = await fixture(),
+      link = join(root, 'linked');
+    await mkdir(join(root, 'sibling'));
+    await symlink(join(root, 'sibling'), link, process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(nodePathSafe(join(link, 'new-file'))).rejects.toThrow('reparse_path');
+  });
+  it.runIf(process.platform === 'win32')(
+    'короткое имя Windows 8.3 не считается переадресацией',
+    async () => {
+      const root = await fixture(),
+        long = join(root, 'Длинное имя папки для проверки');
+      await mkdir(long);
+      // Короткое имя выдаёт сама ФС; если 8.3 на томе отключены, проверять нечего.
+      const short = execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${long}") do @echo %~sI`], {
+        encoding: 'utf8',
+      }).trim();
+      if (short.toLowerCase() === long.toLowerCase() || !short.includes('~')) return;
+      await expect(nodePathSafe(join(short, 'new-file'))).resolves.toBeUndefined();
+      await writeFile(join(long, 'file.txt'), 'x');
+      await expect(nodePathSafe(join(short, 'file.txt'))).resolves.toBeUndefined();
+    },
+  );
 });
