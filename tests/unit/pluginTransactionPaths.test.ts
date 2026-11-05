@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtemp, mkdir, symlink, rm, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { relativeSafe, ownedPath, nodePathSafe } from '../../src/main/plugins/transactionFs';
 import { PluginTransactionStore, receiptValid } from '../../src/main/plugins/transactionStore';
@@ -113,13 +113,16 @@ describe('transaction Windows paths and durable metadata', () => {
     'короткое имя Windows 8.3 не считается переадресацией',
     async () => {
       const root = await fixture(),
-        long = join(root, 'Длинное имя папки для проверки');
+        long = join(root, 'Long folder name for checks');
       await mkdir(long);
       // Короткое имя выдаёт сама ФС; если 8.3 на томе отключены, проверять нечего.
-      const short = execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${long}") do @echo %~sI`], {
-        encoding: 'utf8',
-      }).trim();
-      if (short.toLowerCase() === long.toLowerCase() || !short.includes('~')) return;
+      const short = spawnSync(
+        'cmd.exe',
+        ['/d', '/s', '/c', `"for %I in ("${long}") do @echo %~sI"`],
+        // Кавычки внутри /c Node иначе экранирует, и cmd получает испорченную строку.
+        { encoding: 'utf8', windowsVerbatimArguments: true },
+      ).stdout.trim();
+      if (!/~[0-9]+$/.test(short)) return;
       await expect(nodePathSafe(join(short, 'new-file'))).resolves.toBeUndefined();
       await writeFile(join(long, 'file.txt'), 'x');
       await expect(nodePathSafe(join(short, 'file.txt'))).resolves.toBeUndefined();
