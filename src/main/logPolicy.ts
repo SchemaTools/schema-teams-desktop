@@ -1,5 +1,6 @@
 import { REALTIME_EVENTS } from './realtime/events';
 import { auditPlugin, type PluginAudit } from './plugins/audit';
+import { validateUncPath } from './paths/validate';
 export const LOG_MESSAGES = [
   'запуск',
   'выход',
@@ -20,6 +21,7 @@ export const LOG_MESSAGES = [
   'команда таймера',
   'событие исключено',
   'плагины',
+  'ошибка обновления',
 ] as const;
 const states = new Set([
   'noServer',
@@ -69,6 +71,32 @@ const errors = new Set([
   'EvalError',
   'AggregateError',
 ]);
+// Необработанные ошибки (ТЗ, 13): имя и сообщение, без стека. Стек почти всегда содержит
+// пути профиля и установки, а для разбора хватает имени, сообщения и соседних записей.
+const UNHANDLED = new Set(['необработанная ошибка', 'необработанный отказ', 'запуск не удался']);
+const MAX_ERROR_MESSAGE = 300;
+/**
+ * Сообщение ошибки для журнала: одна строка, не длиннее 300 знаков; путь профиля
+ * (`C:\Users\<имя>`), значения вида `cookie=…`, `token: …` и строки запросов
+ * в адресах маскируются. Повторное применение ничего не меняет — та же проекция
+ * используется для старых записей в «Сообщить о проблеме».
+ */
+export function maskErrorMessage(value: string): string {
+  return value
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}]+/gu, ' ')
+    .replace(
+      /\b([A-Za-z]:[\x5C/]+(?:Users|Documents and Settings)[\x5C/]+)(?!<user>)[^\x5C/\s'"]+/giu,
+      '$1<user>',
+    )
+    .replace(
+      /\b([\w-]*(?:cookie|session|token|csrf|password|passwd|secret|authorization)[\w-]*)(\s*[=:]\s*)(?!<скрыто>)[^\s;,'"]+/giu,
+      '$1$2<скрыто>',
+    )
+    .replace(/(https?:\/\/[^\s?#'"]*)[?#](?!<скрыто>)[^\s'"]*/giu, '$1?<скрыто>')
+    .trim()
+    .slice(0, MAX_ERROR_MESSAGE);
+}
+const UPDATE_CODE = /^(?:update|download)_[a-z_]{1,40}$/;
 export interface LogProjection {
   message: string;
   details: Record<string, string | boolean>;
@@ -106,7 +134,21 @@ export function projectLog(message: string, raw?: Record<string, unknown>): LogP
     if (raw && safeMessage === 'открытие пути') {
       if (['ok', 'unavailable', 'blocked'].includes(String(raw.result)))
         details.result = String(raw.result);
-      if (raw.reason === 'invalid-or-closed') details.reason = raw.reason;
+      if (
+        ['invalid-or-closed', 'foreign-host-declined', 'foreign-host-confirmed'].includes(
+          String(raw.reason),
+        )
+      )
+        details.reason = String(raw.reason);
+      // ТЗ, 7.2: «путь, результат» — только путь, прошедший правила UNC, без содержимого.
+      const path = typeof raw.path === 'string' ? validateUncPath(raw.path) : null;
+      if (path) details.path = path;
+    }
+    if (raw && safeMessage === 'ошибка обновления') {
+      if (raw.stage === 'prepare' || raw.stage === 'launch') details.stage = raw.stage;
+      if (typeof raw.code === 'string')
+        details.code =
+          UPDATE_CODE.test(raw.code) || raw.code === 'stale_update' ? raw.code : 'update_failed';
     }
     if (
       raw &&
@@ -142,6 +184,12 @@ export function projectLog(message: string, raw?: Record<string, unknown>): LogP
     ) {
       const name = raw.err instanceof Error ? raw.err.name : raw.errorType;
       if (typeof name === 'string') details.errorType = errors.has(name) ? name : 'Error';
+      // Сообщение — только у объекта Error: отказ строкой или объектом может нести любые данные.
+      const text = raw.err instanceof Error ? raw.err.message : raw.errorMessage;
+      if (UNHANDLED.has(safeMessage) && typeof text === 'string') {
+        const masked = maskErrorMessage(text);
+        if (masked) details.errorMessage = masked;
+      }
     }
   } catch {
     /* A malformed object/getter must not break business work or disclose arbitrary data. */

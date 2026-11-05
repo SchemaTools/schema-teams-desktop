@@ -30,14 +30,15 @@ describe('Logger', () => {
     expect(readFileSync(join(dir, 'app.log'), 'utf8')).toContain('"state":"online"');
     expect(existsSync(join(dir, 'app.5.log'))).toBe(false);
   });
-  it('ошибка сохраняет только фиксированный вид, исключая сообщение, стек и причину', () => {
+  it('ошибка сохраняет вид и замаскированное сообщение, исключая стек и причину', () => {
     const dir = tmp();
-    const err = new TypeError('private password cookie C:/private');
+    const err = new TypeError('cannot read C:/Users/Иванова/x.json password=dummy-secret');
     err.stack = 'private stack';
     new Logger({ dir }).error('необработанная ошибка', { err, cause: 'private cause' });
     const text = readFileSync(join(dir, 'app.log'), 'utf8');
     expect(text).toContain('"errorType":"TypeError"');
-    expect(text).not.toMatch(/private|password|cookie|stack|cause/);
+    expect(text).toContain('"errorMessage":"cannot read C:/Users/<user>/x.json password=<скрыто>"');
+    expect(text).not.toMatch(/private|Иванова|dummy-secret|stack|cause/);
   });
   it('неизвестный текст и произвольные поля не попадают на диск, включая циклы и большие строки', () => {
     const dir = tmp(),
@@ -59,11 +60,12 @@ describe('Logger', () => {
   });
   it('подставленное имя исключения не превращается в содержимое журнала', () => {
     const dir = tmp(),
-      err = new Error('hidden message');
+      err = new Error('visible message');
     err.name = 'hidden name';
     new Logger({ dir }).error('необработанный отказ', { err });
     const text = readFileSync(join(dir, 'app.log'), 'utf8');
     expect(text).toContain('"errorType":"Error"');
+    expect(text).toContain('"errorMessage":"visible message"');
     expect(text).not.toContain('hidden');
   });
 });

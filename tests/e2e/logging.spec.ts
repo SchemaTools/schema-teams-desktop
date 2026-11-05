@@ -51,16 +51,35 @@ test('обработчики ошибок и путь пишут только б
           o: { log: { info: (message: string, details: Record<string, unknown>) => void } };
         };
       };
-    process.emit('uncaughtException', new TypeError('dummy-password dummy-cookie private stack'));
+    // Сообщение ошибки пишется, но путь профиля и значение cookie маскируются, стек — нет.
+    process.emit(
+      'uncaughtException',
+      new TypeError(
+        String.raw`cannot open C:\Users\Иванова\AppData\x.json st_session=dummy-cookie`,
+      ),
+    );
     process.emit('unhandledRejection', 'dummy-password dummy-cookie', Promise.resolve());
     host.client.o.log.info('dynamic dummy-message\nforged line', { password: 'dummy-password' });
-    host.client.o.log.info('открытие пути', { path: '\\\\server\\private-folder', result: 'ok' });
+    host.client.o.log.info('открытие пути', {
+      path: '\\\\server\\Объект А',
+      result: 'ok',
+      cookie: 'dummy-cookie',
+    });
   });
   const text = log();
   expect(text).toContain('"errorType":"TypeError"');
+  // Поля записей сверяются после разбора JSON: в тексте журнала обратные косые экранированы.
+  const record = (message: string) => {
+    const line = text.split('\n').find((l) => l.includes(` ${message} {`));
+    return line ? (JSON.parse(line.slice(line.indexOf('{'))) as Record<string, string>) : null;
+  };
+  expect(record('необработанная ошибка')?.errorMessage).toBe(
+    String.raw`cannot open C:\Users\<user>\AppData\x.json st_session=<скрыто>`,
+  );
+  expect(text).not.toContain('Иванова');
   expect(text).toContain('"state":"signedOut"');
   expect(text).toContain('событие исключено');
-  expect(text).toContain('открытие пути {"result":"ok"}');
+  expect(record('открытие пути')).toEqual({ result: 'ok', path: '\\\\server\\Объект А' });
   expect(text).not.toMatch(/dummy-|private|forged|https?:|127\.0\.0\.1/);
   const preview = await page.evaluate(() =>
     window.teams.request({
@@ -77,6 +96,8 @@ test('обработчики ошибок и путь пишут только б
   if (!preview.ok) throw Error('No preview');
   const file = preview.data.files.find((f) => f.name === 'application/app.log');
   expect(file?.text).toContain('"errorType":"TypeError"');
+  expect(file?.text).toContain('st_session=<скрыто>');
+  expect(file?.text).toContain('"path":');
   expect(file?.text).toContain('"state":"signedOut"');
   expect(JSON.stringify(preview)).not.toMatch(/dummy-|private|forged|https?:|127\.0\.0\.1/);
   expect(stub.state.calls.filter((c) => c.method !== 'GET')).toHaveLength(0);

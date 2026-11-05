@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { projectLog } from '../../src/main/logPolicy';
+import { maskErrorMessage, projectLog } from '../../src/main/logPolicy';
 import { applicationLog } from '../../src/main/diagnostics/logs';
 import { REALTIME_EVENTS } from '../../src/main/realtime/events';
 describe('Fixed diagnostic projection', () => {
@@ -121,5 +121,59 @@ describe('Fixed diagnostic projection', () => {
     expect(text).toContain('"state":"offline"');
     expect(text).toContain('"errorType":"TypeError"');
     expect(text).not.toMatch(/private|taskId|message|stack/);
+  });
+  it('открытие пути: путь UNC и причина сохраняются, негодный путь и прочее — нет', () => {
+    const bs = '\x5C';
+    const path = `${bs}${bs}server${bs}share${bs}Объект А`;
+    expect(
+      projectLog('открытие пути', {
+        path,
+        result: 'blocked',
+        reason: 'foreign-host-declined',
+        host: 'server',
+      }).details,
+    ).toEqual({ path, result: 'blocked', reason: 'foreign-host-declined' });
+    expect(
+      projectLog('открытие пути', { path: 'C:/private/file.rvt', result: 'ok', reason: 'x' })
+        .details,
+    ).toEqual({ result: 'ok' });
+    const report = applicationLog(
+      `2026-11-05T00:00:00.000Z INFO открытие пути ${JSON.stringify({ path, result: 'ok' })}`,
+    );
+    expect(report).toContain(JSON.stringify(path));
+  });
+  it('ошибка обновления: этап и код update_/download_, остальное — update_failed', () => {
+    expect(
+      projectLog('ошибка обновления', {
+        stage: 'prepare',
+        code: 'download_hash',
+        file: 'private path',
+      }).details,
+    ).toEqual({ stage: 'prepare', code: 'download_hash' });
+    expect(
+      projectLog('ошибка обновления', { stage: 'other', code: 'ENOENT private path' }).details,
+    ).toEqual({ code: 'update_failed' });
+  });
+  it('необработанная ошибка: имя и сообщение с маской профиля и секретов, без стека', () => {
+    const bs = '\x5C';
+    const err = new TypeError(
+      `cannot open C:${bs}Users${bs}Иванов${bs}AppData${bs}x.json st_session=abc123 http://server.test/a?token=1\nnext`,
+    );
+    const details = projectLog('необработанная ошибка', { err, stack: err.stack }).details;
+    expect(details.errorType).toBe('TypeError');
+    expect(details.errorMessage).toBe(
+      `cannot open C:${bs}Users${bs}<user>${bs}AppData${bs}x.json st_session=<скрыто> http://server.test/a?<скрыто> next`,
+    );
+    expect(JSON.stringify(details)).not.toMatch(/Иванов|abc123|token=1|at /);
+    // Повторная проекция (журнал в «Сообщить о проблеме») ничего не меняет.
+    expect(projectLog('необработанная ошибка', details).details).toEqual(details);
+    expect(maskErrorMessage(String(details.errorMessage))).toBe(details.errorMessage);
+    expect(maskErrorMessage('x'.repeat(1000))).toHaveLength(300);
+  });
+  it('отказ не объектом Error и ошибка завершения — без текста', () => {
+    expect(projectLog('необработанный отказ', { err: 'private password' }).details).toEqual({});
+    expect(
+      projectLog('cookie не сохранены', { err: new Error('private cookie detail') }).details,
+    ).toEqual({ errorType: 'Error' });
   });
 });
