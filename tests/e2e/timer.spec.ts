@@ -304,7 +304,10 @@ test('offline finish does not open a new form through main button or direct IPC'
   stub.state.timers[1] = liveTimer();
   const page = await launch();
   await dialog(page).getByRole('button', { name: 'Закрыть таймер' }).click();
+  // Обрыв целиком: «в сети» теперь определяется по REST, и рабочий /api/chats
+  // законно вернул бы клиент в сеть посреди проверки (так падало на раннере Windows).
   stub.state.healthOnline = false;
+  stub.state.serverDown = true;
   stub.disconnect();
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'offline');
   const before = writes().length;

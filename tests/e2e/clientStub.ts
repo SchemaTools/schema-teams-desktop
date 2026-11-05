@@ -69,6 +69,8 @@ export interface FixtureState {
   socketConnections: number;
   /** Сокет отклоняется (REST продолжает работать): проверка «в сети» без WebSocket. */
   socketBlocked: boolean;
+  /** Сервер недоступен целиком: любой /api/* отвечает 503, как при настоящем обрыве. */
+  serverDown: boolean;
   socketTransports: string[];
   socketCookies: string[];
   focusUntil: string | null;
@@ -190,6 +192,7 @@ export async function startClientStub(
     sendDelayMs: 0,
     socketConnections: 0,
     socketBlocked: false,
+    serverDown: false,
     socketTransports: [],
     socketCookies: [],
     focusUntil: null,
@@ -385,6 +388,10 @@ export async function startClientStub(
       res.end(
         '<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Вход в тестовый Teams</title></head><body><h1>Вход на стенд</h1><button id="sign-in">Войти на стенд</button><script>document.getElementById("sign-in").onclick=async()=>{await fetch("/api/auth/login",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({login:"test-user"})});location.href="/signed-in";};</script></body></html>',
       );
+      return;
+    }
+    if (state.serverDown && path.startsWith('/api/')) {
+      json(res, 503, { error: 'unavailable' });
       return;
     }
     if (path === '/api/health') {
