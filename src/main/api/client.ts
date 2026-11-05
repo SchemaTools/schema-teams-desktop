@@ -8,6 +8,7 @@ import type {
   ChatList,
   ChatMessage,
   ChatSticker,
+  ChatAttachmentPage,
   ChatReaction,
   ChatSummary,
   FocusState,
@@ -861,6 +862,24 @@ export class TeamsApi {
           parse.unread,
         )
       : Promise.resolve(failure('validation'));
+  }
+  /** Картинки или прочие файлы чата для панели сведений, новые сверху. */
+  attachments(
+    chatId: number,
+    kind: 'image' | 'file',
+    before?: number,
+  ): Promise<ApiResult<ChatAttachmentPage>> {
+    if (
+      !this.validId(chatId) ||
+      (kind !== 'image' && kind !== 'file') ||
+      (before !== undefined && !this.validId(before))
+    )
+      return Promise.resolve(failure('validation'));
+    return this.request(
+      `/api/chats/${chatId}/attachments?kind=${kind}${before === undefined ? '' : `&before=${before}`}`,
+      'GET',
+      parse.attachments,
+    );
   }
   /** Набор стикеров и своих эмодзи бюро. */
   stickers(): Promise<ApiResult<ChatSticker[]>> {

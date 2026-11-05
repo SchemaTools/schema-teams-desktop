@@ -3016,6 +3016,8 @@ export class ClientHost {
         return this.api.listChats();
       case 'chat.stickers':
         return this.api.stickers();
+      case 'chat.attachments':
+        return this.api.attachments(r.chatId, r.type, r.before);
       case 'chat.detail':
         return this.api.detail(r.chatId);
       case 'chat.messages':

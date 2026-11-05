@@ -5,6 +5,7 @@ import type {
   ChatReaction,
   ChatList,
   ChatSticker,
+  ChatAttachmentPage,
   ChatMessage,
   ChatSummary,
   FocusState,
@@ -172,6 +173,7 @@ export type DesktopRequest =
       | { kind: 'window.show'; target?: 'events'; chatId?: number; messageId?: number }
       | { kind: 'chat.list' }
       | { kind: 'chat.stickers' }
+      | { kind: 'chat.attachments'; chatId: number; type: 'image' | 'file'; before?: number }
       | { kind: 'chat.detail'; chatId: number }
       | { kind: 'chat.objectInfo'; chatId: number }
       | { kind: 'chat.search'; chatId: number; q: string }
@@ -274,6 +276,7 @@ export interface DesktopResponseMap {
   'app.quit': null;
   'chat.list': ChatList;
   'chat.stickers': ChatSticker[];
+  'chat.attachments': ChatAttachmentPage;
   'chat.detail': ChatDetail;
   'chat.objectInfo': ObjectInfo;
   'chat.search': ChatMessage[];

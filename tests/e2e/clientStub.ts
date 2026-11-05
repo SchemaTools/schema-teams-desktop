@@ -1084,6 +1084,33 @@ export async function startClientStub(
       io.to(`user:${user}`).emit('chat:update', target);
       return;
     }
+    // панель сведений (Teams 0.11.0, раздел 3): вложения сообщений чата, новые сверху, по 24
+    const media = /^\/api\/chats\/(\d+)\/attachments$/.exec(path);
+    if (media && method === 'GET') {
+      const id = Number(media[1]);
+      if (id !== chatOf(user)) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      const kind = url.searchParams.get('kind');
+      const before = Number(url.searchParams.get('before') ?? Infinity);
+      const all = (conversations.get(id) ?? [])
+        .filter((m) => !m.deleted)
+        .flatMap((m) =>
+          m.files.map((file, index) => ({
+            id: m.id * 100 + index + 1,
+            messageId: m.id,
+            at: m.at,
+            authorShortName: m.author?.shortName ?? null,
+            file,
+          })),
+        )
+        .filter((item) => (kind === 'image' ? item.file.isImage : !item.file.isImage))
+        .filter((item) => item.id < before)
+        .sort((x, y) => y.id - x.id);
+      json(res, 200, { items: all.slice(0, 24), hasMore: all.length > 24 });
+      return;
+    }
     const chat = /^\/api\/chats\/(\d+)(?:\/(messages|read|pin))?$/.exec(path);
     if (chat) {
       const id = Number(chat[1]);

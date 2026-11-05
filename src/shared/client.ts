@@ -101,6 +101,20 @@ export interface ChatPoll {
   total: number;
   canManage: boolean;
 }
+/** Вложение отправленного сообщения для панели сведений (Teams 0.11.0, раздел 3). */
+export interface ChatAttachmentItem {
+  /** Курсор `before` для следующей страницы. */
+  id: number;
+  messageId: number;
+  at: string;
+  authorShortName: string | null;
+  file: ChatFile;
+}
+/** Страница вложений: новые сверху. */
+export interface ChatAttachmentPage {
+  items: ChatAttachmentItem[];
+  hasMore: boolean;
+}
 /** Стикер или свой эмодзи из общего набора бюро (`GET /api/chat-stickers`). */
 export interface ChatSticker {
   id: number;

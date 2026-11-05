@@ -7,6 +7,7 @@ import type {
   ChatPoll,
   ChatReaction,
   ChatSticker,
+  ChatAttachmentPage,
   ChatSummary,
   FocusState,
   FocusSummary,
@@ -100,6 +101,28 @@ const date = (v: unknown): string => {
 };
 const nullable = <T>(value: unknown, parse: (v: unknown) => T): T | null =>
   value === null ? null : parse(value);
+/** `GET /api/chats/:id/attachments` — вложения чата; негодная запись пропускается. */
+export const attachments = (v: unknown): ChatAttachmentPage => {
+  const x = object(v);
+  return {
+    items: tolerant(
+      x.items,
+      (item) => {
+        const y = object(item);
+        return {
+          id: id(y.id),
+          messageId: id(y.messageId),
+          at: date(y.at),
+          authorShortName: nullable(y.authorShortName ?? null, (s) => text(s, 1000)),
+          file: file(y.file),
+        };
+      },
+      'file',
+      100,
+    ),
+    hasMore: flag(x.hasMore),
+  };
+};
 /** `GET /api/chat-stickers` — набор бюро; незнакомый вид или негодная запись пропускается. */
 export const stickers = (v: unknown): ChatSticker[] =>
   tolerant(

@@ -243,6 +243,13 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
         ['before', 'after', 'around'].filter((k) => r[k] !== undefined).length <= 1 &&
         ['before', 'after', 'around'].every((k) => r[k] === undefined || id(r[k]))
       );
+    case 'chat.attachments':
+      return (
+        only('chatId', 'type', 'before') &&
+        id(r.chatId) &&
+        (r.type === 'image' || r.type === 'file') &&
+        (r.before === undefined || id(r.before))
+      );
     case 'chat.search':
       return (
         only('chatId', 'q') && id(r.chatId) && text(r.q, 100) && (r.q as string).trim().length >= 2

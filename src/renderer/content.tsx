@@ -214,7 +214,7 @@ function ImagePreview({ url, name, close }: { url: string; name: string; close: 
   );
 }
 
-function Attachment({
+export function Attachment({
   file,
   epoch,
   chatId,

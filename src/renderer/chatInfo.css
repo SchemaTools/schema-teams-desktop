@@ -1,0 +1,149 @@
+/* Сведения о чате: та же колонка справа, что «Об объекте» (objectInfo.css) */
+
+/* шапка разговора: обложка и название открывают сведения */
+.conversation-cover {
+  display: contents;
+  cursor: pointer;
+}
+.conversation-cover .avatar {
+  cursor: pointer;
+}
+.conversation-title-button {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.conversation-title-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.chat-info-cover {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 4px 0 10px;
+}
+.chat-info-cover .avatar {
+  width: 88px;
+  height: 88px;
+  font-size: 28px;
+}
+.chat-info-body .chat-info-cover h3 {
+  margin: 12px 0 2px;
+}
+.chat-info-cover p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.chat-info-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 6px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.chat-info-row span {
+  flex: 1;
+}
+.chat-info-row:hover {
+  background: var(--accent-soft);
+}
+
+.chat-info-section {
+  margin-top: 8px;
+}
+.chat-info-note {
+  color: var(--muted);
+}
+.chat-info-retry {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.chat-info-members {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.chat-info-members li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 14px;
+}
+.chat-info-members .chat-info-member-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-info-members small {
+  color: var(--muted);
+}
+
+/* картинки — сеткой квадратов, без подписи и кнопок: щелчок — просмотр */
+.chat-info-image-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+.chat-info-image-grid .attachment-card {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--sunken, var(--line));
+}
+.chat-info-image-grid .attachment-meta,
+.chat-info-image-grid .attachment-actions {
+  display: none;
+}
+.chat-info-image-grid .attachment-preview-button {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+}
+.chat-info-image-grid .attachment-preview {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  object-fit: cover;
+  border-radius: 0;
+}
+.chat-info-file-list .attachment-card {
+  margin-top: 6px;
+}
+.chat-info-more {
+  margin-top: 8px;
+}

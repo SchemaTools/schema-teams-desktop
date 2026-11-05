@@ -66,6 +66,7 @@ import { TypingStatus } from './typing';
 import { ChatSearch } from './chatSearch';
 import { bureauEmojiMap, EmojiPicker, useBureauSet } from './emojiPicker';
 import { ObjectInfoPanel } from './objectInfo';
+import { ChatInfoPanel } from './chatInfo';
 import './events.css';
 import { TimerPanel } from './timer';
 import { PreferencesPanel } from './preferences';
@@ -138,6 +139,9 @@ export function App() {
   const [search, setSearch] = useState('');
   const [menu, setMenu] = useState(false);
   const [objectInfoOpen, setObjectInfoOpen] = useState(false);
+  // «Сведения о чате» и «Об объекте» — одна панель справа за раз
+  const [chatInfoOpen, setChatInfoOpen] = useState(false);
+  const chatInfoButton = useRef<HTMLButtonElement>(null);
   const objectInfoButton = useRef<HTMLButtonElement>(null);
   const [uiError, setUiError] = useState('');
   const [timerView, setTimerView] = useState<ClientSnapshot['navigateTimer']>(null);
@@ -306,6 +310,7 @@ export function App() {
         setMessages([]);
         setDetail(null);
         setObjectInfoOpen(false);
+        setChatInfoOpen(false);
         setTimerView(null);
         setMessageOwner('');
         setHistoryChat(null);
@@ -1526,15 +1531,37 @@ export function App() {
                 ) : selectedChat ? (
                   <>
                     <header className="conversation-header">
-                      <Avatar
-                        name={chatTitle(selectedChat)}
-                        id={selectedChat.peer?.id ?? selectedChat.id}
-                        photo={selectedChat.photoFileId}
-                        object={selectedChat.kind === 'object'}
-                        small
-                      />
+                      {/* щелчок по обложке или названию — сведения о чате (как на сайте);
+                          с клавиатуры — кнопка-название */}
+                      <span
+                        className="conversation-cover"
+                        onClick={() => chatInfoButton.current?.click()}
+                      >
+                        <Avatar
+                          name={chatTitle(selectedChat)}
+                          id={selectedChat.peer?.id ?? selectedChat.id}
+                          photo={selectedChat.photoFileId}
+                          object={selectedChat.kind === 'object'}
+                          small
+                        />
+                      </span>
                       <div className="header-copy">
-                        <h1>{chatTitle(selectedChat)}</h1>
+                        <h1>
+                          <button
+                            type="button"
+                            ref={chatInfoButton}
+                            className="conversation-title-button"
+                            title={R.openChatInfo}
+                            aria-expanded={chatInfoOpen}
+                            aria-controls={chatInfoOpen ? 'chat-info-panel' : undefined}
+                            onClick={() => {
+                              setObjectInfoOpen(false);
+                              setChatInfoOpen((value) => !value);
+                            }}
+                          >
+                            {chatTitle(selectedChat)}
+                          </button>
+                        </h1>
                         <small>
                           {selectedChat.objectCode ? `${selectedChat.objectCode} · ` : ''}
                           <TypingStatus
@@ -1568,7 +1595,10 @@ export function App() {
                           aria-expanded={objectInfoOpen}
                           aria-controls={objectInfoOpen ? 'object-info-panel' : undefined}
                           disabled={!online}
-                          onClick={() => setObjectInfoOpen((value) => !value)}
+                          onClick={() => {
+                            setChatInfoOpen(false);
+                            setObjectInfoOpen((value) => !value);
+                          }}
                         >
                           <Info size={20} />
                         </button>
@@ -2005,6 +2035,28 @@ export function App() {
                           )}
                         </div>
                       </div>
+                      {chatInfoOpen && !objectInfoOpen && (
+                        <ChatInfoPanel
+                          key={`${owner}:${selectedChat.id}`}
+                          epoch={snapshot.epoch}
+                          chat={selectedChat}
+                          title={chatTitle(selectedChat)}
+                          detail={shownDetail?.chat.id === selectedChat.id ? shownDetail : null}
+                          ownId={snapshot.user?.id ?? 0}
+                          online={online}
+                          onClose={() => {
+                            setChatInfoOpen(false);
+                            requestAnimationFrame(() => chatInfoButton.current?.focus());
+                          }}
+                          {...(selectedChat.kind === 'object' &&
+                            selectedChat.objectId !== null && {
+                              onObject: () => {
+                                setChatInfoOpen(false);
+                                setObjectInfoOpen(true);
+                              },
+                            })}
+                        />
+                      )}
                       {objectInfoOpen && selectedChat.kind === 'object' && (
                         <ObjectInfoPanel
                           key={`${owner}:${selectedChat.id}`}
