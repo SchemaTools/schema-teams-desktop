@@ -58,3 +58,17 @@ describe('SettingsStore', () => {
     expect(JSON.parse(readFileSync(file, 'utf8')).zoomLevel).toBe(1);
   });
 });
+
+describe('Ревью PR #6: таймеры, запущенные с этого компьютера', () => {
+  it('хранит только «хеш:пользователь:таймер», без повторов, не больше 32', () => {
+    const hash = 'a'.repeat(64);
+    const many = Array.from({ length: 40 }, (_, i) => `${hash}:1:${i + 1}`);
+    const s = normalizeSettings({
+      timerStartedHere: [`${hash}:1:5`, `${hash}:1:5`, 'bad', `${hash}:0:5`, 7, ...many],
+    });
+    expect(s.timerStartedHere).toHaveLength(32);
+    expect(s.timerStartedHere.at(-1)).toBe(`${hash}:1:40`);
+    expect(s.timerStartedHere.every((k) => k.startsWith(`${hash}:1:`))).toBe(true);
+    expect(DEFAULTS.timerStartedHere).toEqual([]);
+  });
+});

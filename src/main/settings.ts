@@ -28,6 +28,11 @@ export interface Settings {
   recentTimeTaskIds: Record<string, number[]>;
   timerReminderSeen: Record<string, string>;
   morningSeen: string[];
+  /**
+   * Таймеры, запущенные из этого приложения: `<хеш сервера>:<пользователь>:<timerId>`.
+   * Пауза при блокировке ставится только для них (решение руководителя 05.11.2026).
+   */
+  timerStartedHere: string[];
 }
 
 export const DEFAULTS: Settings = {
@@ -42,6 +47,7 @@ export const DEFAULTS: Settings = {
   recentTimeTaskIds: {},
   timerReminderSeen: {},
   morningSeen: [],
+  timerStartedHere: [],
 };
 
 export const ZOOM_MIN = -3;
@@ -57,6 +63,7 @@ export function normalizeSettings(raw: unknown): Settings {
     recentTimeTaskIds: {},
     timerReminderSeen: {},
     morningSeen: [],
+    timerStartedHere: [],
   };
   if (typeof raw !== 'object' || raw === null) return s;
   const r = raw as Record<string, unknown>;
@@ -91,6 +98,20 @@ export function normalizeSettings(raw: unknown): Settings {
         ),
       ),
     ].slice(-128);
+  if (Array.isArray(r.timerStartedHere))
+    s.timerStartedHere = [
+      ...new Set(
+        r.timerStartedHere.filter(
+          (key): key is string =>
+            typeof key === 'string' &&
+            /^[a-f0-9]{64}:[1-9]\d{0,15}:[1-9]\d{0,15}$/.test(key) &&
+            key
+              .split(':')
+              .slice(1)
+              .every((id) => Number.isSafeInteger(Number(id))),
+        ),
+      ),
+    ].slice(-32);
   if (
     typeof r.deviceId === 'string' &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(r.deviceId)

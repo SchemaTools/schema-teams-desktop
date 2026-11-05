@@ -2,6 +2,7 @@ import { PauseOutbox, type PauseOutboxStorage } from '../../src/main/timer/pause
 import { PauseReturns } from '../../src/main/timer/pauseReturns';
 import { SupportLedger } from '../../src/main/diagnostics/ledger';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import * as pluginFs from '../../src/main/plugins/transactionFs';
@@ -24,6 +25,13 @@ import { PluginUpdateCoordinator } from '../../src/main/plugins/updateCoordinato
 import type { DesktopUpdateControllerOptions } from '../../src/main/desktop/updateController';
 
 const URL = 'file:///unit/client.html';
+const FIXTURE_SCOPE = createHash('sha256').update('https://example.test').digest('hex');
+// Напоминание 18:30 считается по откалиброванному времени сервера: снимок таймера
+// несёт serverNow, равный подставленному «сейчас» теста.
+const liveTimer = <T extends { serverNow: string }>(timer: T): T => ({
+  ...timer,
+  serverNow: new Date(Date.now()).toISOString(),
+});
 type Handler = (event: IpcMainInvokeEvent, raw: unknown) => Promise<unknown>;
 const h = vi.hoisted(() => ({
   handlers: new Map<string, Handler>(),
@@ -289,7 +297,7 @@ vi.mock('../../src/main/realtime/connection', () => ({
   },
 }));
 
-import { ClientHost } from '../../src/main/clientHost';
+import { ClientHost, SHUTDOWN_QUERY_MS } from '../../src/main/clientHost';
 import { normalizeSettings } from '../../src/main/settings';
 
 const hosts: ClientHost[] = [];
@@ -306,7 +314,13 @@ function fixture(
   persistence?: { outbox: PauseOutbox; returns: PauseReturns },
   supportLedger?: SupportLedger,
 ) {
-  let settings = normalizeSettings(patch);
+  // Таймеры фикстур (71, 99, 999, 1000) считаются запущенными с этого компьютера —
+  // только их автопауза ставит (решение руководителя 05.11.2026). Чужой таймер
+  // проверяется отдельно: тест передаёт свой timerStartedHere.
+  let settings = normalizeSettings({
+    timerStartedHere: [71, 99, 999, 1000].map((id) => `${FIXTURE_SCOPE}:1:${id}`),
+    ...patch,
+  });
   const settingsUpdate = vi.fn((change: Partial<Settings>) => {
     settings = normalizeSettings({ ...settings, ...change });
   });
@@ -908,7 +922,7 @@ describe('Host updater boundaries use real IPC and the global shutdown lease', (
       acceptTimer: (t: ReturnType<typeof timerFixture>) => void;
       updateContext: () => { stamp: string };
     };
-    host.acceptTimer(timerFixture());
+    host.acceptTimer(liveTimer(timerFixture()));
     const spec = required(h.toastShow.mock.calls[0])[0] as ToastSpec;
     h.toastReplySurface = true;
     expect(
@@ -1178,7 +1192,7 @@ describe('ClientHost: поколение входа проверяется в д
     const { host } = fixture();
     (
       host as unknown as { acceptTimer: (timer: ReturnType<typeof timerFixture>) => void }
-    ).acceptTimer(timerFixture('run', 23));
+    ).acceptTimer(liveTimer(timerFixture('run', 23)));
     expect((h.toastShow.mock.calls[0]?.[0] as ToastSpec).body).toMatch(/^Обучение\n/);
   });
   it('reminder appears only after policy permits; shown day persists and finish button only opens review', async () => {
@@ -1186,7 +1200,7 @@ describe('ClientHost: поколение входа проверяется в д
     const { host, owned, getSettings } = fixture();
     (
       host as unknown as { acceptTimer: (timer: ReturnType<typeof timerFixture>) => void }
-    ).acceptTimer(timerFixture());
+    ).acceptTimer(liveTimer(timerFixture()));
     const spec = h.toastShow.mock.calls[0]?.[0] as ToastSpec;
     expect(spec).toMatchObject({
       title: 'Таймер ещё идёт',
@@ -1224,7 +1238,7 @@ describe('ClientHost: поколение входа проверяется в д
       }
       (
         host as unknown as { acceptTimer: (timer: ReturnType<typeof timerFixture>) => void }
-      ).acceptTimer(timerFixture());
+      ).acceptTimer(liveTimer(timerFixture()));
       const spec = h.toastShow.mock.calls[0]?.[0] as ToastSpec;
       if (!h.toastOptions) throw Error('Missing toast callbacks');
       expect(await h.toastOptions.beforeShow(spec)).toBe(false);
@@ -1242,9 +1256,11 @@ describe('ClientHost: поколение входа проверяется в д
       acceptTimer: (timer: ReturnType<typeof timerFixture>) => void;
       checkReminder: () => void;
     };
-    ownedHost.acceptTimer(timerFixture());
+    ownedHost.acceptTimer(liveTimer(timerFixture()));
     expect(h.toastShow).not.toHaveBeenCalled();
+    // Повтор через минуту: «сейчас» напоминания — время сервера по монотонным часам.
     vi.setSystemTime(new Date(2026, 9, 29, 18, 31));
+    const mono = vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 60000);
     owned.state.focus.until = null;
     ownedHost.checkReminder();
     const spec = h.toastShow.mock.calls[0]?.[0] as ToastSpec;
@@ -1252,6 +1268,7 @@ describe('ClientHost: поколение входа проверяется в д
     expect(spec.body).toContain('Проверьте трудозатраты');
     h.toastOptions?.onShow(spec);
     expect(h.beep).not.toHaveBeenCalled();
+    mono.mockRestore();
   });
   it('late policy result and old reminder button cannot act after owner/timer changes', async () => {
     vi.setSystemTime(new Date(2026, 9, 29, 18, 30));
@@ -1261,13 +1278,13 @@ describe('ClientHost: поколение входа проверяется в д
     const ownedHost = host as unknown as {
       acceptTimer: (timer: ReturnType<typeof timerFixture>) => void;
     };
-    ownedHost.acceptTimer(timerFixture());
+    ownedHost.acceptTimer(liveTimer(timerFixture()));
     const spec = h.toastShow.mock.calls[0]?.[0] as ToastSpec;
     if (!h.toastOptions) throw Error('Missing toast callbacks');
     const before = h.toastOptions.beforeShow(spec);
     await Promise.resolve();
     await Promise.resolve();
-    ownedHost.acceptTimer(timerFixture('pause'));
+    ownedHost.acceptTimer(liveTimer(timerFixture('pause')));
     wait.resolve(true);
     expect(await before).toBe(false);
     h.toastOptions.onButton(spec, 0);
@@ -2322,6 +2339,8 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     publish: () => void;
     timerEpoch: number;
     configEpoch: number;
+    unlock: () => void;
+    wake: () => void;
   };
   const control = (host: ClientHost) => host as unknown as Control;
   const fresh = async (f: ReturnType<typeof fixture>, timer = timerFixture()) => {
@@ -2403,7 +2422,7 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     expect(stores.outbox.list(scope)[0]).toEqual({ ...record, status: 'pending' });
     expect(h.timerPause).not.toHaveBeenCalled();
   });
-  it('live cancelled query does not backdate or suppress a later real lock', () => {
+  it('live cancelled query leaves no record, does not backdate or suppress a later real lock', () => {
     const disk = persistent(),
       stores = disk.open(),
       f = fixture({}, stores);
@@ -2415,14 +2434,47 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     f.win.emit('focus');
     disk.clock.now += 60000;
     control(f.host).observeServerTime(new Date(disk.clock.now).toISOString());
+    // Отменённое завершение Windows не занимает место в очереди и не даёт предупреждения.
+    expect(stores.outbox.list(scope)).toEqual([]);
+    expect(f.state.timerAbsence).toBeNull();
     control(f.host).pauseForAbsence('suspend');
     const records = stores.outbox.list(scope);
-    expect(records[0]?.status).toBe('cancelled');
-    expect(records[1]?.eventKind).toBe('suspend');
-    expect(records[1]?.key).not.toBe(query.key);
-    expect(Date.parse(records[1]?.at ?? '')).toBeGreaterThan(Date.parse(query.at));
+    expect(records).toHaveLength(1);
+    expect(records[0]?.eventKind).toBe('suspend');
+    expect(records[0]?.key).not.toBe(query.key);
+    expect(Date.parse(records[0]?.at ?? '')).toBeGreaterThan(Date.parse(query.at));
     expect(h.timerPause).not.toHaveBeenCalled();
   });
+  it.each(['timeout', 'unlock', 'resume'] as const)(
+    'query-session-end is cancelled without trace when the process survives (%s)',
+    (trigger) => {
+      const disk = persistent(),
+        stores = disk.open(),
+        f = fixture({}, stores);
+      f.owned.state.timer = timerFixture();
+      f.owned.state.connection = 'offline';
+      f.win.emit('query-session-end');
+      const scope = required(control(f.host).pauseScope());
+      expect(stores.outbox.list(scope)[0]?.status).toBe('candidate');
+      if (trigger === 'timeout') {
+        // Только таймер отмены: дозапрос данных по общему интервалу здесь не нужен.
+        vi.spyOn(
+          f.host as unknown as { scheduleRefresh: () => void },
+          'scheduleRefresh',
+        ).mockImplementation(() => {});
+        vi.advanceTimersByTime(SHUTDOWN_QUERY_MS - 1);
+        expect(stores.outbox.list(scope)).toHaveLength(1);
+        vi.advanceTimersByTime(1);
+      } else if (trigger === 'unlock') control(f.host).unlock();
+      else control(f.host).wake();
+      expect(stores.outbox.list(scope)).toEqual([]);
+      expect(f.state.timerAbsence).toBeNull();
+      // Поздний session-end по снятому кандидату ничего не подтверждает.
+      f.win.emit('session-end');
+      expect(stores.outbox.list(scope)).toEqual([]);
+      expect(h.timerPause).not.toHaveBeenCalled();
+    },
+  );
   it('crash between Return-write and outbox removal reconciles by key; actual show survives restart without duplicate', async () => {
     const disk = persistent(),
       stores = disk.open(),
@@ -2507,7 +2559,7 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     expect(h.timerPause).not.toHaveBeenCalled();
     expect(f.owned.state.timerAbsence?.message).toContain('Не удалось надёжно сохранить');
   });
-  it('server 5xx remains review with no automatic retry; transport unknown retries after server-clock backoff', async () => {
+  it('server 5xx and transport unknown retry the same key after a growing server-clock backoff', async () => {
     const disk = persistent(),
       stores = disk.open(),
       f = fixture({}, stores),
@@ -2536,14 +2588,24 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     });
     await host.flushAbsencePause();
     expect(h.timerPause.mock.calls[1]).toEqual([record.expected, record.at, record.key]);
-    expect(stores.outbox.list(scope)[0]).toMatchObject({
-      status: 'review',
-      reviewReason: 'server-error',
-    });
-    disk.clock.now += 60000;
+    // ТЗ 9.4: 5xx — исход неизвестен, команда остаётся в очереди, повтор с тем же ключом.
+    expect(stores.outbox.list(scope)[0]).toMatchObject({ key: record.key, status: 'unknown' });
+    disk.clock.now += 59000;
     host.observeServerTime(new Date(disk.clock.now).toISOString());
     await host.flushAbsencePause();
     expect(h.timerPause).toHaveBeenCalledTimes(2);
+    disk.clock.now += 1000;
+    host.observeServerTime(new Date(disk.clock.now).toISOString());
+    h.timerPause.mockResolvedValueOnce({
+      ok: false,
+      code: 'server_error',
+      error: 'unknown',
+      retryable: true,
+    });
+    await host.flushAbsencePause();
+    expect(h.timerPause).toHaveBeenCalledTimes(3);
+    expect(h.timerPause.mock.calls[2]).toEqual([record.expected, record.at, record.key]);
+    expect(stores.outbox.list(scope)[0]?.status).toBe('unknown');
   });
   it('24-hour expiry uses fresh server time despite a backwards local Windows wall clock', async () => {
     const disk = persistent(),
@@ -2837,7 +2899,7 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     first.host.destroy();
     h.api.owner = 2;
     const nextStores = disk.open(),
-      next = fixture({}, nextStores);
+      next = fixture({ timerStartedHere: [`${FIXTURE_SCOPE}:2:99`] }, nextStores);
     next.owned.state.user = { id: 2, shortName: 'Новый вход', mustChangePassword: false };
     next.owned.state.timer = { ...timerFixture(), timerId: 99 };
     next.owned.state.connection = 'offline';
@@ -2866,7 +2928,9 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
     f.owned.state.timer = { ...timerFixture(), timerId: 99, version: 20 };
     await control(f.host).flushAbsencePause();
     expect(h.timerResume).not.toHaveBeenCalled();
-    expect(stores.returns.list(required(control(f.host).pauseScope()))).toHaveLength(1);
+    // Вопрос выключен — запись «пауза подтверждена» не создаётся и не копится.
+    expect(stores.returns.list(required(control(f.host).pauseScope()))).toHaveLength(0);
+    expect(stores.outbox.list(required(control(f.host).pauseScope()))).toEqual([]);
   });
 });
 
@@ -3249,7 +3313,7 @@ describe('T1 finish requires online at the common main entrypoint', () => {
     const f = fixture();
     (
       f.host as unknown as { acceptTimer: (t: ReturnType<typeof timerFixture>) => void }
-    ).acceptTimer(timerFixture());
+    ).acceptTimer(liveTimer(timerFixture()));
     const spec = required(h.toastShow.mock.calls[0])[0] as ToastSpec;
     f.state.connection = 'offline';
     required(h.toastOptions).onButton(spec, 0);
@@ -3427,5 +3491,277 @@ describe('Ревью PR #6: сессия, связь, уведомления, т
     await Promise.resolve();
     expect(h.read).toHaveBeenCalledWith(4, 101);
     expect(h.readNotification).toHaveBeenCalledWith(610);
+  });
+});
+
+describe('Ревью PR #6: таймер, автопауза и очередь паузы', () => {
+  const memory = (initial: string | null = null) => {
+    let text = initial;
+    const moved: string[] = [];
+    return {
+      moved,
+      read: () => text,
+      replace: (next: string) => {
+        text = next;
+      },
+      quarantine: () => {
+        moved.push(text ?? '');
+        text = null;
+        return 'corrupt';
+      },
+    };
+  };
+  const stores = (outbox = memory(), returns = memory()) => {
+    const clock = { now: Date.parse(timerFixture().serverNow) };
+    return {
+      clock,
+      outbox: new PauseOutbox('memory-outbox', { storage: outbox, now: () => clock.now }),
+      returns: new PauseReturns('memory-returns', returns),
+    };
+  };
+  type Control = {
+    pauseForAbsence: (kind?: 'lock' | 'suspend') => void;
+    flushAbsencePause: () => Promise<void>;
+    pauseScope: () => import('../../src/main/timer/pauseOutbox').PauseScope;
+    acceptTimer: (timer: ReturnType<typeof timerFixture> | null) => void;
+    observeServerTime: (time: string) => void;
+    publish: () => void;
+    saverActive: boolean;
+  };
+  type Timer = ReturnType<typeof timerFixture>;
+  const control = (host: ClientHost) => host as unknown as Control;
+  const noRefresh = (host: ClientHost) =>
+    vi
+      .spyOn(host as unknown as { scheduleRefresh: () => void }, 'scheduleRefresh')
+      .mockImplementation(() => {});
+  const paused = (record: import('../../src/main/timer/pauseOutbox').PauseEnvelope): Timer => ({
+    ...timerFixture('pause'),
+    pauseReason: 'lock' as const,
+    segments: [{ from: record.expected.currentSegmentFrom ?? '', to: record.at }],
+  });
+  async function confirmedPause(patch: Partial<Settings> = {}) {
+    const s = stores(),
+      f = fixture(patch, s),
+      c = control(f.host);
+    f.owned.state.timer = timerFixture();
+    f.owned.state.connection = 'offline';
+    c.pauseForAbsence();
+    const scope = c.pauseScope(),
+      record = required(s.outbox.list(scope)[0]);
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await c.flushAbsencePause();
+    return { s, f, c, scope, record };
+  }
+
+  it.each([
+    ['продолжен на сайте', (t: Timer): Timer | null => ({ ...t, version: t.version + 1 })],
+    ['завершён или сброшен', (): Timer | null => null],
+    ['сменён другим', (t: Timer): Timer | null => ({ ...t, timerId: 999 })],
+  ])('запись «пауза подтверждена» снимается, когда таймер %s', async (_name, next) => {
+    const { s, f, c, scope } = await confirmedPause();
+    const current = required(f.owned.state.timer);
+    expect(s.returns.list(scope)).toHaveLength(1);
+    // Опоздавший снимок с меньшей ревизией запись не снимает.
+    c.acceptTimer({ ...current, version: current.version - 1 });
+    expect(s.returns.list(scope)).toHaveLength(1);
+    c.acceptTimer(next(current));
+    expect(s.returns.list(scope)).toEqual([]);
+    expect(h.timerResume).not.toHaveBeenCalled();
+  });
+
+  it('кнопка после продолжения не считает уже снятую запись сбоем хранения', async () => {
+    const { s, f, c, scope, record } = await confirmedPause();
+    const current = required(f.owned.state.timer);
+    c.acceptTimer({ ...current, version: current.version + 1, state: 'run' });
+    expect(s.returns.list(scope)).toEqual([]);
+    (f.host as unknown as { dropPauseReturn: (key: string) => void }).dropPauseReturn(record.key);
+    expect((f.host as unknown as { storageWarning: boolean }).storageWarning).toBe(false);
+  });
+
+  it('без таймера опрос заставки ради записи о возврате не держится', async () => {
+    const { s, f, c, scope, record } = await confirmedPause();
+    expect(s.returns.list(scope)).toHaveLength(1);
+    c.publish();
+    expect(c.saverActive).toBe(true);
+    // Показанный вопрос ещё ждёт кнопки — опрос (и свежесть возврата) сохраняется.
+    expect(s.returns.shown(scope, record.key)).toBe(true);
+    c.publish();
+    expect(c.saverActive).toBe(true);
+    f.owned.state.timer = null;
+    c.publish();
+    expect(c.saverActive).toBe(false);
+  });
+
+  it('выключение вопроса после возврата снимает сохранённые записи', async () => {
+    const { s, f, scope } = await confirmedPause();
+    expect(s.returns.list(scope)).toHaveLength(1);
+    expect(
+      await f.invoke({
+        kind: 'timer.preferences',
+        epoch: h.api.epoch,
+        reminderTime: '18:30',
+        askOnUnlock: false,
+      }),
+    ).toEqual({ ok: true, data: null });
+    expect(s.returns.list(scope)).toEqual([]);
+  });
+
+  it('таймер с сайта или другого ПК не ставится на паузу; запущенный здесь — ставится', async () => {
+    const s = stores(),
+      f = fixture({ timerStartedHere: [] }, s),
+      c = control(f.host);
+    noRefresh(f.host);
+    f.owned.state.timer = timerFixture();
+    f.owned.state.connection = 'offline';
+    c.pauseForAbsence('lock');
+    c.pauseForAbsence('suspend');
+    expect(s.outbox.list(c.pauseScope())).toEqual([]);
+    expect(f.state.timerAbsence).toBeNull();
+    f.owned.state.connection = 'online';
+    h.timerStart.mockResolvedValueOnce({ ok: true, data: timerFixture() });
+    expect(
+      await f.invoke({ kind: 'timer.start', epoch: h.api.epoch, taskId: 21, expected: null }),
+    ).toMatchObject({ ok: true });
+    expect(f.getSettings().timerStartedHere).toEqual([`${FIXTURE_SCOPE}:1:71`]);
+    f.owned.state.connection = 'offline';
+    c.pauseForAbsence('lock');
+    expect(s.outbox.list(c.pauseScope())).toHaveLength(1);
+  });
+
+  it('сбой записи настроек при старте таймера не мешает принять таймер — только журнал', async () => {
+    const f = fixture();
+    f.settingsUpdate.mockImplementation(() => {
+      throw new Error('disk full');
+    });
+    const refresh = noRefresh(f.host);
+    h.timerStart.mockResolvedValueOnce({ ok: true, data: timerFixture() });
+    expect(
+      await f.invoke({ kind: 'timer.start', epoch: h.api.epoch, taskId: 21, expected: null }),
+    ).toMatchObject({ ok: true });
+    expect(f.state.timer?.timerId).toBe(71);
+    expect(f.state.timerReady).toBe(true);
+    expect(refresh).toHaveBeenCalled();
+    expect(f.log.warn).toHaveBeenCalledWith('не удалось сохранить недавние задачи');
+  });
+
+  it('timer_busy засчитывает попытку и сам планирует повтор с тем же ключом', async () => {
+    const s = stores(),
+      f = fixture({}, s),
+      c = control(f.host);
+    noRefresh(f.host);
+    f.owned.state.timer = timerFixture();
+    f.owned.state.connection = 'offline';
+    c.pauseForAbsence();
+    const record = required(s.outbox.list(c.pauseScope())[0]);
+    f.owned.state.connection = 'online';
+    h.timerPause
+      .mockResolvedValueOnce({ ok: false, code: 'timer_busy', error: 'busy', retryable: false })
+      .mockResolvedValueOnce({ ok: false, code: 'timer_busy', error: 'busy', retryable: false })
+      .mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await c.flushAbsencePause();
+    expect(h.timerPause).toHaveBeenCalledTimes(1);
+    const attempts = (f.host as unknown as { pauseAttempts: Map<string, { count: number }> })
+      .pauseAttempts;
+    expect(attempts.get(record.key)?.count).toBe(1);
+    const base = performance.now();
+    const mono = vi.spyOn(performance, 'now').mockReturnValue(base + 1100);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(h.timerPause).toHaveBeenCalledTimes(2);
+    expect(attempts.get(record.key)?.count).toBe(2);
+    // Вторая задержка — 2 с.
+    mono.mockReturnValue(base + 2200);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(h.timerPause).toHaveBeenCalledTimes(2);
+    mono.mockReturnValue(base + 3200);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(h.timerPause).toHaveBeenCalledTimes(3);
+    expect(h.timerPause.mock.calls.every((call) => call[2] === record.key)).toBe(true);
+    expect(s.outbox.list(c.pauseScope())).toEqual([]);
+    mono.mockRestore();
+  });
+
+  it('выключение «паузы при блокировке» не гасит уже стоящую в очереди паузу', async () => {
+    const s = stores(),
+      f = fixture({}, s),
+      c = control(f.host);
+    noRefresh(f.host);
+    f.owned.state.timer = timerFixture();
+    f.owned.state.connection = 'offline';
+    c.pauseForAbsence();
+    const record = required(s.outbox.list(c.pauseScope())[0]);
+    expect(
+      await f.invoke({
+        kind: 'timer.preferences',
+        epoch: h.api.epoch,
+        reminderTime: '18:30',
+        pauseOnLock: false,
+      }),
+    ).toEqual({ ok: true, data: null });
+    f.owned.state.connection = 'online';
+    h.timerPause.mockResolvedValueOnce({ ok: true, data: paused(record) });
+    await c.flushAbsencePause();
+    expect(h.timerPause).toHaveBeenCalledExactlyOnceWith(record.expected, record.at, record.key);
+    expect(s.outbox.list(c.pauseScope())).toEqual([]);
+    // Новые события после выключения паузу не ставят.
+    f.owned.state.timer = { ...timerFixture(), version: 9 };
+    f.owned.state.connection = 'offline';
+    c.pauseForAbsence();
+    expect(s.outbox.list(c.pauseScope())).toEqual([]);
+  });
+
+  it('записи чужого пользователя и сервера убираются при отправке очереди', async () => {
+    const s = stores(),
+      f = fixture({}, s),
+      c = control(f.host);
+    const foreign = { ...c.pauseScope(), ownerId: 2 };
+    expect(
+      s.outbox.capture(foreign, timerExpected(timerFixture()), timerFixture().serverNow, 'lock'),
+    ).not.toBeNull();
+    expect(
+      s.returns.put({
+        serverScopeHash: 'b'.repeat(64),
+        ownerId: 1,
+        key: 'foreign-return',
+        expected: timerExpected(timerFixture('pause')),
+        at: timerFixture().serverNow,
+        returnedAt: null,
+        returnKind: null,
+        delivery: 'pending',
+      }),
+    ).toBe(true);
+    f.owned.state.timer = timerFixture();
+    c.observeServerTime(timerFixture().serverNow);
+    await c.flushAbsencePause();
+    expect(s.outbox.list(foreign)).toEqual([]);
+    expect(s.returns.list({ serverScopeHash: 'b'.repeat(64), ownerId: 1 })).toEqual([]);
+    expect(f.log.info).toHaveBeenCalledWith('записи паузы удалены', { count: '2' });
+    expect(h.timerPause).not.toHaveBeenCalled();
+  });
+
+  it('испорченная очередь паузы — карантин, журнал и одно понятное предупреждение', async () => {
+    const outbox = memory('{испорчено'),
+      returns = memory('[1,2'),
+      s = stores(outbox, returns),
+      f = fixture({}, s);
+    expect(outbox.moved).toEqual(['{испорчено']);
+    expect(returns.moved).toEqual(['[1,2']);
+    expect(f.log.warn).toHaveBeenCalledWith('хранилище сброшено', { store: 'pause-outbox' });
+    expect(f.log.warn).toHaveBeenCalledWith('хранилище сброшено', { store: 'pause-returns' });
+    control(f.host).publish();
+    expect(f.state.timerAbsence?.message).toBe(
+      'Очередь паузы была повреждена и сброшена — проверьте время за сегодня.',
+    );
+    await f.invoke({
+      kind: 'timer.absenceDismiss',
+      epoch: h.api.epoch,
+      id: required(f.state.timerAbsence).id,
+    });
+    expect(f.state.timerAbsence).toBeNull();
+    // Автопауза снова работает.
+    f.owned.state.timer = timerFixture();
+    f.owned.state.connection = 'offline';
+    control(f.host).pauseForAbsence();
+    expect(s.outbox.list(control(f.host).pauseScope())).toHaveLength(1);
   });
 });

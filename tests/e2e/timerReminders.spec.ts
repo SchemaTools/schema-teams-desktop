@@ -15,13 +15,21 @@ const ROOT = resolve(__dirname, '../..');
 let stub: ClientStub, app: ElectronApplication | undefined, profile: string;
 const liveTimer = (state: 'run' | 'pause') => {
   const now = new Date().toISOString(),
-    from = new Date(Date.now() - 40 * 60000).toISOString();
+    from = new Date(Date.now() - 40 * 60000).toISOString(),
+    // Время напоминания в тестах — 00:00: таймер должен идти в этот момент (ТЗ 9.5),
+    // поэтому он запущен вчера; текущий отрезок — 40 минут назад.
+    started = new Date(Date.now() - 26 * 3600_000),
+    startedAt = started.toISOString(),
+    firstEnd = new Date(started.getTime() + 10 * 60000).toISOString();
   return {
     ...timerFixture(state),
-    startedAt: from,
+    startedAt,
     serverNow: now,
     updatedAt: now,
-    segments: [{ from, to: state === 'run' ? null : now }],
+    segments: [
+      { from: startedAt, to: firstEnd },
+      { from, to: state === 'run' ? null : now },
+    ],
   };
 };
 const writes = () =>

@@ -144,6 +144,17 @@ const mergeScope = (a: RefreshScope | null, b: RefreshScope): RefreshScope =>
   a === null || a === b ? b : 'all';
 /** Пачка «N новых сообщений» одного чата живёт минуту (ТЗ 5.3). */
 const COUNT_WINDOW = 60000;
+export const PAUSE_RECOVERED_MESSAGE =
+  'Очередь паузы была повреждена и сброшена — проверьте время за сегодня.';
+/** Через сколько считать запрос завершения Windows отменённым, если процесс жив. */
+export const SHUTDOWN_QUERY_MS = 60_000;
+/**
+ * Нарастающая задержка повтора паузы: сеть и 5xx — 30 с, 1 мин, 2 мин …, timer_busy —
+ * 1 с, 2 с, 4 с …; не реже раза в 5 минут. Повторы идут с тем же ключом идемпотентности,
+ * пока не истечёт срок его хранения сервером (24 ч, PAUSE_REPLAY_WINDOW_MS).
+ */
+export const pauseRetryDelay = (count: number, base = 30_000): number =>
+  Math.min(300_000, base * 2 ** Math.max(0, Math.min(count, 20) - 1));
 const ok = <T>(data: T): ApiResult<T> => ({ ok: true, data });
 export class ClientHost {
   get partition(): string {
@@ -414,6 +425,12 @@ export class ClientHost {
   private returnedAt: string | null = null;
   private returnedKind: PauseReturnKind | null = null;
   private queryCandidate?: { scope: PauseScope; key: string };
+  /** Отмена запроса завершения Windows, если через минуту процесс жив и сеанс продолжается. */
+  private queryCancelTimer?: NodeJS.Timeout;
+  /** Повтор отложенной паузы по времени nextAt (без ожидания очередного дозапроса). */
+  private pauseRetryTimer?: NodeJS.Timeout;
+  private prunedScope?: string;
+  private prunedAt?: number;
   private readonly pauseAttempts = new Map<string, { count: number; nextAt: number }>();
   private readonly recoveryNotices = new Set<string>();
   private readonly sessionQuery = () => this.captureShutdownQuery();
@@ -432,6 +449,8 @@ export class ClientHost {
   };
   private readonly unlock = () => {
     this.locked = false;
+    // Разблокировка — сеанс продолжается: запрос завершения Windows был отменён.
+    this.cancelShutdownQuery();
     this.saver.explicit('lock', false, performance.now());
     this.absence.return('unlock', this.state, Date.now(), false);
     this.recordReturnTime('unlock');
@@ -452,6 +471,7 @@ export class ClientHost {
   };
   private readonly wake = () => {
     this.suspended = false;
+    this.cancelShutdownQuery();
     this.saver.explicit('suspend', false, performance.now());
     this.absence.return('resume', this.state, Date.now(), false);
     this.recordReturnTime('wake');
@@ -483,6 +503,14 @@ export class ClientHost {
     this.pauseReturns =
       o.pausePersistence?.returns ??
       new PauseReturns(join(app.getPath('userData'), 'timer-pause-returns.json'));
+    const ledger =
+      o.supportPersistence ??
+      new SupportLedger(supportStorage(join(app.getPath('userData'), 'support-send-ledger.json')));
+    // Испорченный файл уже в карантине `<имя>.corrupt-<время>`; работа идёт с пустого состояния.
+    if (this.pauseOutbox.health.recovered)
+      o.log.warn('хранилище сброшено', { store: 'pause-outbox' });
+    if (this.pauseReturns.recovered) o.log.warn('хранилище сброшено', { store: 'pause-returns' });
+    if (ledger.recovered) o.log.warn('хранилище сброшено', { store: 'support-ledger' });
 
     this.report = new ReportService({
       metadata: () => ({
@@ -503,11 +531,7 @@ export class ClientHost {
       saved: () => o.log.info('архив диагностики сохранён'),
     });
     this.support = new SupportSender({
-      ledger:
-        o.supportPersistence ??
-        new SupportLedger(
-          supportStorage(join(app.getPath('userData'), 'support-send-ledger.json')),
-        ),
+      ledger,
       fresh: () => this.freshSupportContext(),
       current: (context) => this.supportCurrent(context),
       previewCurrent: (id, context) =>
@@ -663,9 +687,7 @@ export class ClientHost {
           if (index === 0) void this.resumePauseReturn(n);
           else {
             if (!this.openTimer('finish', undefined, n.recovery.expected).ok) return;
-            const scope = this.pauseScope();
-            if (scope && !this.pauseReturns.dismiss(scope, n.recovery.key))
-              this.storageWarning = true;
+            this.dropPauseReturn(n.recovery.key);
             this.publish();
           }
           return;
@@ -800,6 +822,12 @@ export class ClientHost {
       new WindowsScreenSaverReader({ appPath: app.getAppPath(), isPackaged: app.isPackaged }),
       (sample, context) => this.acceptScreenSaver(sample, context),
       () => ({ token: this.saver.token, binding: this.screenSaverBinding() }),
+      {
+        // Помощник запускается только при бездействии (заставка без него не включится)
+        // или пока заставка замечена; блокировка/сон/пробуждение читают внеочередно.
+        idleSeconds: () => Number(powerMonitor.getSystemIdleTime?.()) || 0,
+        latched: () => this.saver.saverLatched,
+      },
     );
     powerMonitor.on('lock-screen', this.lock);
     powerMonitor.on('unlock-screen', this.unlock);
@@ -1403,9 +1431,18 @@ export class ClientHost {
       (this.saver.absent ||
         (!!scope &&
           this.state.timerControl &&
-          ((this.state.timer?.state === 'run' && this.o.settings.get().timer.pauseOnLock) ||
-            this.pauseOutbox.list(scope).length > 0 ||
-            this.pauseReturns.list(scope).length > 0)));
+          ((this.state.timer?.state === 'run' &&
+            this.o.settings.get().timer.pauseOnLock &&
+            this.startedHere(this.state.timer)) ||
+            this.pauseOutbox
+              .list(scope)
+              .some((r) => r.status === 'pending' || r.status === 'unknown') ||
+            // Вопрос о возврате (и его кнопки после показа) нужен только для паузы, на которой
+            // таймер стоит сейчас; без таймера опрос заставки ради записи не держим.
+            (!!this.state.timer &&
+              this.pauseReturns
+                .list(scope)
+                .some((r) => matchesTimer(this.state.timer ?? null, r.expected))))));
     if (wanted && !this.saverActive && this.saverPoller) {
       this.saverActive = true;
       if (this.suspended) this.saverPoller.suspend();
@@ -1452,8 +1489,52 @@ export class ClientHost {
     this.state.timerReady = true;
     this.state.timerError = null;
     this.state.timerObservedAt = Date.now();
+    this.settleEndedPauseReturns(timer);
     // Refresh also reads Focus. Wait for it before considering a popup.
     if (!this.refreshing) this.checkReminder();
+  }
+  /**
+   * Пауза после отсутствия закончилась — таймер продолжен, завершён или сброшен
+   * из трея, окна, сайта или с другого компьютера: запись «пауза подтверждена» снимается.
+   * Опоздавший снимок с меньшей ревизией того же таймера запись не снимает.
+   */
+  private settleEndedPauseReturns(timer: WorkTimer | null): void {
+    const scope = this.pauseScope();
+    if (!scope || this.timerEpoch !== this.api.epoch) return;
+    const removed = this.pauseReturns.settleEnded(
+      scope,
+      (r) => !timer || timer.timerId !== r.expected.timerId || timer.version > r.expected.revision,
+    );
+    if (!removed) return;
+    const left = new Set(this.pauseReturns.list(scope).map((r) => r.key));
+    for (const key of [...this.recoveryNotices])
+      if (!left.has(key)) {
+        this.toasts.dismiss('pause-return:' + key);
+        this.recoveryNotices.delete(key);
+      }
+  }
+  /** Таймер запущен из этого приложения (локальная отметка при timer.start). */
+  private startedHere(timer: WorkTimer | null | undefined): boolean {
+    const scope = this.pauseScope();
+    return Boolean(
+      scope &&
+      timer?.timerId &&
+      this.o.settings
+        .get()
+        .timerStartedHere.includes(`${scope.serverScopeHash}:${scope.ownerId}:${timer.timerId}`),
+    );
+  }
+  private rememberStartedHere(timer: WorkTimer | null): void {
+    const scope = this.pauseScope();
+    if (!scope || !timer?.timerId) return;
+    const key = `${scope.serverScopeHash}:${scope.ownerId}:${timer.timerId}`;
+    const list = this.o.settings.get().timerStartedHere;
+    if (list.includes(key)) return;
+    try {
+      this.o.settings.update({ timerStartedHere: [...list, key].slice(-32) });
+    } catch {
+      this.o.log.warn('не удалось сохранить таймер этого компьютера');
+    }
   }
   private captureAbsence(kind: PauseEvent): PauseEnvelope | null {
     const timer = this.state.timer,
@@ -1465,7 +1546,10 @@ export class ClientHost {
       !timer.timerId ||
       !this.state.timerReady ||
       !this.state.timerControl ||
-      !this.o.settings.get().timer.pauseOnLock
+      !this.o.settings.get().timer.pauseOnLock ||
+      // Решение руководителя 05.11.2026: на паузу ставится только таймер, запущенный
+      // с этого компьютера. Таймер с сайта или другого ПК этот компьютер не трогает.
+      !this.startedHere(timer)
     )
       return null;
     // A run snapshot is the calibration source. Ongoing elapsed time uses only a monotonic clock.
@@ -1501,31 +1585,46 @@ export class ClientHost {
   private pauseForAbsence(kind: 'lock' | 'suspend' | 'screensaver' = 'lock'): void {
     const command = this.captureAbsence(kind);
     if (command) {
+      // Запрос завершения, если был, заменён настоящим событием (capture его убрал).
       this.queryCandidate = undefined;
+      clearTimeout(this.queryCancelTimer);
       void this.flushAbsencePause();
     }
     this.publish();
   }
   private captureShutdownQuery(): void {
     const command = this.captureAbsence('query-session-end');
-    if (command?.status === 'candidate')
+    if (command?.status === 'candidate') {
       this.queryCandidate = {
         scope: { serverScopeHash: command.serverScopeHash, ownerId: command.ownerId },
         key: command.key,
       };
+      // Завершение Windows могли отменить (приложение не дало закрыться, пользователь
+      // нажал «Отмена»): если через минуту процесс жив, кандидат снимается без следа.
+      clearTimeout(this.queryCancelTimer);
+      this.queryCancelTimer = setTimeout(() => this.cancelShutdownQuery(), SHUTDOWN_QUERY_MS);
+      this.queryCancelTimer.unref?.();
+    }
     // Windows callback is synchronous persistence only: no network, no shutdown blocking.
   }
   private finalizeShutdownQuery(): void {
+    clearTimeout(this.queryCancelTimer);
     const candidate = this.queryCandidate;
     if (candidate && !this.pauseOutbox.confirmSessionEnd(candidate.scope, candidate.key))
       this.storageWarning = true;
     this.queryCandidate = undefined;
   }
   private cancelShutdownQuery(): void {
+    clearTimeout(this.queryCancelTimer);
     const candidate = this.queryCandidate;
-    if (candidate && !this.pauseOutbox.cancelQuery(candidate.scope, candidate.key))
-      this.storageWarning = true;
     this.queryCandidate = undefined;
+    if (!candidate) return;
+    const stillCandidate = this.pauseOutbox
+      .list(candidate.scope)
+      .some((r) => r.key === candidate.key && r.status === 'candidate');
+    if (stillCandidate && !this.pauseOutbox.cancelQuery(candidate.scope, candidate.key))
+      this.storageWarning = true;
+    if (!this.destroyed) this.publish();
   }
   private matchesCapturedPause(
     timer: WorkTimer | null | undefined,
@@ -1547,7 +1646,9 @@ export class ClientHost {
     record: PauseEnvelope,
     timer: WorkTimer,
   ): boolean {
+    // Вопрос «Продолжить?» выключен — запись о возврате не нужна и не копится.
     if (
+      this.o.settings.get().timer.askOnUnlock &&
       !this.pauseReturns.put({
         ...scope,
         key: record.key,
@@ -1594,15 +1695,10 @@ export class ClientHost {
       !Number.isFinite(this.serverTime())
     )
       return;
+    this.prunePauseStores(scope);
+    // Выключение «паузы при блокировке» действует на новые события; уже стоящие
+    // в очереди паузы уходят как обычно (время до выключения уже не учтено).
     const records = this.pauseOutbox.list(scope);
-    if (!this.o.settings.get().timer.pauseOnLock) {
-      for (const record of records)
-        if (['pending', 'unknown'].includes(record.status))
-          this.pauseOutbox.settle(scope, record.key, { kind: 'review' });
-      this.showPauseReturn();
-      this.publish();
-      return;
-    }
     for (const record of records) {
       if (
         !['candidate', 'cancelled'].includes(record.status) &&
@@ -1623,9 +1719,8 @@ export class ClientHost {
         continue;
       }
       const attempts = this.pauseAttempts.get(command.key);
-      if (attempts && this.serverTime() < attempts.nextAt) continue;
-      if (attempts && attempts.count >= 5) {
-        this.pauseOutbox.settle(scope, command.key, { kind: 'review' });
+      if (attempts && this.serverTime() < attempts.nextAt) {
+        this.schedulePauseRetry(attempts.nextAt);
         continue;
       }
       this.pauseFlight = true;
@@ -1658,20 +1753,29 @@ export class ClientHost {
             } else this.pauseOutbox.markStale(scope, command.key);
           } else this.pauseOutbox.settle(scope, command.key, { kind: 'review' });
         } else if (result.code === 'timer_busy') {
-          this.pauseAttempts.set(command.key, {
-            count: attempts?.count ?? 0,
-            nextAt: this.serverTime() + 1000,
-          });
-        } else if (['network', 'timeout'].includes(result.code)) {
+          // Сервер занят другой командой этого таймера: изменение не применено,
+          // попытка засчитывается, повтор — по нарастающей задержке.
           const count = (attempts?.count ?? 0) + 1;
-          this.pauseOutbox.settle(scope, command.key, { kind: 'unknown' });
           this.pauseAttempts.set(command.key, {
             count,
-            nextAt: this.serverTime() + Math.min(300000, 30000 * 2 ** (count - 1)),
+            nextAt: this.serverTime() + pauseRetryDelay(count, 1000),
           });
-        } else if (result.code === 'server_error')
-          this.pauseOutbox.settle(scope, command.key, { kind: 'http-failure', status: 500 });
-        else if (
+        } else if (['network', 'timeout', 'server_error'].includes(result.code)) {
+          // ТЗ 9.4: команда уходит при появлении связи. Исход неизвестен — повтор с тем же
+          // ключом идемпотентности, пока сервер его хранит (истечение — review «expired»).
+          const count = (attempts?.count ?? 0) + 1;
+          this.pauseOutbox.settle(
+            scope,
+            command.key,
+            result.code === 'server_error'
+              ? { kind: 'http-failure', status: 500 }
+              : { kind: 'unknown' },
+          );
+          this.pauseAttempts.set(command.key, {
+            count,
+            nextAt: this.serverTime() + pauseRetryDelay(count),
+          });
+        } else if (
           [
             'validation',
             'forbidden',
@@ -1688,11 +1792,36 @@ export class ClientHost {
       } finally {
         this.pauseFlight = false;
       }
+      const next = this.pauseAttempts.get(command.key);
+      if (next && this.pauseOutbox.list(scope).some((r) => r.key === command.key))
+        this.schedulePauseRetry(next.nextAt);
       this.publish();
       this.scheduleRefresh();
       break;
     }
     this.showPauseReturn();
+  }
+  /** Повтор отложенной паузы к сроку nextAt (время сервера), не дожидаясь дозапроса. */
+  private schedulePauseRetry(nextAt: number): void {
+    if (this.destroyed || this.pauseRetryTimer) return;
+    const delay = Math.max(0, Math.min(300_000, nextAt - this.serverTime()));
+    if (!Number.isFinite(delay)) return;
+    this.pauseRetryTimer = setTimeout(() => {
+      this.pauseRetryTimer = undefined;
+      if (!this.destroyed) void this.flushAbsencePause();
+    }, delay + 50);
+    this.pauseRetryTimer.unref?.();
+  }
+  /** Записи чужого сервера и пользователя, старше недели — убираются (журнал — число). */
+  private prunePauseStores(scope: PauseScope): void {
+    const key = `${scope.serverScopeHash}:${scope.ownerId}`;
+    const now = Date.now();
+    if (this.prunedScope === key && this.prunedAt !== undefined && now - this.prunedAt < 3600_000)
+      return;
+    this.prunedScope = key;
+    this.prunedAt = now;
+    const removed = this.pauseOutbox.prune(scope, now) + this.pauseReturns.prune(scope, now);
+    if (removed) this.o.log.info('записи паузы удалены', { count: String(removed) });
   }
   private showPauseReturn(): void {
     const scope = this.pauseScope();
@@ -1780,11 +1909,20 @@ export class ClientHost {
     if (epoch !== this.api.epoch || this.destroyed) return;
     if (result.ok) {
       if (revision === this.timerRevision) this.acceptTimer(result.data);
-      const scope = this.pauseScope();
-      if (scope && !this.pauseReturns.dismiss(scope, record.key)) this.storageWarning = true;
+      this.dropPauseReturn(record.key);
     } else this.state.timerError = result.error;
     this.publish();
     this.scheduleRefresh();
+  }
+  /** Снять запись по кнопке; уже снятая свежим снимком (продолжение) — не ошибка записи. */
+  private dropPauseReturn(key: string): void {
+    const scope = this.pauseScope();
+    if (
+      scope &&
+      this.pauseReturns.list(scope).some((r) => r.key === key) &&
+      !this.pauseReturns.dismiss(scope, key)
+    )
+      this.storageWarning = true;
   }
   private absenceRecordId(key: string): number {
     return Number.parseInt(createHash('sha256').update(key).digest('hex').slice(0, 12), 16) + 1;
@@ -1811,6 +1949,14 @@ export class ClientHost {
         message:
           'Не удалось надёжно сохранить команду паузы или подтверждение её показа. Автопауза не считается завершённой. Проверьте время вручную; запись очереди не сбрасывается.',
       };
+    if (this.pauseOutbox.health.recovered || this.pauseReturns.recovered)
+      return {
+        id: this.absenceRecordId('recovered'),
+        from: now,
+        to: now,
+        durable: true,
+        message: PAUSE_RECOVERED_MESSAGE,
+      };
     const record = this.pauseOutbox.list(scope)[0];
     if (record)
       return {
@@ -1819,9 +1965,7 @@ export class ClientHost {
         to: now,
         durable: true,
         message:
-          record.status === 'candidate' ||
-          record.reviewReason === 'unconfirmed-query' ||
-          record.status === 'cancelled'
+          record.status === 'candidate' || record.reviewReason === 'unconfirmed-query'
             ? 'Завершение Windows не подтверждено. По этому запросу пауза автоматически не отправляется; проверьте время вручную.'
             : record.status === 'pending' || record.status === 'unknown'
               ? 'Подтверждение паузы пока не получено. Сохраняется исходная команда; после восстановления связи возможен повтор. Если время проверено вручную, отмените дальнейший повтор ниже.'
@@ -1843,9 +1987,9 @@ export class ClientHost {
           from: Date.parse(returned.at),
           to: now,
           durable: true,
-          message: matchesTimer(this.state.timer ?? null, returned.expected)
-            ? 'Пауза после отсутствия подтверждена сервером. Продолжение выполняется только по вашей команде.'
-            : 'Таймер после отсутствия уже изменился. Проверьте сохранённый период перед подтверждением.',
+          // Запись живёт, только пока таймер стоит на этой паузе (settleEndedPauseReturns).
+          message:
+            'Пауза после отсутствия подтверждена сервером. Продолжение выполняется только по вашей команде.',
         }
       : null;
   }
@@ -1853,11 +1997,18 @@ export class ClientHost {
     const scope = this.pauseScope();
     if (!scope) return;
     if (id === this.absenceRecordId('clock-warning')) this.pauseClockWarning = false;
+    if (id === this.absenceRecordId('recovered')) {
+      this.pauseOutbox.acknowledgeRecovery();
+      this.pauseReturns.acknowledgeRecovery();
+    }
     for (const record of this.pauseOutbox.list(scope))
       if (this.absenceRecordId(record.key) === id) {
+        if (record.status === 'candidate') {
+          if (!this.pauseOutbox.cancelQuery(scope, record.key)) this.storageWarning = true;
+          continue;
+        }
         if (['pending', 'unknown'].includes(record.status))
           this.pauseOutbox.settle(scope, record.key, { kind: 'review' });
-        if (record.status === 'candidate') this.pauseOutbox.cancelQuery(scope, record.key);
         if (!this.pauseOutbox.dismissReviewed(scope, record.key)) this.storageWarning = true;
       }
     for (const record of this.pauseReturns.list(scope))
@@ -1891,7 +2042,12 @@ export class ClientHost {
   private checkReminder(): void {
     if (this.destroyed) return;
     const settings = this.o.settings.get(),
-      ticket = this.reminders.due(this.state, settings.timer.reminderTime);
+      ticket = this.reminders.due(
+        this.state,
+        settings.timer.reminderTime,
+        this.reminderNow(),
+        this.state.bureau?.timeZone,
+      );
     if (!ticket || !this.state.timer) return;
     const timer = this.state.timer;
     const taskLabel = [timer.task.mark, timer.task.title].filter(Boolean).join(' · ');
@@ -1907,6 +2063,7 @@ export class ClientHost {
     const start = new Date(timer.startedAt).toLocaleTimeString('ru-RU', {
       hour: '2-digit',
       minute: '2-digit',
+      ...(this.state.bureau?.timeZone && { timeZone: this.state.bureau.timeZone }),
     });
     const spec: ToastSpec = {
       id: ticket.id,
@@ -1923,6 +2080,11 @@ export class ClientHost {
     this.reminderId = spec.id;
     this.notices.set(spec, notice);
     this.toasts.show(spec);
+  }
+  /** Время для напоминания 18:30: серверное, если откалибровано, иначе часы компьютера. */
+  private reminderNow(): number {
+    const now = this.serverTime();
+    return Number.isFinite(now) ? now : Date.now();
   }
   private async readTimer(): Promise<ApiResult<WorkTimer | null>> {
     const epoch = this.api.epoch,
@@ -2295,7 +2457,13 @@ export class ClientHost {
         n.messageId <= (this.readThrough.get(n.chatId) ?? 0)
       ) &&
       (!n.reminder ||
-        this.reminders.valid(n.reminder, this.state, this.o.settings.get().timer.reminderTime)) &&
+        this.reminders.valid(
+          n.reminder,
+          this.state,
+          this.o.settings.get().timer.reminderTime,
+          this.reminderNow(),
+          this.state.bureau?.timeZone,
+        )) &&
       this.state.connection === 'online' &&
       this.o.settings.get().notifications.enabled &&
       !this.locked &&
@@ -2921,6 +3089,15 @@ export class ClientHost {
         }
         if (this.reminderId) this.toasts.dismiss(this.reminderId);
         this.reminders.reset();
+        // Вопрос после возврата выключен — сохранённые записи «пауза подтверждена» не нужны.
+        if (r.askOnUnlock === false) {
+          const scope = this.pauseScope();
+          if (scope && this.pauseReturns.settleEnded(scope, () => true))
+            for (const key of [...this.recoveryNotices]) {
+              this.toasts.dismiss('pause-return:' + key);
+              this.recoveryNotices.delete(key);
+            }
+        }
         this.publish();
         this.checkReminder();
         return ok(null);
@@ -2962,12 +3139,18 @@ export class ClientHost {
             ...(this.state.recentTimeTaskIds ?? []).filter((id) => id !== result.data?.task.id),
           ].slice(0, 3);
           this.state.recentTimeTaskIds = ids;
-          this.o.settings.update({
-            recentTimeTaskIds: {
-              ...this.o.settings.get().recentTimeTaskIds,
-              [String(this.api.owner)]: ids,
-            },
-          });
+          // Сбой записи настроек не мешает принять таймер и обновить данные — только журнал.
+          try {
+            this.o.settings.update({
+              recentTimeTaskIds: {
+                ...this.o.settings.get().recentTimeTaskIds,
+                [String(this.api.owner)]: ids,
+              },
+            });
+          } catch {
+            this.o.log.warn('не удалось сохранить недавние задачи');
+          }
+          this.rememberStartedHere(result.data);
         }
         if (revision === this.timerRevision) {
           if (result.ok) this.acceptTimer(result.data);
@@ -3496,6 +3679,8 @@ export class ClientHost {
     this.pluginUpdates.dispose();
     this.saverPoller?.dispose();
     clearInterval(this.tick);
+    clearTimeout(this.queryCancelTimer);
+    clearTimeout(this.pauseRetryTimer);
     this.pluginCatalog.reset();
     this.boot++;
     clearTimeout(this.refreshTimer);

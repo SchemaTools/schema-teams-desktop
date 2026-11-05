@@ -9,6 +9,7 @@ import {
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
 import { startClientStub, type ClientStub } from './clientStub';
 import { timerFixture } from '../fixtures/time';
 const ROOT = resolve(__dirname, '../..');
@@ -29,9 +30,15 @@ test.beforeEach(async () => {
   profile = mkdtempSync(join(tmpdir(), 'stdesk-timer-'));
   const now = new Date(),
     day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  // Таймер заглушки (71) считается запущенным из этого приложения: только такой
+  // автопауза ставит (решение руководителя 05.11.2026). Чужой таймер — отдельный тест.
+  const scope = createHash('sha256').update(new URL(stub.url).origin).digest('hex');
   writeFileSync(
     join(profile, 'settings.json'),
-    JSON.stringify({ timerReminderSeen: { '1': day, '2': day } }),
+    JSON.stringify({
+      timerReminderSeen: { '1': day, '2': day },
+      timerStartedHere: [`${scope}:1:71`],
+    }),
   );
 });
 test.afterEach(async () => {
@@ -211,6 +218,25 @@ test('открытие не меняет таймер, блокировка бе
   });
   await expect(p).toHaveCount(0);
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut');
+});
+test('таймер, запущенный на сайте или другом ПК, блокировка этого компьютера на паузу не ставит', async () => {
+  const settings = join(profile, 'settings.json');
+  writeFileSync(
+    settings,
+    JSON.stringify({ ...JSON.parse(readFileSync(settings, 'utf8')), timerStartedHere: [] }),
+  );
+  stub.state.timers[1] = liveTimer();
+  const page = await launch(),
+    p = dialog(page);
+  if (!app) throw new Error('App unavailable');
+  await app.evaluate(({ powerMonitor }) => {
+    powerMonitor.emit('lock-screen');
+    powerMonitor.emit('unlock-screen');
+  });
+  await page.waitForTimeout(500);
+  await expect(p.locator('.timer-state')).toHaveText('Идёт работа');
+  expect(writes()).toHaveLength(0);
+  expect(existsSync(join(profile, 'timer-pause-outbox.json'))).toBe(false);
 });
 test('окно в обеих темах: интервалы не выходят за границы, Escape возвращает фокус', async () => {
   stub.state.timers[1] = liveTimer();
