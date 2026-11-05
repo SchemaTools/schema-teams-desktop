@@ -3,7 +3,11 @@ import { mkdtemp, readFile, readdir, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { downloadPlugin } from '../../src/main/plugins/download';
+import {
+  downloadPlugin,
+  PLUGIN_IDLE_TIMEOUT_MS,
+  PLUGIN_TOTAL_TIMEOUT_MS,
+} from '../../src/main/plugins/download';
 import { PLUGIN_MAX_BYTES, type PluginBuild } from '../../src/shared/plugins';
 const roots: string[] = [];
 const bytes = new Uint8Array([80, 75, 3, 4]);
@@ -230,9 +234,7 @@ describe('plugin download idle timeout and total ceiling', () => {
     ).rejects.toThrow('download_aborted');
     expect(await readdir(p)).toEqual([]);
   });
-  it('defaults are 60 s idle and a 30 min ceiling', async () => {
-    const { PLUGIN_IDLE_TIMEOUT_MS, PLUGIN_TOTAL_TIMEOUT_MS } =
-      await import('../../src/main/plugins/download');
+  it('defaults are 60 s idle and a 30 min ceiling', () => {
     expect(PLUGIN_IDLE_TIMEOUT_MS).toBe(60000);
     expect(PLUGIN_TOTAL_TIMEOUT_MS).toBe(1800000);
   });

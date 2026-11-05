@@ -7,6 +7,7 @@ export interface PluginAudit {
   reason?: string;
   plugin?: string;
   version?: string;
+  previous?: string;
   buildId?: number;
 }
 export type PluginAuditListener = (event: PluginAudit) => void;
@@ -20,6 +21,7 @@ const reasons = new Set([
   'stale_session',
   'password_change_required',
   'invalid_plugin',
+  'download',
   'download_aborted',
   'download_http',
   'plugin_unavailable',
@@ -31,15 +33,18 @@ const reasons = new Set([
   'plugin_trust_unconfigured',
   'plugin_context_unavailable',
   'plugin_job_failed',
-  'plugin_recovery_required',
-  'plugin_state_unavailable',
-  'desktop_update_in_progress',
+  'plugin_dependency_unavailable',
+  'package_invalid',
+  'package_year_missing',
+  'package_addin',
+  'signature',
+  'addin_conflict',
+  'addin_conflict_machine',
+  'journal_pending',
+  'rollback_unavailable',
+  'revit_not_found',
   'revit_busy',
-  'revit_unknown',
-  'stale_scope',
-  'busy',
-  'unfinished_transaction',
-  'automatic_admission_changed',
+  'scope',
 ]);
 /** Diagnostic observer is advisory; only fixed classification and validated identifiers escape. */
 export function auditPlugin(listener: PluginAuditListener | undefined, event: PluginAudit): void {
@@ -56,6 +61,7 @@ export function auditPlugin(listener: PluginAuditListener | undefined, event: Pl
     ...(event.reason && { reason: reasons.has(event.reason) ? event.reason : 'error' }),
     ...(pluginCode(event.plugin) && { plugin: event.plugin }),
     ...(pluginVersion(event.version) && { version: event.version }),
+    ...(pluginVersion(event.previous) && { previous: event.previous }),
     ...(positiveId(event.buildId) && { buildId: event.buildId }),
   };
   try {

@@ -3,10 +3,7 @@ import { PauseReturns } from '../../src/main/timer/pauseReturns';
 import { SupportLedger } from '../../src/main/diagnostics/ledger';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import * as pluginFs from '../../src/main/plugins/transactionFs';
-import { PluginAutoHolds } from '../../src/main/plugins/autoHolds';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IpcMainInvokeEvent, Tray } from 'electron';
 import type { ApiResult, FocusState } from '../../src/shared/client';
@@ -21,7 +18,8 @@ import { releaseFixture } from '../fixtures/updates';
 import { desktopShutdown } from '../../src/main/desktop/updateShutdown';
 import { timerExpected } from '../../src/shared/time';
 import { ScreenSaverObserver } from '../../src/main/desktop/screenSaverObserver';
-import { PluginUpdateCoordinator } from '../../src/main/plugins/updateCoordinator';
+import { PluginUpdater } from '../../src/main/plugins/updater';
+import type { PluginInstaller } from '../../src/main/plugins/installer';
 import type { DesktopUpdateControllerOptions } from '../../src/main/desktop/updateController';
 
 const URL = 'file:///unit/client.html';
@@ -812,8 +810,6 @@ describe('Host updater boundaries use real IPC and the global shutdown lease', (
     const f = fixture(),
       host = updater(f);
     const plugins = f.host as unknown as {
-      pluginMaintenance: boolean;
-      pluginJobs: { busy: boolean };
       pluginUpdates: { busy: boolean; o: { mayRun(): boolean }; state: { pending: number } };
     };
     const active = vi.spyOn(plugins.pluginUpdates, 'busy', 'get').mockReturnValue(true);
@@ -822,12 +818,6 @@ describe('Host updater boundaries use real IPC and the global shutdown lease', (
       await f.invoke({ kind: 'updates.requestLaunch', jobId: host.updateContext().stamp }),
     ).toMatchObject({ code: 'update_busy' });
     active.mockReturnValue(false);
-    const core = vi.spyOn(plugins.pluginJobs, 'busy', 'get').mockReturnValue(true);
-    expect(host.desktopUpdates.o.acquireQuiescence()).toBeNull();
-    core.mockReturnValue(false);
-    plugins.pluginMaintenance = true;
-    expect(host.desktopUpdates.o.acquireQuiescence()).toBeNull();
-    plugins.pluginMaintenance = false;
     plugins.pluginUpdates.state.pending = 2;
     const lease = host.desktopUpdates.o.acquireQuiescence();
     if (!lease) throw Error('waiting-only must be quiescent');
@@ -2935,88 +2925,90 @@ describe('0.7.1 durable Windows absence integration (synthetic events only)', ()
 });
 
 describe('Plugin catalog main authorization and scoped opt-in', () => {
+  const catalog = {
+    tester: false,
+    plugins: [
+      {
+        code: 'alpha',
+        name: 'Планы этажей',
+        short: 'ПЭ',
+        beta: null,
+        stable: {
+          id: 1,
+          version: '1.43',
+          verified: true,
+          revit: [2025],
+          notes: '',
+          size: 10,
+          sha256: 'a'.repeat(64),
+          url: '/api/desktop/plugins/files/1',
+          publishedAt: '2026-11-03T00:00:00.000Z',
+          requires: [],
+        },
+      },
+    ],
+  };
+  /** Установщик-заглушка: диск не трогается, исход задаёт тест. */
+  const fakeInstaller = (complete: boolean) =>
+    ({
+      stagingRoot: join(process.cwd(), 'private', 'unused-staging'),
+      pending: async () => null,
+      recover: async () => 'none',
+      cleanupStaging: async () => {},
+      cleanup: async () => {},
+      inspect: async () => [],
+      prepare: async () => ({}),
+      commit: async () => (complete ? 'complete' : 'waiting'),
+      discard: async () => {},
+    }) as unknown as PluginInstaller;
   async function notices(waiting: boolean, notifyInstalled = true) {
     const f = fixture({ plugins: { betaScopes: [], autoUpdate: true, notifyInstalled } }),
       owned = f.host as unknown as {
-        pluginUpdates: PluginUpdateCoordinator;
+        pluginUpdates: PluginUpdater;
         publish(): void;
         showPluginNotices(): void;
       };
     owned.publish();
     owned.pluginUpdates.dispose();
-    const coordinator = new PluginUpdateCoordinator({
-      context: () => ({ key: String(h.api.owner), automatic: true, beta: false }),
-      mayRun: () => true,
-      inspect: async () => ({
-        status: 'ready',
-        installationAvailable: true,
-        receiptId: null,
-        packages: [],
+    const updater = new PluginUpdater({
+      context: () => ({
+        key: String(h.api.owner),
+        scope: 'a'.repeat(32),
+        automatic: true,
+        beta: false,
+        available: true,
       }),
+      catalog: () => catalog,
       years: async () => [2025],
-      catalog: async () => ({
-        tester: false,
-        plugins: [
-          {
-            code: 'alpha',
-            name: 'Fixture',
-            short: 'AL',
-            beta: null,
-            stable: {
-              id: 1,
-              version: '1.0',
-              verified: true,
-              revit: [2025],
-              notes: '',
-              size: 10,
-              sha256: 'a'.repeat(64),
-              url: '/api/desktop/plugins/files/1',
-              publishedAt: '2026-11-03T00:00:00.000Z',
-              requires: [],
-            },
-          },
-        ],
-      }),
-      install: async () =>
-        waiting
-          ? { status: 'waiting', reason: 'revit_busy' }
-          : {
-              status: 'complete',
-              receipt: {
-                schema: 1,
-                id: '00000000-0000-4000-8000-000000000001',
-                scope: { serverHash: 'a'.repeat(64), ownerId: 1 },
-                rootsHash: 'b'.repeat(64),
-                files: [],
-                packages: [],
-              },
-            },
-      recover: async () => ({ status: 'blocked', reason: 'unused' }),
-      processes: async () => 'busy',
-      cancel: () => {},
+      installer: () => fakeInstaller(!waiting),
+      download: async () => join(process.cwd(), 'private', 'unused.zip'),
+      processes: async () => (waiting ? 'busy' : 'idle'),
+      mayRun: () => true,
       changed: () => {
         owned.publish();
         owned.showPluginNotices();
       },
+      pollMs: 60000,
     });
-    owned.pluginUpdates = coordinator;
+    owned.pluginUpdates = updater;
     h.toastShow.mockClear();
-    await coordinator.refresh();
+    await updater.refresh();
     await Promise.resolve();
-    return { f, coordinator };
+    return { f, updater };
   }
-  it('plugin waiting remains pending until actual policy-approved display, and late owner cannot acknowledge it', async () => {
-    const { coordinator } = await notices(true);
+  it('waiting notice by TZ 5.3 stays pending until a policy-approved display; a late owner cannot acknowledge it', async () => {
+    const { updater } = await notices(true);
     const spec = required(h.toastShow.mock.calls.at(-1))[0] as ToastSpec;
     expect(spec).toMatchObject({
       title: 'Готовы обновления плагинов',
+      body: 'Планы этажей 1.43 — установятся, когда вы закроете Revit 2025',
       hasReply: false,
       buttons: ['Что нового', 'Хорошо'],
     });
-    expect(coordinator.pendingNotices()).toHaveLength(1);
+    expect(updater.pendingNotices()).toHaveLength(1);
     h.policyAllows.mockResolvedValueOnce(false);
     expect(await required(h.toastOptions).beforeShow(spec)).toBe(false);
-    expect(coordinator.pendingNotices()).toHaveLength(1);
+    expect(updater.pendingNotices()).toHaveLength(1);
     const delayed = deferred<boolean>();
     h.policyAllows.mockReturnValueOnce(delayed.promise);
     const show = required(h.toastOptions).beforeShow(spec);
@@ -3024,15 +3016,18 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
     delayed.resolve(true);
     expect(await show).toBe(false);
     required(h.toastOptions).onShow(spec);
-    expect(coordinator.pendingNotices()).toEqual([]);
+    expect(updater.pendingNotices()).toEqual([]);
+    updater.dispose();
   });
   it('installed notification preference suppresses only completion, not the waiting notice', async () => {
     const complete = await notices(false, false);
-    expect(complete.coordinator.state.items[0]?.phase).toBe('complete');
+    expect(complete.updater.state.items[0]?.phase).toBe('complete');
     expect(h.toastShow).not.toHaveBeenCalled();
+    complete.updater.dispose();
     const waiting = await notices(true, false);
-    expect(waiting.coordinator.state.pending).toBe(1);
+    expect(waiting.updater.state.pending).toBe(1);
     expect(h.toastShow).toHaveBeenCalled();
+    waiting.updater.dispose();
   });
   const setup = () => {
     const f = fixture();
@@ -3045,60 +3040,7 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
     h.plugins.mockResolvedValue({ ok: true, data: { tester: true, plugins: [] } });
     return f;
   };
-  it.skipIf(process.platform !== 'win32')(
-    'A2: a destroyed old Host cannot write rollback holds after a late path check',
-    async () => {
-      const f = setup();
-      await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
-      const owned = f.host as unknown as {
-        pluginAutoHolds: PluginAutoHolds;
-        pluginContext(): import('../../src/main/plugins/controller').PluginJobContext | null;
-        pluginJobs: { o: import('../../src/main/plugins/controller').PluginControllerOptions };
-      };
-      const context = required(owned.pluginContext()),
-        root = mkdtempSync(join(process.cwd(), 'private', 'stale-plugin-holds-')),
-        file = join(root, 'holds.json'),
-        store = new PluginAutoHolds(file);
-      owned.pluginAutoHolds = store;
-      const previous: import('../../src/main/plugins/transactionTypes').PluginReceipt = {
-          schema: 1,
-          id: '00000000-0000-4000-8000-000000000001',
-          rootsHash: 'b'.repeat(64),
-          scope: context.scope,
-          files: [],
-          packages: [
-            {
-              code: 'alpha',
-              buildId: 2,
-              version: '2.0',
-              archiveSha256: '2'.repeat(64),
-              archiveSize: 10,
-              descriptorId: 'synthetic',
-              revit: [2025],
-            },
-          ],
-        },
-        next = { ...previous, packages: [] };
-      const gate = deferred<undefined>(),
-        pathCheck = vi.spyOn(pluginFs, 'nodePathSafe').mockReturnValueOnce(gate.promise);
-      try {
-        const work = required(owned.pluginJobs.o.beforeRollback)(previous, next);
-        expect(pathCheck).toHaveBeenCalledOnce();
-        f.host.destroy();
-        store.add(['c'.repeat(64)]);
-        const before = readFileSync(file),
-          write = vi.spyOn(store, 'add');
-        gate.resolve(undefined);
-        await expect(work).rejects.toThrow('stale_plugin_job');
-        expect(write).not.toHaveBeenCalled();
-        expect(readFileSync(file)).toEqual(before);
-      } finally {
-        pathCheck.mockRestore();
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-  );
-  it('IPC accepts intent only; paths, trust pins, plans and unsupported years are rejected', () => {
+  it('IPC accepts a plugin code only; paths, trust pins, years and receipts are rejected', () => {
     expect(requestValid({ kind: 'plugins.preferences', epoch: 7, notifyInstalled: false })).toBe(
       true,
     );
@@ -3113,21 +3055,20 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
         automaticHolds: [],
       }),
     ).toBe(false);
-    const install = { kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] };
+    const install = { kind: 'plugins.install', epoch: 7, code: 'floor-plans' };
     expect(requestValid(install)).toBe(true);
+    expect(requestValid({ kind: 'plugins.rollback', epoch: 7, code: 'floor-plans' })).toBe(true);
     for (const extra of [
       { targetRoot: 'C:\\outside' },
       { publisherPins: ['a'.repeat(64)] },
       { plan: {} },
-      { years: [2027] },
-      { years: [2025, 2025] },
+      { years: [2025] },
       { code: '../foreign' },
+      { code: 'Floor Plans' },
     ])
       expect(requestValid({ ...install, ...extra })).toBe(false);
-    expect(requestValid({ kind: 'plugins.rollback', epoch: 7, receiptId: '../previous' })).toBe(
-      false,
-    );
-    expect(requestValid({ kind: 'plugins.recover', epoch: 7, path: 'C:\\outside' })).toBe(false);
+    expect(requestValid({ kind: 'plugins.rollback', epoch: 7, receiptId: 'x' })).toBe(false);
+    expect(requestValid({ kind: 'plugins.recover', epoch: 7 })).toBe(false);
   });
   it.skipIf(process.platform !== 'win32')(
     'a direct install intent cannot bypass the unconfigured production trust policy',
@@ -3136,84 +3077,18 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
       await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
       h.plugins.mockClear();
       expect(
-        await f.invoke({ kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] }),
+        await f.invoke({ kind: 'plugins.install', epoch: 7, code: 'floor-plans' }),
       ).toMatchObject({
         ok: false,
         code: 'plugin_job_blocked',
-        error: expect.stringContaining('не настроены'),
+        error: expect.stringContaining('доверенный издатель не настроен'),
       });
       expect(h.plugins).not.toHaveBeenCalled();
-      expect(f.state.plugins?.managed?.installationAvailable).toBe(false);
-    },
-  );
-  it.skipIf(process.platform !== 'win32').each(['owner', 'same-epoch-lifetime'] as const)(
-    'a held install preflight cannot restart the old intent in a new %s context',
-    async (kind) => {
-      const f = setup();
-      await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
-      const owned = f.host as unknown as {
-        pluginJobs: {
-          inspect: () => Promise<import('../../src/shared/plugins').ManagedPluginsView>;
-          install: () => Promise<unknown>;
-        };
-        inventory: { inspect: () => Promise<unknown> };
-        publish: () => void;
-        configEpoch: number;
-      };
-      const pending = deferred<import('../../src/shared/plugins').ManagedPluginsView>();
-      const inspect = vi.spyOn(owned.pluginJobs, 'inspect').mockReturnValueOnce(pending.promise),
-        install = vi.spyOn(owned.pluginJobs, 'install'),
-        inventory = vi.spyOn(owned.inventory, 'inspect');
-      const work = f.invoke({
-        kind: 'plugins.install',
-        epoch: 7,
-        code: 'floor-plans',
-        years: [2025],
-      });
-      await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(1));
-      if (kind === 'owner') {
-        h.api.owner = 2;
-        h.api.epoch = 8;
-        f.state.epoch = 8;
-        f.state.user = { id: 2, shortName: 'Другой', mustChangePassword: false };
-        owned.configEpoch = 8;
-        owned.publish();
-      } else {
-        f.state.connection = 'offline';
-        owned.publish();
-        f.state.connection = 'online';
-        owned.publish();
-      }
-      pending.resolve({
-        status: 'unavailable',
-        installationAvailable: false,
-        receiptId: null,
-        packages: [],
-      });
-      expect(await work).toMatchObject({ ok: false, code: 'stale_session' });
-      expect(install).not.toHaveBeenCalled();
-      expect(inventory).not.toHaveBeenCalled();
-    },
-  );
-  it.skipIf(process.platform !== 'win32')(
-    'an offline→online transition invalidates the previous job lifetime even within the same epoch',
-    async () => {
-      const f = setup();
-      await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
-      const owned = f.host as unknown as {
-        pluginJobs: { invalidate: () => void };
-        publish: () => void;
-      };
-      const invalidated = vi.spyOn(owned.pluginJobs, 'invalidate');
-      f.state.connection = 'offline';
-      owned.publish();
-      f.state.connection = 'online';
-      owned.publish();
-      expect(invalidated.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(f.state.plugins?.managed?.available).toBe(false);
     },
   );
   it.skipIf(process.platform === 'win32')(
-    'non-Windows hosts deny plugin mutations before inventory or catalog IO',
+    'non-Windows hosts deny plugin requests before inventory or catalog IO',
     async () => {
       const f = setup();
       await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
@@ -3221,19 +3096,36 @@ describe('Plugin catalog main authorization and scoped opt-in', () => {
       const owned = f.host as unknown as { inventory: { inspect: () => Promise<unknown> } };
       const inventory = vi.spyOn(owned.inventory, 'inspect');
       const intents: DesktopRequest[] = [
-        { kind: 'plugins.install', epoch: 7, code: 'floor-plans', years: [2025] },
-        { kind: 'plugins.recover', epoch: 7 },
-        { kind: 'plugins.rollback', epoch: 7, receiptId: '11111111-1111-4111-8111-111111111111' },
+        { kind: 'plugins.install', epoch: 7, code: 'floor-plans' },
+        { kind: 'plugins.rollback', epoch: 7, code: 'floor-plans' },
       ];
       for (const intent of intents)
-        expect(await f.invoke(intent)).toMatchObject({
-          ok: false,
-          code: 'forbidden',
-        });
+        expect(await f.invoke(intent)).toMatchObject({ ok: false, code: 'forbidden' });
       expect(h.plugins).not.toHaveBeenCalled();
       expect(inventory).not.toHaveBeenCalled();
     },
   );
+  it('desktop:plugins and a reconnect only re-read the catalog; the running operation is not cancelled', async () => {
+    const f = setup();
+    await f.invoke({ kind: 'plugins.refresh', epoch: 7 });
+    const owned = f.host as unknown as {
+      pluginUpdates: PluginUpdater;
+      pluginCatalog: { invalidate: () => void };
+      publish: () => void;
+      event: (name: string, data: unknown) => void;
+    };
+    const invalidate = vi.spyOn(owned.pluginCatalog, 'invalidate'),
+      sync = vi.spyOn(owned.pluginUpdates, 'sync');
+    const key = owned.pluginUpdates['contextKey' as keyof PluginUpdater];
+    owned.event('desktop:plugins', undefined);
+    expect(invalidate).toHaveBeenCalledOnce();
+    f.state.connection = 'offline';
+    owned.publish();
+    f.state.connection = 'online';
+    owned.publish();
+    expect(sync).toHaveBeenCalled();
+    expect(owned.pluginUpdates['contextKey' as keyof PluginUpdater]).toBe(key);
+  });
   it('local beta opt-in belongs to current server+owner, and tester removal gates it immediately', async () => {
     const f = setup();
     await f.invoke({ kind: 'plugins.refresh', epoch: 7 });

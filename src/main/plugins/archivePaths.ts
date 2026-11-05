@@ -1,5 +1,6 @@
-import { lstat, realpath, readdir, unlink, rmdir } from 'node:fs/promises';
+import { lstat, readdir, unlink, rmdir } from 'node:fs/promises';
 import { isAbsolute, parse, relative, resolve, sep } from 'node:path';
+import { nodePathSafe } from './fsSafe';
 
 export class PluginArchiveError extends Error {
   constructor(public readonly code: string) {
@@ -47,10 +48,6 @@ export function containedPath(root: string, path: string): string {
   return full;
 }
 
-function key(path: string): string {
-  return process.platform === 'win32' ? path.toLowerCase() : path;
-}
-
 /** No symlink/junction ancestor and no canonical alias. Caller supplies an existing private parent. */
 export async function assertOrdinaryDirectory(path: string): Promise<void> {
   const full = resolve(path);
@@ -61,12 +58,11 @@ export async function assertOrdinaryDirectory(path: string): Promise<void> {
     const stat = await lstat(current);
     if (!stat.isDirectory() || stat.isSymbolicLink()) reject('reparse');
   }
-  if (key(await realpath(full)) !== key(full)) reject('canonical');
+  // Переадресация (junction, subst внутри пути) — отказ; короткое имя 8.3 — нет.
+  await nodePathSafe(full).catch(() => reject('canonical'));
 }
 
-/** Called only with this invocation's freshly created root and known parent.
- * No recursive rm: inspect every node and never descend into links/junctions.
- */
+/** Called only with this invocation's freshly created root and known parent. */
 export async function removeOwnedTree(root: string, parent: string): Promise<void> {
   if (
     resolve(root) !== containedPath(resolve(parent), root) ||
@@ -75,15 +71,16 @@ export async function removeOwnedTree(root: string, parent: string): Promise<voi
   )
     reject('cleanup-ownership');
   await assertOrdinaryDirectory(parent);
-  async function remove(path: string): Promise<void> {
-    const stat = await lstat(path);
-    if (stat.isSymbolicLink()) reject('cleanup-reparse');
-    if (stat.isDirectory()) {
-      await assertOrdinaryDirectory(path);
-      for (const name of await readdir(path)) await remove(containedPath(path, name));
-      await rmdir(path);
-    } else if (stat.isFile()) await unlink(path);
-    else reject('cleanup-type');
-  }
-  await remove(root);
+  await removeTree(root);
+}
+/** Удаление своей папки без rm -r: каждый узел проверяется, в ссылки и junction не заходим. */
+export async function removeTree(path: string): Promise<void> {
+  const stat = await lstat(path);
+  if (stat.isSymbolicLink()) reject('cleanup-reparse');
+  if (stat.isDirectory()) {
+    await assertOrdinaryDirectory(path);
+    for (const name of await readdir(path)) await removeTree(containedPath(path, name));
+    await rmdir(path);
+  } else if (stat.isFile()) await unlink(path);
+  else reject('cleanup-type');
 }

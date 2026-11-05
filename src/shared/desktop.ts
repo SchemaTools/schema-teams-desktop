@@ -133,9 +133,8 @@ export type DesktopRequest =
           autoUpdate?: boolean;
           notifyInstalled?: boolean;
         }
-      | { kind: 'plugins.install'; code: string; years: (2025 | 2026)[] }
-      | { kind: 'plugins.rollback'; receiptId: string }
-      | { kind: 'plugins.recover' }
+      | { kind: 'plugins.install'; code: string }
+      | { kind: 'plugins.rollback'; code: string }
       | { kind: 'report.send'; id: string }
       | { kind: 'report.retry'; id: string }
       | { kind: 'report.fallback'; id: string }
@@ -215,7 +214,6 @@ export interface DesktopResponseMap {
   'plugins.preferences': null;
   'plugins.install': null;
   'plugins.rollback': null;
-  'plugins.recover': null;
   init: ClientSnapshot;
   login: null;
   retry: null;

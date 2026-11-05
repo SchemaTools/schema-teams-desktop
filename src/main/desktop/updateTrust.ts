@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { lstat } from 'node:fs/promises';
 import { lstatSync, type BigIntStats } from 'node:fs';
-import { hashFile } from '../plugins/transactionFs';
+import { hashFile } from '../plugins/fsSafe';
 import { windowsPathSafe } from '../plugins/safety';
 import {
   evaluatePublisherTrust,

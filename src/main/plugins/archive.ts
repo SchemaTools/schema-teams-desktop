@@ -14,34 +14,57 @@ import {
   reject,
   PluginArchiveError,
 } from './archivePaths';
-import { validateAddinManifests, type ValidatedAddin } from './addinManifest';
 
 export { PluginArchiveError } from './archivePaths';
 export type PluginEntryKind = 'dll' | 'addin' | 'data';
-export type ApprovedLayoutDescriptor = Readonly<{
-  id: string;
-  files: readonly Readonly<{ relativePath: string; kind: PluginEntryKind }>[];
-  manifests: readonly Readonly<{
-    relativePath: string;
-    year: 2025 | 2026;
-    addIns: readonly Readonly<{ addInId: string; assemblyRelativePath: string }>[];
-  }>[];
-}>;
-export type PreparedPluginEntry = Readonly<{
+export type ExtractedPluginFile = Readonly<{
   relativePath: string;
   size: number;
   sha256: string;
   kind: PluginEntryKind;
 }>;
-export type PreparedPluginGeneration = Readonly<{
-  generationRoot: string;
+/** Распакованный проверенный архив во временной папке staging. */
+export type ExtractedPluginArchive = Readonly<{
+  /** Папка с содержимым архива — её целиком переносят в папку версии одним переименованием. */
+  contentRoot: string;
   archiveSha256: string;
-  layoutId: string;
-  entries: readonly PreparedPluginEntry[];
-  addins: readonly ValidatedAddin[];
+  files: readonly ExtractedPluginFile[];
 }>;
-// No supplied package/catalog/renderer may invent production layout authorization.
-export const APPROVED_PLUGIN_LAYOUT: ApprovedLayoutDescriptor | null = null;
+/**
+ * Состав описывает сам архив (.addin и сборки в нём), а не список в приложении.
+ * Ограничения общие: сборки, .addin, данные и ресурсы; исполняемое и скрипты — нет.
+ */
+const DATA_EXTENSIONS = new Set([
+  'json',
+  'xml',
+  'config',
+  'pdb',
+  'resources',
+  'txt',
+  'md',
+  'rtf',
+  'pdf',
+  'png',
+  'jpg',
+  'jpeg',
+  'bmp',
+  'gif',
+  'ico',
+  'svg',
+  'xaml',
+  'ttf',
+  'otf',
+  'csv',
+  'rfa',
+  'rft',
+  'rte',
+]);
+export function pluginEntryKind(path: string): PluginEntryKind | null {
+  const extension = /\.([a-z0-9]{1,12})$/i.exec(path)?.[1]?.toLowerCase();
+  if (extension === 'dll') return 'dll';
+  if (extension === 'addin') return 'addin';
+  return extension && DATA_EXTENSIONS.has(extension) ? 'data' : null;
+}
 export const PLUGIN_ARCHIVE_LIMITS = Object.freeze({
   compressedBytes: 200 * 1024 * 1024,
   entries: 4096,
@@ -65,7 +88,7 @@ type ZipEntry = {
   end: number;
 };
 const sha = /^[a-f0-9]{64}$/;
-const owned = new WeakMap<PreparedPluginGeneration, { root: string; parent: string }>();
+const owned = new WeakMap<ExtractedPluginArchive, { root: string; parent: string }>();
 
 const crcTable = Uint32Array.from({ length: 256 }, (_, index) => {
   let n = index;
@@ -309,107 +332,22 @@ async function inspectZip(
   return entries;
 }
 
-function validateLayout(
-  layout: ApprovedLayoutDescriptor | null | undefined,
-): Map<string, PluginEntryKind> {
-  if (
-    !layout ||
-    typeof layout.id !== 'string' ||
-    !/^[a-zA-Z0-9._-]{1,80}$/.test(layout.id) ||
-    !Array.isArray(layout.files) ||
-    !Array.isArray(layout.manifests) ||
-    !layout.files.length ||
-    layout.files.length > PLUGIN_ARCHIVE_LIMITS.entries ||
-    !layout.manifests.length ||
-    layout.manifests.length > 64
-  )
-    reject('layout-unavailable');
-  const files = new Map<string, PluginEntryKind>(),
-    folded = new Set<string>();
-  for (const item of layout.files) {
-    const path = safeArchiveRelativePath(item.relativePath);
-    if (
-      !['dll', 'addin', 'data'].includes(item.kind) ||
-      folded.has(path.toLowerCase()) ||
-      path.toLowerCase().endsWith('.dll') !== (item.kind === 'dll') ||
-      path.toLowerCase().endsWith('.addin') !== (item.kind === 'addin') ||
-      (item.kind === 'data' &&
-        /\.(exe|com|bat|cmd|ps1|vbs|js|msi|lnk|url|reg|sys|scr|pif|hta|ocx)$/i.test(path))
-    )
-      reject('layout-files');
-    folded.add(path.toLowerCase());
-    files.set(path, item.kind);
-  }
-  return files;
-}
-
-function snapshotLayout(source: ApprovedLayoutDescriptor | null): ApprovedLayoutDescriptor {
-  const roles = validateLayout(source);
-  if (!source) reject('layout-unavailable');
-  const seen = new Set<string>(),
-    ids = new Set<string>();
-  const manifests = source.manifests.map((item) => {
-    const relativePath = safeArchiveRelativePath(item.relativePath);
-    if (
-      roles.get(relativePath) !== 'addin' ||
-      seen.has(relativePath) ||
-      (item.year !== 2025 && item.year !== 2026) ||
-      !Array.isArray(item.addIns) ||
-      !item.addIns.length ||
-      item.addIns.length > 32
-    )
-      reject('manifest-layout');
-    seen.add(relativePath);
-    const addIns = item.addIns.map((addin) => {
-      if (
-        typeof addin.addInId !== 'string' ||
-        !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(addin.addInId) ||
-        addin.addInId === '00000000-0000-0000-0000-000000000000'
-      )
-        reject('manifest-expected-id');
-      const assemblyRelativePath = safeArchiveRelativePath(addin.assemblyRelativePath),
-        key = `${item.year}:${addin.addInId}`;
-      if (roles.get(assemblyRelativePath) !== 'dll' || ids.has(key))
-        reject('manifest-expected-assembly-or-id');
-      ids.add(key);
-      return Object.freeze({ addInId: addin.addInId, assemblyRelativePath });
-    });
-    return Object.freeze({ relativePath, year: item.year, addIns: Object.freeze(addIns) });
-  });
-  if (manifests.length !== [...roles.values()].filter((role) => role === 'addin').length)
-    reject('manifest-layout-count');
-  return Object.freeze({
-    id: source.id,
-    files: Object.freeze(
-      source.files.map((item) =>
-        Object.freeze({ relativePath: item.relativePath, kind: item.kind }),
-      ),
-    ),
-    manifests: Object.freeze(manifests),
-  });
-}
-
 export async function extractPluginArchive(request: {
   archivePath: string;
   expectedSha256: string;
   stagingParent: string;
-  layout: ApprovedLayoutDescriptor | null;
   signal?: AbortSignal;
-  /** Internal remaining job budget; never raises the archive's own limit. */
+  /** Остаток бюджета операции; не поднимает собственный предел архива. */
   outputBudgetBytes?: number;
-}): Promise<PreparedPluginGeneration> {
-  // Snapshot every scalar and clone/freeze every nested layout field before the
-  // first await. A caller mutation cannot retarget this operation during I/O.
+}): Promise<ExtractedPluginArchive> {
+  // Скаляры фиксируются до первого await: правка объекта вызывающим не перенаправит работу.
   const input = Object.freeze({
     archivePath: request.archivePath,
     expectedSha256: request.expectedSha256,
     stagingParent: request.stagingParent,
-    layout: snapshotLayout(request.layout),
     signal: request.signal,
     outputBudgetBytes: request.outputBudgetBytes ?? PLUGIN_ARCHIVE_LIMITS.totalBytes,
   });
-  const layout = input.layout,
-    roles = validateLayout(layout);
   if (
     typeof input.archivePath !== 'string' ||
     !isAbsolute(input.archivePath) ||
@@ -443,7 +381,7 @@ export async function extractPluginArchive(request: {
     ownedRoot = await mkdtemp(join(input.stagingParent, 'schema-plugin-'));
     await assertOrdinaryDirectory(ownedRoot);
     const copied = join(ownedRoot, 'source.zip'),
-      generationRoot = join(ownedRoot, 'generation');
+      contentRoot = join(ownedRoot, 'content');
     let compressedBytes = 0;
     const archiveHash = createHash('sha256');
     await pipeline(
@@ -474,15 +412,15 @@ export async function extractPluginArchive(request: {
       await zip.close();
     }
     const files = entries.filter((entry) => !entry.directory);
-    if (files.length !== roles.size || files.some((entry) => !roles.has(entry.name)))
-      reject('layout-archive-mismatch');
-    await mkdir(generationRoot);
-    const output: PreparedPluginEntry[] = [];
+    if (files.some((entry) => !pluginEntryKind(entry.name))) reject('file-type-not-allowed');
+    if (!files.some((entry) => pluginEntryKind(entry.name) === 'dll')) reject('no-assembly');
+    await mkdir(contentRoot);
+    const output: ExtractedPluginFile[] = [];
     let total = 0,
       chunks = 0;
     for (const entry of files) {
       check();
-      const target = containedPath(generationRoot, entry.name);
+      const target = containedPath(contentRoot, entry.name);
       await mkdir(dirname(target), { recursive: true });
       await assertOrdinaryDirectory(dirname(target));
       const hash = createHash('sha256');
@@ -537,26 +475,22 @@ export async function extractPluginArchive(request: {
         (crc ^ 0xffffffff) >>> 0 !== entry.crc
       )
         reject('crc-size-or-trailing-data');
-      const kind = roles.get(entry.name);
-      if (!kind) reject('layout-kind');
+      const kind = pluginEntryKind(entry.name);
+      if (!kind) reject('file-type-not-allowed');
       output.push(
         Object.freeze({ relativePath: entry.name, size: actual, sha256: hash.digest('hex'), kind }),
       );
     }
-    check();
-    const addins = await validateAddinManifests(generationRoot, layout, output, abort.signal);
     check();
     if (
       (await measurePrivateArchive(copied, compressedBytes, abort.signal)) !== input.expectedSha256
     )
       reject('private-archive-changed');
     await unlink(copied);
-    const result: PreparedPluginGeneration = Object.freeze({
-      generationRoot,
+    const result: ExtractedPluginArchive = Object.freeze({
+      contentRoot,
       archiveSha256: input.expectedSha256,
-      layoutId: layout.id,
-      entries: Object.freeze(output),
-      addins: Object.freeze(addins),
+      files: Object.freeze(output),
     });
     owned.set(result, { root: ownedRoot, parent: input.stagingParent });
     return result;
@@ -578,12 +512,10 @@ export async function extractPluginArchive(request: {
   }
 }
 
-/** Only objects created by this module carry cleanup authority; arbitrary paths are refused. */
-export async function discardPreparedPluginGeneration(
-  generation: PreparedPluginGeneration,
-): Promise<void> {
-  const state = owned.get(generation);
+/** Убрать временную папку распаковки (и то, что осталось от неё после переноса содержимого). */
+export async function discardExtractedArchive(archive: ExtractedPluginArchive): Promise<void> {
+  const state = owned.get(archive);
   if (!state) reject('cleanup-ownership');
   await removeOwnedTree(state.root, state.parent);
-  owned.delete(generation);
+  owned.delete(archive);
 }

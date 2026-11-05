@@ -53,24 +53,10 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     Object.keys(r).every((k) => k === 'kind' || (scoped && k === 'epoch') || keys.includes(k));
   switch (r.kind) {
     case 'plugins.refresh':
-    case 'plugins.recover':
       return only();
     case 'plugins.install':
-      return (
-        only('code', 'years') &&
-        pluginCode(r.code) &&
-        Array.isArray(r.years) &&
-        r.years.length > 0 &&
-        r.years.length <= 2 &&
-        new Set(r.years).size === r.years.length &&
-        r.years.every((y) => y === 2025 || y === 2026)
-      );
     case 'plugins.rollback':
-      return (
-        only('receiptId') &&
-        typeof r.receiptId === 'string' &&
-        /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(r.receiptId)
-      );
+      return only('code') && pluginCode(r.code);
     case 'plugins.preferences':
       return (
         only('beta', 'autoUpdate', 'notifyInstalled') &&

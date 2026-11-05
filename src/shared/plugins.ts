@@ -33,30 +33,42 @@ export interface PluginsState {
   workflow?: PluginWorkflowState;
   managed?: ManagedPluginsView;
 }
+/** Установленные плагины этого входа — по файлам на диске, без сервера. */
+export interface InstalledPluginView {
+  code: string;
+  version: string;
+  years: (2025 | 2026)[];
+  /** disabled — .addin убран или изменён; damaged — файлы версии пропали или изменены. */
+  status: 'ok' | 'disabled' | 'damaged';
+  previous: string | null;
+  rollbackAvailable: boolean;
+  /** После «Вернуть» автообновление этой сборки остановлено. */
+  held: boolean;
+}
 export interface ManagedPluginsView {
-  rootsHash?: string;
-  status: 'unavailable' | 'busy' | 'recovery' | 'blocked' | 'ready';
-  installationAvailable: boolean;
-  receiptId: string | null;
-  packages: {
-    code: string;
-    version: string;
-    years: (2025 | 2026)[];
-    buildId?: number;
-    archiveSha256?: string;
-  }[];
+  /** Доверенный издатель настроен — ставить можно. */
+  available: boolean;
+  /** Доводится прерванная операция (ждёт закрытия Revit). */
+  recovering: boolean;
+  plugins: InstalledPluginView[];
 }
 export interface PluginWorkItem {
   code: string;
   name: string;
   version: string;
+  from?: string;
   years: (2025 | 2026)[];
-  phase: 'checking' | 'downloading' | 'installing' | 'waiting' | 'complete' | 'error';
+  kind: 'install' | 'rollback';
+  phase: 'waiting' | 'downloading' | 'installing' | 'complete' | 'error';
   reason?: string;
+  /** Только имя файла .addin или .dll — для понятной причины ошибки. */
+  detail?: string;
 }
 export interface PluginWorkflowState {
-  phase: 'idle' | 'unavailable' | 'checking' | 'running' | 'waiting' | 'error';
+  phase: 'idle' | 'waiting';
   active: boolean;
+  /** Revit открыт в этом сеансе Windows при последней проверке. */
+  revitOpen: boolean;
   pending: number;
   items: PluginWorkItem[];
 }

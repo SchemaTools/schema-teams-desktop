@@ -83,4 +83,14 @@ export const S = {
     'Windows передаст этому компьютеру данные вашей учётной записи для входа. Открывайте, только если доверяете отправителю.',
   pathForeignOpen: 'Открыть',
   pathForeignCancel: 'Отмена',
+  // плагины Revit (ТЗ 8, 5.3)
+  pluginInstallUnavailable: 'Установка недоступна: доверенный издатель не настроен.',
+  pluginRollbackUnavailable: 'Предыдущая версия этого плагина не сохранилась — вернуть нечего.',
+  pluginRequestFailed: 'Плагин недоступен в каталоге. Нажмите «Проверить» и повторите.',
+  pluginWaitingTitle: 'Готовы обновления плагинов',
+  pluginWaitingBody: (list: string, years: string) =>
+    `${list} — установятся, когда вы закроете Revit${years ? ` ${years}` : ''}`,
+  pluginCompleteTitle: 'Плагины обновлены — можно открывать Revit',
+  pluginNotesButton: 'Что нового',
+  pluginOkButton: 'Хорошо',
 } as const;

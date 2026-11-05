@@ -84,12 +84,15 @@ import { ReportService, type ReportBackend } from './diagnostics/service';
 import { SupportLedger, supportStorage } from './diagnostics/ledger';
 import { SupportSender, type SupportContext } from './diagnostics/sender';
 import { PluginCatalogService } from './plugins/catalog';
-import { createProductionPluginController, type PluginJobContext } from './plugins/controller';
-import { PluginUpdateCoordinator, type PluginUpdateNotice } from './plugins/updateCoordinator';
+import {
+  PluginUpdater,
+  type PluginUpdateNotice,
+  type PluginUpdaterContext,
+} from './plugins/updater';
+import { PluginInstaller } from './plugins/installer';
+import { S } from './strings';
+import { createProductionInstaller, pluginInstallationAvailable } from './plugins/production';
 import { readRevitProcesses } from './plugins/safety';
-import { PluginAutoHolds, pluginAutoHoldKey, rolledBackBuildHolds } from './plugins/autoHolds';
-import { nodePathSafe } from './plugins/transactionFs';
-import type { ManagedPluginsView } from '../shared/plugins';
 import {
   MorningNotices,
   bureauMorning,
@@ -197,129 +200,25 @@ export class ClientHost {
     },
     now: () => performance.now(),
   });
-  private pluginGeneration = 0;
-  private pluginMaintenance = false;
-  private readonly pluginAutoHolds = new PluginAutoHolds(
-    join(app.getPath('userData'), 'plugin-auto-holds.json'),
-  );
-  private pluginContextStamp?: string;
-  private pluginManaged: ManagedPluginsView = {
-    status: 'unavailable',
-    installationAvailable: false,
-    receiptId: null,
-    packages: [],
-  };
-  private readonly pluginJobs = createProductionPluginController({
-    automaticHeld: (scope, rootsHash, code, year, build) =>
-      this.pluginAutoHolds
-        .read()
-        .has(
-          pluginAutoHoldKey(
-            scope.serverHash,
-            scope.ownerId,
-            rootsHash,
-            code,
-            year,
-            build.id,
-            build.sha256,
-          ),
-        ),
-    beforeRollback: async (previous, next) => {
-      const context = this.pluginContext(),
-        stamp = JSON.stringify(context),
-        generation = this.pluginGeneration;
-      if (
-        !context ||
-        context.scope.serverHash !== previous.scope.serverHash ||
-        context.scope.ownerId !== previous.scope.ownerId
-      )
-        throw Error('stale_plugin_job');
-      await nodePathSafe(join(app.getPath('userData'), 'plugin-auto-holds.json'));
-      if (
-        this.destroyed ||
-        desktopShutdown.locked ||
-        generation !== this.pluginGeneration ||
-        stamp !== JSON.stringify(this.pluginContext())
-      )
-        throw Error('stale_plugin_job');
-      this.pluginAutoHolds.add(rolledBackBuildHolds(previous, next));
-    },
-    audit: (event) => this.o.log.info('плагины', { ...event }),
-    mayRun: () => !this.destroyed && !desktopShutdown.locked,
-    stage: (phase) => this.pluginUpdates?.phase(phase),
+  /** Диск плагинов; заменяется только в тестах. */
+  private pluginInstaller: PluginInstaller = createProductionInstaller();
+  private readonly pluginUpdates = new PluginUpdater({
     context: () => this.pluginContext(),
-    readCatalog: async () => {
-      const result = await this.api.plugins();
-      if (!result.ok) throw Error(result.code);
-      return result.data;
+    catalog: () =>
+      this.pluginCatalog.state.status === 'ready' ? this.pluginCatalog.state.catalog : null,
+    years: async () => {
+      const inventory = await this.inventory.inspect(true);
+      return inventory.years.filter((y) => y.executable === 'found').map((y) => y.year);
     },
+    installer: () => this.pluginInstaller,
     download: async (build, root, signal) => {
       const result = await this.api.downloadPlugin(build, root, signal);
       if (!result.ok) throw Error(result.code);
       return result.data;
     },
-  });
-  private readonly pluginUpdates = new PluginUpdateCoordinator({
-    automaticHeld: (rootsHash, code, year, build) => {
-      const scope = this.pluginContext()?.scope;
-      return (
-        !scope ||
-        this.pluginAutoHolds
-          .read()
-          .has(
-            pluginAutoHoldKey(
-              scope.serverHash,
-              scope.ownerId,
-              rootsHash,
-              code,
-              year,
-              build.id,
-              build.sha256,
-            ),
-          )
-      );
-    },
-    context: () => {
-      const context = this.pluginContext();
-      return context
-        ? {
-            key: JSON.stringify(context),
-            automatic: this.o.settings.get().plugins?.autoUpdate !== false,
-            beta: context.beta,
-          }
-        : null;
-    },
-    mayRun: () => !this.destroyed && !desktopShutdown.locked && !this.pluginMaintenance,
-    inspect: async () => {
-      const stamp = JSON.stringify(this.pluginContext()),
-        view = await this.pluginJobs.inspect();
-      if (!this.destroyed && stamp === JSON.stringify(this.pluginContext()))
-        this.pluginManaged = view;
-      return view;
-    },
-    years: async () => {
-      const inventory = await this.inventory.inspect(true);
-      return inventory.years.filter((y) => y.executable === 'found').map((y) => y.year);
-    },
-    catalog: async () => {
-      const result = await this.api.plugins();
-      if (!result.ok) throw Error(result.code);
-      return result.data;
-    },
-    install: async (code, years, verified, automatic) => {
-      const result = await (verified
-        ? this.pluginJobs.installVerified(code, years, automatic)
-        : this.pluginJobs.install(code, years));
-      await this.refreshManagedPlugins();
-      return result;
-    },
-    recover: async () => {
-      const result = await this.pluginJobs.recover();
-      await this.refreshManagedPlugins();
-      return result;
-    },
     processes: readRevitProcesses,
-    cancel: () => this.pluginJobs.invalidate(),
+    mayRun: () => !this.destroyed && !desktopShutdown.locked,
+    audit: (event) => this.o.log.info('плагины', { ...event }),
     changed: () => {
       if (!this.destroyed) {
         this.publish();
@@ -379,9 +278,7 @@ export class ClientHost {
           !this.destroyed &&
           this.updateContext().stamp === stamp &&
           !this.pauseFlight &&
-          !this.pluginJobs.busy &&
           !this.pluginUpdates.busy &&
-          !this.pluginMaintenance &&
           !this.login?.open &&
           !this.toasts.hasReplySurface &&
           this.traySafeForUpdate() &&
@@ -861,13 +758,14 @@ export class ClientHost {
         this.updateFocus({ until: null, startedAt: null });
       this.scheduleRefresh();
     }, 30000);
+    // Незавершённая установка плагина доводится при запуске — до входа и без сервера.
+    void this.pluginUpdates.refresh();
     void this.bootstrap().then(
       () => this.updates.start(),
       () => this.updates.start(),
     );
   }
   private invalidate(): void {
-    this.invalidatePluginJobs();
     this.pluginCatalog.reset();
     this.configEpoch = -1;
     this.timerEpoch = -1;
@@ -920,7 +818,6 @@ export class ClientHost {
     this.publish();
   }
   private signedOut(): void {
-    this.invalidatePluginJobs();
     this.pluginCatalog.reset();
     this.configEpoch = -1;
     this.timerEpoch = -1;
@@ -2107,7 +2004,7 @@ export class ClientHost {
   private event(name: RealtimeEvent, data: unknown): void {
     this.o.log.info('событие клиента', { event: name });
     if (name === 'desktop:plugins') {
-      this.invalidatePluginJobs();
+      // Только новое чтение каталога: начатую запись на диск событие не обрывает.
       this.pluginCatalog.invalidate();
       return;
     }
@@ -2734,8 +2631,7 @@ export class ClientHost {
       case 'updates.cancel':
         return ok(await this.desktopUpdates.cancel(r.jobId));
       case 'updates.requestLaunch':
-        if (this.pluginJobs.busy || this.pluginUpdates.busy || this.pluginMaintenance)
-          return failure('update_busy');
+        if (this.pluginUpdates.busy) return failure('update_busy');
         if (!this.traySafeForUpdate() || this.toasts.hasReplySurface) return failure('update_busy');
         return ok(this.desktopUpdates.requestLaunch(r.jobId));
       case 'updates.acknowledge':
@@ -2855,7 +2751,6 @@ export class ClientHost {
     if (!this.api.owner || this.state.user?.mustChangePassword) return failure('unauthenticated');
     if (r.kind === 'plugins.refresh') {
       await this.pluginCatalog.refresh(true);
-      await this.refreshManagedPlugins();
       await this.pluginUpdates.refresh(true);
       return !this.destroyed && r.epoch === this.api.epoch
         ? ok(this.pluginCatalog.state)
@@ -2868,7 +2763,6 @@ export class ClientHost {
       )
         return failure('forbidden');
       if (r.beta === true && !this.pluginCatalog.state.catalog?.tester) return failure('forbidden');
-      this.invalidatePluginJobs();
       const before = this.o.settings.get().plugins ?? {
         betaScopes: [],
         autoUpdate: true,
@@ -2886,89 +2780,27 @@ export class ClientHost {
         },
       });
       this.publish();
+      void this.pluginUpdates.refresh();
       return ok(null);
     }
-    if (
-      r.kind === 'plugins.install' ||
-      r.kind === 'plugins.rollback' ||
-      r.kind === 'plugins.recover'
-    ) {
+    if (r.kind === 'plugins.install' || r.kind === 'plugins.rollback') {
       if (!this.pluginContext()) return failure('forbidden');
-      const epoch = this.api.epoch;
-      const stamp = JSON.stringify(this.pluginContext());
-      if (r.kind === 'plugins.install') {
-        const availability = await this.pluginJobs.inspect();
-        // A denied/stale observation must never restart this intent in a new
-        // context or bypass the inventory prerequisite.
-        if (
-          this.destroyed ||
-          epoch !== this.api.epoch ||
-          stamp !== JSON.stringify(this.pluginContext())
-        )
-          return failure('stale_session');
-        if (!availability.installationAvailable || availability.status !== 'ready')
-          return {
-            ok: false,
-            code: 'plugin_job_blocked',
-            retryable: false,
-            error:
-              'Установка недоступна: доверенный издатель и раскладка пакетов не настроены или проверка не пройдена.',
-          };
-        const inventory = await this.inventory.inspect(true);
-        if (this.destroyed || stamp !== JSON.stringify(this.pluginContext()))
-          return failure('stale_session');
-        if (
-          r.years.some(
-            (year) => !inventory.years.some((y) => y.year === year && y.executable === 'found'),
-          )
-        )
-          return failure('forbidden');
-      }
-      if (r.kind === 'plugins.install') {
-        const scheduled = await this.pluginUpdates.manual(r.code, [...r.years]);
-        if (this.destroyed || epoch !== this.api.epoch) return failure('stale_session');
-        await this.refreshManagedPlugins();
-        return scheduled.accepted
-          ? ok(null)
-          : {
-              ok: false,
-              code: 'plugin_job_blocked',
-              retryable: false,
-              error:
-                'Проверка плагина не пройдена. Установка не подтверждена; обновите сведения в окне плагинов.',
-            };
-      }
-      if (this.pluginJobs.busy || this.pluginUpdates.busy || this.pluginMaintenance)
-        return failure('update_busy');
-      this.pluginMaintenance = true;
-      this.pluginUpdates.invalidate();
-      let result;
-      try {
-        result = await (r.kind === 'plugins.rollback'
-          ? this.pluginJobs.rollback(r.receiptId)
-          : this.pluginJobs.recover());
-      } finally {
-        this.pluginMaintenance = false;
-      }
-      if (this.destroyed || epoch !== this.api.epoch) return failure('stale_session');
-      await this.refreshManagedPlugins();
-      if (
-        result.status === 'complete' ||
-        (result.status === 'blocked' && result.reason === 'rolled_back_empty')
-      )
-        return ok(null);
+      // Запрос только ставит намерение в очередь; ход и итог видны на экране плагинов.
+      const result = this.pluginUpdates.request(
+        r.code,
+        r.kind === 'plugins.install' ? 'install' : 'rollback',
+      );
+      if (result.accepted) return ok(null);
       return {
         ok: false,
         code: 'plugin_job_blocked',
         retryable: false,
         error:
           result.reason === 'plugin_trust_unconfigured'
-            ? 'Установка недоступна: доверенный издатель и раскладка пакетов не настроены.'
-            : result.reason === 'revit_busy'
-              ? 'Закройте Revit и повторите действие.'
-              : result.status === 'recovery'
-                ? 'Операция не завершена. Файлы сохранены для отдельного восстановления.'
-                : 'Проверка плагинов не пройдена. Установка или откат не подтверждены.',
+            ? S.pluginInstallUnavailable
+            : result.reason === 'rollback_unavailable'
+              ? S.pluginRollbackUnavailable
+              : S.pluginRequestFailed,
       };
     }
     if (
@@ -3275,17 +3107,6 @@ export class ClientHost {
       }
     }
   }
-  private invalidatePluginJobs(): void {
-    this.pluginGeneration++;
-    this.pluginJobs.invalidate();
-    this.pluginUpdates?.invalidate();
-    this.pluginManaged = {
-      status: 'unavailable',
-      installationAvailable: false,
-      receiptId: null,
-      packages: [],
-    };
-  }
   private showPluginNotices(): void {
     if (this.destroyed || !this.toasts) return;
     for (const [id, ticket] of this.pluginNoticeWindows) {
@@ -3307,17 +3128,17 @@ export class ClientHost {
         ordinary: true,
       };
       if (!this.current(notice)) continue;
+      // ТЗ 5.3: «Планы этажей 1.43 · ДДУ 1.12 — установятся, когда вы закроете Revit 2025».
+      const list = ticket.items.map((i) => `${i.name} ${i.version}`.trim()).join(' · ');
+      const years = [...new Set(ticket.items.flatMap((i) => i.years))].sort().join(', ');
       const spec: ToastSpec = {
         id: 'plugins:' + ticket.id,
         key: ticket.id,
         groupId: 'plugin-' + ticket.type,
-        title:
-          ticket.type === 'waiting'
-            ? 'Готовы обновления плагинов'
-            : 'Плагины обновлены — можно открывать Revit',
-        body: `${ticket.item.name} ${ticket.item.version} · Revit ${ticket.item.years.join(', ')}${ticket.type === 'waiting' ? '. Проверим и установим после закрытия всех процессов Revit.' : ''}`,
+        title: ticket.type === 'waiting' ? S.pluginWaitingTitle : S.pluginCompleteTitle,
+        body: ticket.type === 'waiting' ? S.pluginWaitingBody(list, years) : list,
         hasReply: false,
-        buttons: ticket.type === 'waiting' ? ['Что нового', 'Хорошо'] : [],
+        buttons: ticket.type === 'waiting' ? [S.pluginNotesButton, S.pluginOkButton] : [],
         delayMs: 0,
       };
       this.pluginNoticeWindows.set(ticket.id, ticket);
@@ -3329,52 +3150,32 @@ export class ClientHost {
       }
     }
   }
-  private pluginContext(): PluginJobContext | null {
+  /** Вход, при котором работают плагины. Сеть для «Вернуть» и доведения операции не нужна. */
+  private pluginContext(): PluginUpdaterContext | null {
     if (
       this.destroyed ||
       !this.api?.owner ||
       this.state.user?.id !== this.api.owner ||
       this.state.user.mustChangePassword ||
-      this.state.connection !== 'online' ||
       this.configEpoch !== this.api.epoch ||
       (this.api.desktopConfiguration?.capabilities.plugins ?? 0) < 1 ||
-      process.platform !== 'win32' ||
-      !process.env.ProgramData
+      process.platform !== 'win32'
     )
       return null;
-    const targetRoot = join(app.getPath('appData'), 'Autodesk', 'Revit', 'Addins'),
-      machine = join(process.env.ProgramData, 'Autodesk', 'Revit', 'Addins');
     const preferences = this.o.settings.get().plugins ?? {
       betaScopes: [],
       autoUpdate: true,
       notifyInstalled: true,
     };
     return {
-      scope: { serverHash: this.serverScopeHash, ownerId: this.api.owner },
-      token: JSON.stringify([
-        this.api.epoch,
-        this.configEpoch,
-        this.pluginGeneration,
-        this.api.desktopConfiguration,
-        preferences,
-      ]),
-      beta: preferences.betaScopes.includes(`${this.serverScopeHash}:${this.api.owner}`),
-      targetRoot,
-      dataRoot: join(app.getPath('userData'), 'plugins'),
-      stagingParent: join(app.getPath('userData'), 'plugin-staging'),
-      scanRoots: ([2025, 2026] as const).flatMap((year) => [
-        { year, path: join(targetRoot, String(year)) },
-        { year, path: join(machine, String(year)) },
-      ]),
+      key: JSON.stringify([this.serverScopeHash, this.api.owner, this.api.epoch]),
+      scope: PluginInstaller.scope(this.serverScopeHash, this.api.owner),
+      automatic: preferences.autoUpdate !== false,
+      beta:
+        preferences.betaScopes.includes(`${this.serverScopeHash}:${this.api.owner}`) &&
+        this.pluginCatalog.state.catalog?.tester === true,
+      available: pluginInstallationAvailable(),
     };
-  }
-  private async refreshManagedPlugins(): Promise<void> {
-    const stamp = JSON.stringify(this.pluginContext()),
-      view = await this.pluginJobs.inspect();
-    if (!this.destroyed && stamp === JSON.stringify(this.pluginContext())) {
-      this.pluginManaged = view;
-      this.publish();
-    }
   }
   private syncUpdateContext(): void {
     const fingerprint = JSON.stringify([
@@ -3425,11 +3226,6 @@ export class ClientHost {
         app.isPackaged &&
         desktopPublisherConfigured(APPROVED_DESKTOP_PUBLISHER_DER_SHA256),
     };
-    const pluginStamp = JSON.stringify(this.pluginContext());
-    if (pluginStamp !== this.pluginContextStamp) {
-      this.invalidatePluginJobs();
-      this.pluginContextStamp = JSON.stringify(this.pluginContext());
-    }
     this.pluginUpdates.sync();
     const pluginPreferences = this.o.settings.get().plugins ?? {
       betaScopes: [],
@@ -3444,7 +3240,7 @@ export class ClientHost {
       autoUpdate: pluginPreferences.autoUpdate,
       notifyInstalled: pluginPreferences.notifyInstalled !== false,
       workflow: structuredClone(this.pluginUpdates.state),
-      managed: this.pluginManaged,
+      managed: structuredClone(this.pluginUpdates.managed),
     };
     if (
       !this.api?.owner ||
@@ -3460,12 +3256,6 @@ export class ClientHost {
         error: null,
         beta: false,
         checkedAt: null,
-        managed: {
-          status: 'unavailable',
-          installationAvailable: false,
-          receiptId: null,
-          packages: [],
-        },
       };
     if (this.support) {
       const config = this.api.desktopConfiguration,
@@ -3671,7 +3461,6 @@ export class ClientHost {
   }
   destroy(): void {
     this.destroyed = true;
-    this.invalidatePluginJobs();
     this.report.clear();
     this.configuration.destroy();
     this.updates.destroy();

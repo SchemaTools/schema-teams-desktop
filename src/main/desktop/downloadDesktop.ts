@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, lstatSync, unlinkSync, rmdirSync } from 'node:fs';
 import { desktopRelease } from '../api/updates';
-import { nodePathSafe } from '../plugins/transactionFs';
+import { nodePathSafe } from '../plugins/fsSafe';
 import type { DesktopRelease } from '../../shared/updates';
 
 export const DESKTOP_MAX_BYTES = 512 * 1024 * 1024;
