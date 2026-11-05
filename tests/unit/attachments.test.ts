@@ -321,6 +321,19 @@ describe('AttachmentService: current membership and downloads', () => {
     expect(h.reveal).not.toHaveBeenCalled();
   });
 
+  it('смена входа во время открытия не удаляет уже записанный и открытый файл', async () => {
+    const h = await harness();
+    const opening = deferred<string>();
+    h.openPath.mockImplementation(() => opening.promise);
+    const action = h.service.action(h.target, 'open');
+    await vi.waitFor(() => expect(h.openPath).toHaveBeenCalledOnce());
+    h.api.clear();
+    opening.resolve('');
+    await expect(action).resolves.toMatchObject({ ok: false, code: 'stale_session' });
+    expect(await readdir(h.dir)).toEqual([h.file.fileName]);
+    expect(await readFile(join(h.dir, h.file.fileName))).toEqual(Buffer.from(pdf));
+  });
+
   it('старое действие после выхода не обращается к API', async () => {
     const h = await harness();
     h.api.clear();

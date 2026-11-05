@@ -322,7 +322,9 @@ export class AttachmentService {
       return this.current(t) ? failure('file_error') : failure('stale_session');
     } finally {
       this.leave(key);
-      if (created && (!complete || !this.current(t))) await unlink(created).catch(() => {});
+      // Удаляется только недописанный файл. Дописанный остаётся в «Загрузках» и после
+      // смены входа: его уже могла открыть программа сотрудника.
+      if (created && !complete) await unlink(created).catch(() => {});
     }
   }
 }
