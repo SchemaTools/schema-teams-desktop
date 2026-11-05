@@ -703,10 +703,15 @@ button svg {
   flex: 1;
   min-width: 0;
   width: 100%;
-  min-height: 34px;
-  max-height: 150px;
+  /* Поле растёт по тексту от 1 до 8 строк (21 px × 8 + отступы), дальше — прокрутка;
+     ручного уголка нет — как в макете v4. */
+  field-sizing: content;
+  height: auto;
+  min-height: 33px;
+  max-height: 180px;
   padding: 6px 2px;
-  resize: vertical;
+  overflow-y: auto;
+  resize: none;
   border: 0;
   outline: none;
   background: transparent;
