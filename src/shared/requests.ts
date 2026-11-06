@@ -4,7 +4,7 @@ import { expectedValid, timerRowsValid } from './time';
 import { preferenceTabs, preferencesPatchValid } from './preferences';
 import { releaseVersionValid } from './updates';
 import { reportOptionsValid } from './report';
-import { pluginCode } from './plugins';
+import { pluginCode, pluginComponentId } from './plugins';
 const id = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const text = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
 const uuid = (v: unknown) =>
@@ -59,6 +59,15 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     case 'plugins.install':
     case 'plugins.rollback':
       return only('code') && pluginCode(r.code);
+    case 'plugins.components':
+      return (
+        only('code', 'deselected') &&
+        pluginCode(r.code) &&
+        Array.isArray(r.deselected) &&
+        r.deselected.length <= 200 &&
+        r.deselected.every(pluginComponentId) &&
+        new Set(r.deselected).size === r.deselected.length
+      );
     case 'plugins.preferences':
       return (
         only('beta', 'autoUpdate', 'notifyInstalled') &&

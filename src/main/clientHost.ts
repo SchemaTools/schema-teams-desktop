@@ -93,8 +93,13 @@ import {
   type PluginUpdaterContext,
 } from './plugins/updater';
 import { PluginInstaller } from './plugins/installer';
+import { PLUGIN_SET_CODE } from '../shared/plugins';
 import { S } from './strings';
-import { createProductionInstaller, pluginInstallationAvailable } from './plugins/production';
+import {
+  createPluginSetup,
+  createProductionInstaller,
+  pluginInstallationAvailable,
+} from './plugins/production';
 import { readRevitProcesses } from './plugins/safety';
 import {
   MorningNotices,
@@ -224,6 +229,9 @@ export class ClientHost {
     },
     processes: readRevitProcesses,
     mayRun: () => !this.destroyed && !desktopShutdown.locked,
+    deselected: (code) => [...(this.o.settings.get().pluginDeselected?.[code] ?? [])],
+    // Сертификат бюро, замена установки Inno и bureau.txt (решение 06.11).
+    ...createPluginSetup(),
     audit: (event) => this.o.log.info('плагины', { ...event }),
     changed: () => {
       if (!this.destroyed) {
@@ -2814,6 +2822,37 @@ export class ClientHost {
       void this.pluginUpdates.refresh();
       return ok(null);
     }
+    if (r.kind === 'plugins.components') {
+      if (!this.pluginContext()) return failure('forbidden');
+      const known =
+        this.pluginUpdates.managed.plugins.some((p) => p.code === r.code) ||
+        !!this.pluginCatalog.state.catalog?.plugins.some((p) => p.code === r.code);
+      if (!known) return failure('validation');
+      // Обязательные компоненты снять нельзя — их отметка игнорируется.
+      const fixed = new Set(
+        this.pluginUpdates.managed.plugins
+          .find((p) => p.code === r.code)
+          ?.components?.filter((c) => c.fixed)
+          .map((c) => c.id) ?? [],
+      );
+      const before = this.o.settings.get().pluginDeselected ?? {};
+      this.o.settings.update({
+        pluginDeselected: {
+          ...before,
+          [r.code]: [...new Set(r.deselected.filter((id) => !fixed.has(id)))].sort(),
+        },
+      });
+      const result = await this.pluginUpdates.select(r.code);
+      this.publish();
+      if (result.ok) return ok({ applied: result.applied === true });
+      return {
+        ok: false,
+        code: 'plugin_job_blocked',
+        retryable: true,
+        error:
+          result.reason === 'journal_pending' ? S.pluginSelectionBusy : S.pluginSelectionFailed,
+      };
+    }
     if (r.kind === 'plugins.install' || r.kind === 'plugins.rollback') {
       if (!this.pluginContext()) return failure('forbidden');
       // Запрос только ставит намерение в очередь; ход и итог видны на экране плагинов.
@@ -3172,12 +3211,24 @@ export class ClientHost {
       // ТЗ 5.3: «Планы этажей 1.43 · ДДУ 1.12 — установятся, когда вы закроете Revit 2025».
       const list = ticket.items.map((i) => `${i.name} ${i.version}`.trim()).join(' · ');
       const years = [...new Set(ticket.items.flatMap((i) => i.years))].sort().join(', ');
+      // Набор плагинов одним пакетом: «Готово обновление набора плагинов — установится, когда закроете Revit».
+      const set = ticket.items.length === 1 && ticket.items[0]?.code === PLUGIN_SET_CODE;
       const spec: ToastSpec = {
         id: 'plugins:' + ticket.id,
         key: ticket.id,
         groupId: 'plugin-' + ticket.type,
-        title: ticket.type === 'waiting' ? S.pluginWaitingTitle : S.pluginCompleteTitle,
-        body: ticket.type === 'waiting' ? S.pluginWaitingBody(list, years) : list,
+        title:
+          ticket.type === 'waiting'
+            ? set
+              ? S.pluginSetWaitingTitle
+              : S.pluginWaitingTitle
+            : S.pluginCompleteTitle,
+        body:
+          ticket.type === 'waiting'
+            ? set
+              ? S.pluginSetWaitingBody(list, years)
+              : S.pluginWaitingBody(list, years)
+            : list,
         hasReply: false,
         buttons: ticket.type === 'waiting' ? [S.pluginNotesButton, S.pluginOkButton] : [],
         delayMs: 0,

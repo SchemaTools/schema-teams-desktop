@@ -45,6 +45,17 @@ const reasons = new Set([
   'revit_not_found',
   'revit_busy',
   'scope',
+  'package_manifest',
+  'selection',
+  'selection_unavailable',
+  'certificate_required',
+  'certificate_declined',
+  'certificate_failed',
+  'legacy_failed',
+  'legacy_path',
+  'legacy_uninstall',
+  'legacy_timeout',
+  'bureau_settings_failed',
 ]);
 /** Diagnostic observer is advisory; only fixed classification and validated identifiers escape. */
 export function auditPlugin(listener: PluginAuditListener | undefined, event: PluginAudit): void {

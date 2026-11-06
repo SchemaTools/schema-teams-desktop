@@ -92,9 +92,26 @@ async function launch(theme: 'light' | 'dark' = 'light') {
     const { createRequire } = process.getBuiltinModule('module'),
       load = createRequire(`${app.getAppPath()}/package.json`);
     const host = load('./dist/main/index.js') as {
-      client?: { inventory: { inspect: () => Promise<unknown> } };
+      client?: {
+        inventory: { inspect: () => Promise<unknown> };
+        pluginUpdates: { o: Record<string, unknown>; refresh: (retry: boolean) => Promise<void> };
+        pluginSetupCalls?: { trust: boolean[]; commit: [string, boolean][] };
+      };
     };
     if (!host.client) throw Error('No host');
+    // Настоящие certutil, реестр и удалитель Inno в тестах не запускаются: только записи вызовов.
+    const setupCalls = { trust: [] as boolean[], commit: [] as [string, boolean][] };
+    host.client.pluginSetupCalls = setupCalls;
+    host.client.pluginUpdates.o.ensureTrust = async (o: { manual: boolean }) => {
+      setupCalls.trust.push(o.manual);
+      return 'ok';
+    };
+    // Revit на компьютере разработчика не должен менять исход теста (на CI его нет).
+    host.client.pluginUpdates.o.processes = async () => 'idle';
+    host.client.pluginUpdates.o.beforeCommit = async (code: string, first: boolean) => {
+      setupCalls.commit.push([code, first]);
+      return first ? 'legacy_uninstall' : null;
+    };
     host.client.inventory.inspect = async () => ({
       checkedAt: Date.now(),
       years: [
@@ -104,6 +121,8 @@ async function launch(theme: 'light' | 'dark' = 'light') {
         },
       ],
     });
+    // Очередь могла начаться при входе с настоящими портами — перепроверить с подменёнными.
+    void host.client.pluginUpdates.refresh(true);
   });
   await page.getByRole('button', { name: 'Плагины', exact: true }).click();
   return page;
@@ -451,3 +470,149 @@ function colorContrast(foreground: number[], background: number[]): number {
     b = luminance(background);
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
+
+// ── набор плагинов одним пакетом (решение 06.11) ─────────────────────────────
+const SET_GUIDS: Record<string, string> = {
+  SchemaAbout: '0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d',
+  SchemaFloorPlans: '1b2c3d4e-5f6a-4b7c-8d9e-0f1a2b3c4d5e',
+  SchemaGrids: '2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f',
+  SchemaColors: '3d4e5f6a-7b8c-4d9e-8f1a-2b3c4d5e6f7a',
+};
+const SET_COMPONENTS: [string, string, string, boolean][] = [
+  ['about', 'О наборе', 'SchemaAbout', true],
+  ['floorplans', 'Планы этажей', 'SchemaFloorPlans', false],
+  ['grids', 'Оси', 'SchemaGrids', false],
+  ['colors', 'Цвета', 'SchemaColors', false],
+];
+function syntheticSet(version: string, count: number) {
+  const components = SET_COMPONENTS.slice(0, count);
+  const entries = [
+    {
+      name: 'schema-plugins.json',
+      bytes: Buffer.from(
+        JSON.stringify({
+          format: 1,
+          code: 'schema-plugins',
+          version,
+          components: components.map(([id, title, name, fixed]) => ({
+            id,
+            title,
+            addin: `${name}.addin`,
+            fixed,
+          })),
+        }),
+      ),
+    },
+    { name: 'Что нового.md', bytes: Buffer.from(`# ${version}\n`) },
+  ];
+  for (const [, , name] of components) {
+    entries.push({
+      name: `2025/${name}.addin`,
+      bytes: Buffer.from(
+        `<?xml version="1.0" encoding="utf-8"?><RevitAddIns><AddIn Type="Application"><Name>${name}</Name><Assembly>${name}\\${name}.dll</Assembly><AddInId>${SET_GUIDS[name]}</AddInId><FullClassName>${name}.App</FullClassName><VendorId>TEST</VendorId></AddIn></RevitAddIns>`,
+      ),
+    });
+    entries.push({
+      name: `2025/${name}/${name}.dll`,
+      bytes: Buffer.from(`INERT E2E FIXTURE ${name} ${version}, NEVER LOAD`),
+    });
+  }
+  return makePluginZip(entries).buffer;
+}
+test('набор плагинов: одна карточка, состав галочками без загрузки, обновление сохраняет выбор, «Вернуть»', async () => {
+  const first = syntheticSet('1.47', 3),
+    second = syntheticSet('1.48', 4);
+  const set = {
+    code: 'schema-plugins',
+    name: 'Набор плагинов Schema',
+    short: 'НП',
+    stable: {
+      id: 11,
+      version: '1.47',
+      verified: true,
+      revit: [2025],
+      notes: 'Набор 1.47: синтетика.',
+      size: first.length,
+      sha256: fileHash(first),
+      url: '/api/desktop/plugins/files/11',
+      publishedAt: '2026-11-06T04:00:00.000Z',
+      requires: [],
+    },
+    beta: null,
+  };
+  stub.state.pluginCatalog = { tester: false, plugins: [] };
+  const page = await launch(),
+    panel = pagePlugins(page);
+  await useTestDisk({ 11: first.toString('base64'), 12: second.toString('base64') });
+  await setRevit('idle');
+  stub.state.pluginCatalog = { tester: false, plugins: [set] };
+  stub.emit('desktop:plugins', undefined);
+  await expect(panel.getByRole('heading', { name: 'Набор плагинов Schema' })).toBeVisible();
+  await expect(panel).toContainText('Готово — можно открывать Revit.', { timeout: 20000 });
+  // прежняя установка Inno не удалилась — установка всё равно прошла, причина видна
+  await expect(panel).toContainText('Прежняя установка плагинов не удалилась');
+  const group = panel.getByRole('group', { name: /Состав набора/ });
+  await expect(group).toContainText('Состав набора: 3 из 3');
+  await expect(group.getByRole('checkbox', { name: 'О наборе' })).toBeDisabled();
+  await expect(group.getByRole('checkbox', { name: 'О наборе' })).toBeChecked();
+  const state = await testState();
+  if (!state) throw Error('No test state');
+  const addinPath = join(state.root, 'roaming', 'Addins', '2025', 'schema-plugins.addin');
+  expect(await readFile(addinPath, 'utf8')).toContain(SET_GUIDS.SchemaGrids);
+  await page.screenshot({ path: test.info().outputPath('plugins-set-installed.png') });
+  await page.evaluate(source);
+  const contrast = await page.evaluate(async () => {
+    const axe = (window as unknown as { axe: typeof import('axe-core') }).axe;
+    return axe.run('.plugin-card', { runOnly: { type: 'rule', values: ['color-contrast'] } });
+  });
+  expect(contrast.violations).toEqual([]);
+  // Снять «Оси»: .addin перезаписан без загрузки, Revit подхватит после перезапуска.
+  // Галочка управляется главным процессом: состояние меняется после ответа, не сразу.
+  await group.getByRole('checkbox', { name: 'Оси' }).click();
+  await expect(group.getByRole('checkbox', { name: 'Оси' })).not.toBeChecked();
+  await expect(group).toContainText('Состав изменён. Revit подхватит его после перезапуска.');
+  await expect(group).toContainText('Состав набора: 2 из 3');
+  expect(await readFile(addinPath, 'utf8')).not.toContain(SET_GUIDS.SchemaGrids);
+  expect((await testState())?.downloads).toBe(1);
+  const saved = JSON.parse(await readFile(join(profile, 'settings.json'), 'utf8')) as {
+    pluginDeselected?: Record<string, string[]>;
+  };
+  expect(saved.pluginDeselected).toEqual({ 'schema-plugins': ['grids'] });
+  // Новая версия набора: выбор сохранён, новый компонент «Цвета» включён.
+  set.stable = {
+    ...set.stable,
+    id: 12,
+    version: '1.48',
+    notes: 'Набор 1.48: добавлены «Цвета».',
+    size: second.length,
+    sha256: fileHash(second),
+    url: '/api/desktop/plugins/files/12',
+  };
+  stub.emit('desktop:plugins', undefined);
+  await expect(group).toContainText('Состав набора: 3 из 4', { timeout: 20000 });
+  const xml = await readFile(addinPath, 'utf8');
+  expect(xml).toContain(SET_GUIDS.SchemaColors);
+  expect(xml).not.toContain(SET_GUIDS.SchemaGrids);
+  expect(xml).toContain(join('schema-plugins', '1.48', '2025', 'SchemaColors'));
+  await panel.locator('summary').click();
+  await expect(panel).toContainText('Набор 1.48: добавлены «Цвета».');
+  await panel.getByRole('button', { name: 'Вернуть 1.47', exact: true }).click();
+  await expect(panel).toContainText('Автообновление версии 1.48 остановлено', { timeout: 20000 });
+  const back = await readFile(addinPath, 'utf8');
+  expect(back).toContain(join('schema-plugins', '1.47', '2025'));
+  expect(back).not.toContain(SET_GUIDS.SchemaGrids);
+  const calls = await app?.evaluate(({ app }) => {
+    const load = process
+      .getBuiltinModule('module')
+      .createRequire(`${app.getAppPath()}/package.json`);
+    return (
+      load('./dist/main/index.js') as {
+        client: { pluginSetupCalls: { trust: boolean[]; commit: [string, boolean][] } };
+      }
+    ).client.pluginSetupCalls;
+  });
+  expect(calls?.commit).toEqual([
+    ['schema-plugins', true],
+    ['schema-plugins', false],
+  ]);
+});

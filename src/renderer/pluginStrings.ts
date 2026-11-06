@@ -49,6 +49,31 @@ export const P = {
   installOnClose: 'Установить при закрытии',
   reinstall: 'Переустановить',
   rollback: (version: string) => `Вернуть ${version}`,
+  retry: 'Повторить',
+  // набор плагинов одним пакетом (решение 06.11)
+  components: (selected: number, total: number) => `Состав набора: ${selected} из ${total}`,
+  componentFixed: 'Входит в набор всегда',
+  componentsHint:
+    'Снятые плагины Revit не загрузит. Изменение — без загрузки; Revit подхватит после перезапуска.',
+  componentsAfterInstall:
+    'По умолчанию ставятся все плагины набора. Состав можно выбрать галочками после установки.',
+  selectionApplied: 'Состав изменён. Revit подхватит его после перезапуска.',
+  selectionSaved: 'Выбор сохранён — применится при установке набора.',
+  certificatePrompt: 'Windows спросит подтверждение сертификата бюро — нажмите «Да».',
+  notice: (reason: string): string => {
+    switch (reason) {
+      case 'legacy_path':
+        return 'Прежняя установка плагинов не удалена: путь её удалителя вне папки SchemaRevitPlugins. Её файлы .addin отключены, плагины работают из Schema Teams. Удалить её можно в «Приложениях» Windows.';
+      case 'legacy_uninstall':
+        return 'Прежняя установка плагинов не удалилась (удалитель вернул ошибку). Её файлы .addin отключены, плагины работают из Schema Teams. Удалить её можно в «Приложениях» Windows.';
+      case 'legacy_timeout':
+        return 'Удаление прежней установки плагинов не завершилось вовремя. Её файлы .addin отключены, плагины работают из Schema Teams.';
+      case 'bureau_settings_failed':
+        return 'Не удалось записать настройки бюро для плагинов (bureau.txt). Сообщите BIM-менеджеру.';
+      default:
+        return 'Прежнюю установку плагинов не удалось проверить. Её файлы .addin отключены, плагины работают из Schema Teams.';
+    }
+  },
   progress: (name: string) => `${name}: идёт установка`,
   phase: {
     waiting: 'Установится, когда вы закроете Revit.',
@@ -82,6 +107,14 @@ export const P = {
         return 'Сборки больше нет в каталоге. Нажмите «Проверить».';
       case 'revit_not_found':
         return 'Не найден Revit той версии, для которой эта сборка.';
+      case 'package_manifest':
+        return 'Описание набора (schema-plugins.json) в архиве не прошло проверку. Сообщите BIM-менеджеру.';
+      case 'certificate_required':
+        return 'Нужно подтвердить сертификат бюро. Нажмите «Повторить» — Windows спросит подтверждение, ответьте «Да».';
+      case 'certificate_declined':
+        return 'Сертификат бюро не подтверждён — без него подпись плагинов не проверить, набор не установлен. Нажмите «Повторить» и ответьте «Да».';
+      case 'certificate_failed':
+        return 'Не удалось добавить сертификат бюро в доверенные. Набор не установлен. Подробности — в журнале приложения.';
       case 'rollback_unavailable':
         return 'Предыдущая версия не сохранилась — вернуть нечего.';
       default:

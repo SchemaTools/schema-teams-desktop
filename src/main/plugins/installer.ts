@@ -21,13 +21,23 @@ import { removeTree } from './archivePaths';
 import {
   ADDIN_MAX_BYTES,
   parseOwnAddin,
-  renderAddin,
+  renderAddinEntries,
   resolveAssembly,
+  resolvedEntry,
+  resolvedEntryValid,
   softAddinEntries,
-  type AddinEntry,
+  type ResolvedAddinEntry,
 } from './addin';
 import { hashFile, key, nodePathSafe, sha } from './fsSafe';
 import type { RevitProcessState } from './safety';
+import {
+  PLUGIN_SET_MANIFEST,
+  componentId,
+  componentTitle,
+  parsePluginSetManifest,
+  selectedComponentIds,
+  type PluginSetManifest,
+} from './pluginSet';
 
 /**
  * Установка плагинов по ТЗ 8.3 — один плагин за операцию:
@@ -61,6 +71,24 @@ export interface VersionRecord {
   addins: { year: Year; xml: string }[];
   /** AddInId всех AddIn сборки — по ним ищутся прежние установки и конфликты. */
   ids: string[];
+  /**
+   * Набор плагинов (schema-plugins.json): компоненты, записи AddIn по годам и выбранные
+   * компоненты. По ним .addin перезаписывается при смене состава без загрузки.
+   */
+  components?: ComponentRecord[];
+  parts?: AddinPart[];
+  selected?: string[];
+}
+export interface ComponentRecord {
+  id: string;
+  title: string;
+  fixed: boolean;
+}
+export interface AddinPart {
+  year: Year;
+  /** null — .addin, которого нет в schema-plugins.json: ставится всегда. */
+  component: string | null;
+  entries: ResolvedAddinEntry[];
 }
 export interface PluginRecord {
   code: string;
@@ -106,6 +134,8 @@ export interface InstalledPlugin {
   /** Предыдущая версия цела и её можно вернуть без сервера. */
   rollbackAvailable: boolean;
   held: { buildId: number; archiveSha256: string } | null;
+  /** Компоненты набора установленной версии и выбор (только у пакета с schema-plugins.json). */
+  components?: { id: string; title: string; fixed: boolean; selected: boolean }[];
 }
 export interface InstallerOptions {
   /** %LOCALAPPDATA%\Schema Teams\plugins (без переменной — userData\plugins). */
@@ -171,8 +201,52 @@ function versionValid(v: unknown): v is VersionRecord {
       (a) => yearValid(a.year) && typeof a.xml === 'string' && a.xml.length <= ADDIN_MAX_BYTES,
     ) &&
     Array.isArray(r.ids) &&
-    r.ids.every((id) => typeof id === 'string' && /^[0-9a-f-]{36}$/.test(id))
+    r.ids.every((id) => typeof id === 'string' && /^[0-9a-f-]{36}$/.test(id)) &&
+    setValid(r)
   );
+}
+/** Поля набора — все вместе или ни одного (записи прежних версий приложения — без них). */
+function setValid(r: VersionRecord): boolean {
+  if (r.components === undefined && r.parts === undefined && r.selected === undefined) return true;
+  if (!Array.isArray(r.components) || !Array.isArray(r.parts) || !Array.isArray(r.selected))
+    return false;
+  const ids = new Set(r.components.map((c) => c?.id));
+  return (
+    r.components.length <= 200 &&
+    ids.size === r.components.length &&
+    r.components.every(
+      (c) => !!c && componentId(c.id) && componentTitle(c.title) && typeof c.fixed === 'boolean',
+    ) &&
+    r.parts.length <= 1024 &&
+    r.parts.every(
+      (p) =>
+        !!p &&
+        yearValid(p.year) &&
+        (p.component === null || ids.has(p.component)) &&
+        Array.isArray(p.entries) &&
+        p.entries.length <= 32 &&
+        p.entries.every(resolvedEntryValid),
+    ) &&
+    r.selected.every((id) => typeof id === 'string' && ids.has(id))
+  );
+}
+/** .addin по годам из записей набора: компоненты вне выбора не попадают. */
+function renderParts(parts: readonly AddinPart[], selected: readonly string[]) {
+  const chosen = new Set(selected),
+    addins: VersionRecord['addins'] = [];
+  for (const year of [...new Set(parts.map((p) => p.year))].sort()) {
+    const entries = parts
+      .filter((p) => p.year === year && (p.component === null || chosen.has(p.component)))
+      .flatMap((p) => p.entries);
+    if (entries.length) addins.push({ year, xml: renderAddinEntries(entries) });
+  }
+  return addins;
+}
+/** Та же версия с другим выбором компонентов (без изменения файлов версии). */
+function withSelection(record: VersionRecord, deselected: readonly string[]): VersionRecord {
+  if (!record.components || !record.parts) return record;
+  const selected = selectedComponentIds(record.components, deselected);
+  return { ...record, selected, addins: renderParts(record.parts, selected) };
 }
 function recordValid(v: unknown): v is PluginRecord {
   const r = v as PluginRecord;
@@ -359,6 +433,12 @@ export class PluginInstaller {
           previous: p.previous?.version ?? null,
           rollbackAvailable: !!p.previous && (await this.versionIntact(p.code, p.previous)),
           held: p.held,
+          ...(p.current.components && {
+            components: p.current.components.map((c) => ({
+              ...c,
+              selected: c.fixed || !!p.current.selected?.includes(c.id),
+            })),
+          }),
         });
       }
       return result;
@@ -374,9 +454,12 @@ export class PluginInstaller {
     archivePath: string;
     years: Year[];
     signal?: AbortSignal;
+    /** Снятые галочки набора (настройки компьютера); новые компоненты включены. */
+    deselected?: readonly string[];
   }): Promise<PreparedPlugin> {
     const { scope, code, archivePath, signal } = request,
       build = { ...request.build },
+      deselected = [...(request.deselected ?? [])],
       years = [...new Set(request.years)].filter(yearValid).sort();
     return this.exclusive(async () => {
       if (!scopeValid(scope) || !years.length || !sha(build.sha256)) fail('package_invalid');
@@ -396,9 +479,21 @@ export class PluginInstaller {
       }
       try {
         const files = new Map(archive.files.map((f) => [f.relativePath.toLowerCase(), f]));
+        // Набор плагинов: schema-plugins.json в корне описывает компоненты (галочки).
+        const manifestFile = files.get(PLUGIN_SET_MANIFEST);
+        let manifest: PluginSetManifest | null = null;
+        if (manifestFile)
+          try {
+            manifest = parsePluginSetManifest(
+              await readFile(join(archive.contentRoot, ...manifestFile.relativePath.split('/'))),
+              { code, version: build.version },
+            );
+          } catch {
+            return fail('package_manifest');
+          }
         // Папки 2025/ и 2026/ — отдельные сборки под каждый год; без них содержимое общее.
         const perYear = archive.files.some((f) => /^20\d\d\//.test(f.relativePath));
-        const addins: VersionRecord['addins'] = [],
+        const parts: AddinPart[] = [],
           ids = new Set<string>();
         for (const year of years) {
           const prefix = perYear ? `${year}/` : '';
@@ -410,38 +505,47 @@ export class PluginInstaller {
               f.relativePath.startsWith(prefix) &&
               !f.relativePath.slice(prefix.length).includes('/'),
           );
-          const entries: { entry: AddinEntry; assemblyPath: string }[] = [];
-          for (const manifest of manifests) {
+          const seen = new Set<string>();
+          for (const addinFile of manifests) {
+            const name = basename(addinFile.relativePath);
             const bytes = await readFile(
-              join(archive.contentRoot, ...manifest.relativePath.split('/')),
+              join(archive.contentRoot, ...addinFile.relativePath.split('/')),
             );
-            let parsed: AddinEntry[];
+            let parsed: ReturnType<typeof parseOwnAddin>;
             try {
               parsed = parseOwnAddin(bytes);
             } catch {
-              return fail('package_addin', basename(manifest.relativePath));
+              return fail('package_addin', name);
             }
+            const entries: ResolvedAddinEntry[] = [];
             for (const entry of parsed) {
               let assembly: string;
               try {
-                assembly = resolveAssembly(manifest.relativePath, entry.assembly);
+                assembly = resolveAssembly(addinFile.relativePath, entry.assembly);
               } catch {
-                return fail('package_addin', basename(manifest.relativePath));
+                return fail('package_addin', name);
               }
               const file = files.get(assembly.toLowerCase());
               if (!file || file.kind !== 'dll' || !file.relativePath.startsWith(prefix))
-                fail('package_addin', basename(manifest.relativePath));
-              if (entries.some((e) => e.entry.addInId === entry.addInId))
-                fail('package_addin', basename(manifest.relativePath));
-              entries.push({
-                entry,
-                assemblyPath: join(versionDir, ...(file?.relativePath ?? '').split('/')),
-              });
+                return fail('package_addin', name);
+              if (seen.has(entry.addInId)) fail('package_addin', name);
+              seen.add(entry.addInId);
+              entries.push(resolvedEntry(entry, join(versionDir, ...file.relativePath.split('/'))));
               ids.add(entry.addInId);
             }
+            const component =
+              manifest?.components.find((c) => c.addin.toLowerCase() === name.toLowerCase())?.id ??
+              null;
+            parts.push({ year, component, entries });
           }
-          if (entries.length) addins.push({ year, xml: renderAddin(entries) });
         }
+        const components = manifest?.components.map(({ id, title, fixed }) => ({
+          id,
+          title,
+          fixed,
+        }));
+        const selected = components ? selectedComponentIds(components, deselected) : [];
+        const addins = renderParts(parts, components ? selected : []);
         // ТЗ 8.3: каждая DLL подписана сертификатом бюро; иначе не ставим.
         for (const file of archive.files.filter((f) => f.kind === 'dll'))
           if (
@@ -467,6 +571,7 @@ export class PluginInstaller {
             })),
             addins,
             ids: [...ids].sort(),
+            ...(components && { components, parts, selected }),
           },
         });
       } catch (error) {
@@ -694,14 +799,20 @@ export class PluginInstaller {
   }
 
   /** «Вернуть»: .addin переключается на предыдущую версию из папки, сервер не нужен. */
-  rollback(scope: string, code: string): Promise<'complete' | 'waiting'> {
+  rollback(
+    scope: string,
+    code: string,
+    deselected?: readonly string[],
+  ): Promise<'complete' | 'waiting'> {
     return this.exclusive(async () => {
       if (await this.readJournal()) fail('journal_pending');
       const record = (await this.readState(scope)).plugins.find((p) => p.code === code);
       if (!record?.previous) return fail('rollback_unavailable');
       if (!(await this.versionIntact(code, record.previous))) fail('rollback_unavailable');
       if (!(await this.revitIdle())) return 'waiting';
-      const legacy = await this.conflicts(code, record.previous, [record.current, record.previous]);
+      // Набор возвращается с нынешним выбором компонентов.
+      const target = deselected ? withSelection(record.previous, deselected) : record.previous;
+      const legacy = await this.conflicts(code, target, [record.current, record.previous]);
       const journal: Journal = {
         v: 1,
         id: randomUUID(),
@@ -711,7 +822,7 @@ export class PluginInstaller {
         phase: 'addin',
         result: {
           code,
-          current: record.previous,
+          current: target,
           previous: record.current,
           held: { buildId: record.current.buildId, archiveSha256: record.current.archiveSha256 },
         },
@@ -746,6 +857,46 @@ export class PluginInstaller {
         before: record,
         aside: null,
         legacy,
+      };
+      await this.writeJournal(journal);
+      await this.finish(journal);
+      return 'complete';
+    });
+  }
+
+  /**
+   * Смена состава набора без загрузки: свой .addin перезаписывается только с выбранными
+   * компонентами из уже установленной папки версии. Revit подхватит после перезапуска,
+   * поэтому открытый Revit не мешает. 'unchanged' — выбор уже такой.
+   */
+  select(
+    scope: string,
+    code: string,
+    deselected: readonly string[],
+  ): Promise<'complete' | 'unchanged'> {
+    return this.exclusive(async () => {
+      if (await this.readJournal()) fail('journal_pending');
+      const record = (await this.readState(scope)).plugins.find((p) => p.code === code);
+      if (!record?.current.components || !record.current.parts)
+        return fail('selection_unavailable');
+      if (!(await this.versionIntact(code, record.current))) return fail('selection_unavailable');
+      const next = withSelection(record.current, deselected);
+      if (
+        JSON.stringify(next.selected) === JSON.stringify(record.current.selected) &&
+        (await this.addinsIntact(code, record.current))
+      )
+        return 'unchanged';
+      const journal: Journal = {
+        v: 1,
+        id: randomUUID(),
+        scope,
+        kind: 'install',
+        code,
+        phase: 'addin',
+        result: { ...record, current: next },
+        before: record,
+        aside: null,
+        legacy: [],
       };
       await this.writeJournal(journal);
       await this.finish(journal);

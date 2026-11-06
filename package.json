@@ -10,12 +10,12 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/build-renderer.mjs && node scripts/build-config.mjs && node scripts/make-icon.mjs && node scripts/build-notification-state.mjs && node scripts/build-plugin-signature.mjs && node scripts/build-plugin-safety.mjs && node scripts/build-screen-saver-state.mjs",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/build-renderer.mjs && node scripts/build-config.mjs && node scripts/make-icon.mjs && node scripts/build-notification-state.mjs && node scripts/build-plugin-signature.mjs && node scripts/build-plugin-safety.mjs && node scripts/build-plugin-setup.mjs && node scripts/build-screen-saver-state.mjs",
     "start": "npm run build && electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.renderer.json && tsc -p tsconfig.tests.json --noEmit",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
-    "test": "node scripts/build-plugin-signature.mjs && node scripts/build-plugin-safety.mjs && node scripts/build-screen-saver-state.mjs && vitest run",
+    "test": "node scripts/build-plugin-signature.mjs && node scripts/build-plugin-safety.mjs && node scripts/build-plugin-setup.mjs && node scripts/build-screen-saver-state.mjs && vitest run",
     "test:e2e": "npm run build && playwright test",
     "dist": "npm run build && electron-builder --win nsis --publish never && node scripts/check-packaged-runtime.mjs release/win-unpacked/resources/app.asar && node scripts/copy-release-notes.mjs",
     "check": "npm run typecheck && npm run lint && npm test && npm run test:e2e",

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Layers, RefreshCw, FlaskConical, CircleAlert, Bell } from 'lucide-react';
 import type { ClientSnapshot } from '../shared/desktop';
 import {
+  PLUGIN_SET_CODE,
   comparePluginVersions,
   type InstalledPluginView,
   type PluginBuild,
@@ -57,6 +58,28 @@ export function PluginsPage({ snapshot }: { snapshot: ClientSnapshot }) {
     const r = await request({ kind: 'plugins.preferences', epoch: snapshot.epoch, ...patch });
     if (!r.ok) setError(r.error);
     setPending(false);
+  }
+  const [selectionNote, setSelectionNote] = useState<Record<string, string>>({});
+  /** Галочки набора: выбор хранится на компьютере; установленный набор — сразу в .addin. */
+  async function components(code: string, deselected: string[]) {
+    setPending(true);
+    setError('');
+    try {
+      const r = await request({
+        kind: 'plugins.components',
+        code,
+        deselected,
+        epoch: snapshot.epoch,
+      });
+      if (!r.ok) setError(r.error);
+      else
+        setSelectionNote((before) => ({
+          ...before,
+          [code]: r.data.applied ? P.selectionApplied : P.selectionSaved,
+        }));
+    } finally {
+      setPending(false);
+    }
   }
   async function act(kind: 'plugins.install' | 'plugins.rollback', code: string) {
     setPending(true);
@@ -167,6 +190,8 @@ export function PluginsPage({ snapshot }: { snapshot: ClientSnapshot }) {
                         busy={pending || !online}
                         available={available}
                         onAct={(kind) => void act(kind, p.code)}
+                        selectionNote={selectionNote[p.code]}
+                        onComponents={(deselected) => void components(p.code, deselected)}
                       />
                     ))}
                 </section>
@@ -230,8 +255,11 @@ function PluginRow(props: {
   busy: boolean;
   available: boolean;
   onAct: (kind: 'plugins.install' | 'plugins.rollback') => void;
+  selectionNote?: string;
+  onComponents: (deselected: string[]) => void;
 }) {
   const { entry, build, local, item, trial, revitOpen, busy, available, onAct } = props;
+  const set = entry.code === PLUGIN_SET_CODE;
   const running = item?.phase === 'downloading' || item?.phase === 'installing',
     broken = !!local && local.status !== 'ok';
   const version =
@@ -252,19 +280,21 @@ function PluginRow(props: {
               ? P.chipTrial
               : P.chipFresh;
   const status =
-    item?.phase === 'error'
-      ? P.reason(item.reason, item.detail)
-      : item?.phase === 'waiting'
-        ? item.kind === 'rollback'
-          ? P.phase.rollbackWaiting
-          : P.phase.waiting
-        : item && (item.phase !== 'complete' || !broken)
-          ? P.phase[item.phase]
-          : local?.status === 'damaged'
-            ? P.damaged
-            : local?.status === 'disabled'
-              ? P.disabled
-              : null;
+    item?.prompt === 'certificate' && running
+      ? P.certificatePrompt
+      : item?.phase === 'error'
+        ? P.reason(item.reason, item.detail)
+        : item?.phase === 'waiting'
+          ? item.kind === 'rollback'
+            ? P.phase.rollbackWaiting
+            : P.phase.waiting
+          : item && (item.phase !== 'complete' || !broken)
+            ? P.phase[item.phase]
+            : local?.status === 'damaged'
+              ? P.damaged
+              : local?.status === 'disabled'
+                ? P.disabled
+                : null;
   const update = !!build && (!local || local.version !== build.version);
   return (
     <article className="plugin-card" data-plugin={entry.code}>
@@ -286,6 +316,11 @@ function PluginRow(props: {
             <p>{status}</p>
             {running && <progress aria-label={P.progress(entry.name)} />}
           </div>
+        )}
+        {item?.notice && (
+          <p className="plugin-notice" role="status">
+            {P.notice(item.notice)}
+          </p>
         )}
         {local?.held && local.previous && <p>{P.held(local.previous)}</p>}
         {(build || local?.rollbackAvailable) && (
@@ -320,6 +355,15 @@ function PluginRow(props: {
             )}
           </details>
         )}
+        {set && (
+          <Components
+            name={entry.name}
+            local={local}
+            busy={busy || running}
+            note={props.selectionNote}
+            onChange={props.onComponents}
+          />
+        )}
       </div>
       <span className="plugin-chip">{chip}</span>
       {build && (broken || update) && (
@@ -329,9 +373,54 @@ function PluginRow(props: {
           title={!available ? P.trustBlocked : undefined}
           onClick={() => onAct('plugins.install')}
         >
-          {broken ? P.reinstall : revitOpen ? P.installOnClose : P.install}
+          {item?.phase === 'error' && item.reason?.startsWith('certificate_')
+            ? P.retry
+            : broken
+              ? P.reinstall
+              : revitOpen
+                ? P.installOnClose
+                : P.install}
         </button>
       )}
     </article>
+  );
+}
+
+/** Состав набора галочками (как «Выбрать вручную» в прежнем установщике). */
+function Components(props: {
+  name: string;
+  local: InstalledPluginView | undefined;
+  busy: boolean;
+  note: string | undefined;
+  onChange: (deselected: string[]) => void;
+}) {
+  const { local, busy, note, onChange } = props;
+  const list = local?.components;
+  // Пакет без schema-plugins.json ставится целиком — выбирать нечего.
+  if (!list?.length)
+    return local ? null : <p className="plugin-components-hint">{P.componentsAfterInstall}</p>;
+  const deselected = list.filter((c) => !c.fixed && !c.selected).map((c) => c.id);
+  return (
+    <fieldset className="plugin-components">
+      <legend>{P.components(list.filter((c) => c.selected).length, list.length)}</legend>
+      {list.map((c) => (
+        <label key={c.id} title={c.fixed ? P.componentFixed : undefined}>
+          <input
+            type="checkbox"
+            checked={c.fixed || c.selected}
+            disabled={c.fixed || busy}
+            onChange={(e) =>
+              onChange(
+                e.target.checked ? deselected.filter((id) => id !== c.id) : [...deselected, c.id],
+              )
+            }
+          />
+          <span>{c.title}</span>
+        </label>
+      ))}
+      <p className="plugin-components-hint" role="status">
+        {note ?? P.componentsHint}
+      </p>
+    </fieldset>
   );
 }

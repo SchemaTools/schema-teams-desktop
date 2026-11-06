@@ -39,7 +39,7 @@
 
 Переменные для разработки и тестов: `SCHEMA_TEAMS_SERVER_URL` — адрес сервера, `SCHEMA_TEAMS_USER_DATA` — отдельная папка профиля (настройки, cookie, журнал). Действуют только в неупакованной сборке (`npm start`, сквозные тесты); упакованной отдельный профиль задаётся ключом `--user-data-dir=<папка>`.
 
-Переменные сборки: `SERVER_URL` — адрес сервера, `UNC_HOSTS` — серверы бюро для путей `\\сервер\…` через запятую (к остальным — только после подтверждения). Берутся из окружения или закрытого `.env` (образец — `.env.example`) и записываются в `dist/build-config.json` при `npm run build` и `npm run dist`.
+Переменные сборки: `SERVER_URL` — адрес сервера, `UNC_HOSTS` — серверы бюро для путей `\\сервер\…` через запятую (к остальным — только после подтверждения). Берутся из окружения или закрытого `.env` (образец — `.env.example`) и записываются в `dist/build-config.json` при `npm run build` и `npm run dist`. Для набора плагинов: `PLUGIN_CERT_PATH` — путь вне репозитория к публичному `.cer` бюро (копируется в `dist/plugin-cert.cer`, в git не попадает; без него импорт сертификата выключен), `BUREAU_FEEDBACK_FOLDER`, `BUREAU_DELETE_LOG_FOLDER`, `BUREAU_MCP_SCENARIOS`, `BUREAU_LIBRARY_FOLDER`, `BUREAU_SETTINGS_FOLDER` — папки для `%APPDATA%\Schema\bureau.txt` (пишется, только если файла нет).
 
 ## Устройство
 
@@ -49,7 +49,7 @@
 - `realtime/` — Socket.IO (WebSocket с запасным long-polling), разбор событий.
 - `notifications/` — свои окна уведомлений без рамки, утренняя сводка; когда показывать — `desktop/notificationPolicy.ts`, `notificationState.ts` (тихие часы, «Не беспокоить» Windows).
 - `timer/` — очередь паузы при блокировке, сне и заставке, «пауза подтверждена», напоминание 18:30; датчик заставки — `desktop/screenSaver*.ts`.
-- `plugins/` — плагины Revit (ТЗ 8): `catalog`, `download`, `archive`, `addin`, проверки `signature` и `safety`, `installer` (папка версии, журнал операции, «Вернуть»), `updater` (ожидание закрытия Revit), `production` (пин издателя).
+- `plugins/` — плагины Revit (ТЗ 8): `catalog`, `download`, `archive`, `addin`, проверки `signature` и `safety`, `installer` (папка версии, журнал операции, «Вернуть», состав набора), `updater` (ожидание закрытия Revit), `production` (пин издателя, подготовка компьютера); набор `schema-plugins` одним пакетом — `pluginSet` (schema-plugins.json, галочки), `legacyInno` (замена установки Inno), `certificate` (сертификат бюро в доверенные), `bureauSettings` (bureau.txt).
 - `paths/` — пути `\\сервер\…`: правила, проверка доступности в отдельном процессе, окно «Папка недоступна», подтверждение чужого сервера.
 - `files/` — вложения: скачивание, отправка файлов и картинок из буфера.
 - `desktop/` — новая версия приложения (`updateChecker`, `downloadDesktop`, `updateTrust`, `updateController`, `updateShutdown`), смена сервера, автозапуск, подсказка и значок трея, папки Revit.
@@ -60,4 +60,4 @@
 - `src/preload/` — мосты окон: `client.ts` (окно клиента), `customToast.ts` (уведомление), `pathDialog.ts` (окно пути); только узкие команды, Node в окно не выдаётся.
 - `src/renderer/` — окно на React: чат, служебный чат, таймер, плагины, настройки, диагностика, меню трея; тексты — `strings.ts` и `*Strings.ts`.
 - `src/shared/` — общие типы главного процесса и окна.
-- `native/*.cs` — помощники Windows только для чтения: состояние уведомлений, подпись и безопасность плагинов, заставка.
+- `native/*.cs` — помощники Windows только для чтения: состояние уведомлений, подпись и безопасность плагинов, заставка, `PluginSetup.cs` (ключ удаления Inno и сертификат бюро в хранилищах пользователя).

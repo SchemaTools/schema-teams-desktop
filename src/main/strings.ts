@@ -91,6 +91,12 @@ export const S = {
   pluginWaitingBody: (list: string, years: string) =>
     `${list} — установятся, когда вы закроете Revit${years ? ` ${years}` : ''}`,
   pluginCompleteTitle: 'Плагины обновлены — можно открывать Revit',
+  pluginSetWaitingTitle: 'Готово обновление набора плагинов',
+  pluginSetWaitingBody: (list: string, years: string) =>
+    `${list} — установится, когда закроете Revit${years ? ` ${years}` : ''}`,
+  pluginSelectionBusy:
+    'Сейчас доводится установка плагинов — выбор применим после неё. Повторите позже.',
+  pluginSelectionFailed: 'Не удалось применить выбор плагинов. Нажмите «Проверить» и повторите.',
   pluginNotesButton: 'Что нового',
   pluginOkButton: 'Хорошо',
   // свой клиент: ответы окну, уведомления, таймер (clientHost.ts)

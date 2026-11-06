@@ -5,9 +5,16 @@ import { dirname } from 'node:path';
 import { isRect, type WindowState } from './windowState';
 import { isoDay } from '../shared/time';
 import { serverPartitionValid } from '../shared/serverConfiguration';
+import { pluginCode } from '../shared/plugins';
+import { normalizeDeselected } from './plugins/pluginSet';
 
 export interface Settings {
   plugins?: { betaScopes: string[]; autoUpdate: boolean; notifyInstalled?: boolean };
+  /**
+   * Снятые галочки компонентов набора плагинов: код плагина → компоненты. Хранится на
+   * компьютер (не на сервер и пользователя); новые компоненты новой версии включены.
+   */
+  pluginDeselected?: Record<string, string[]>;
   deviceId?: string;
   /** Адрес сервера; пусто — адрес из сборки */
   serverUrl?: string;
@@ -85,6 +92,16 @@ export function normalizeSettings(raw: unknown): Settings {
       autoUpdate: p.autoUpdate !== false,
       notifyInstalled: p.notifyInstalled !== false,
     };
+  }
+  if (
+    r.pluginDeselected &&
+    typeof r.pluginDeselected === 'object' &&
+    !Array.isArray(r.pluginDeselected)
+  ) {
+    const map: Record<string, string[]> = {};
+    for (const [code, list] of Object.entries(r.pluginDeselected).slice(0, 32))
+      if (pluginCode(code)) map[code] = normalizeDeselected(list);
+    s.pluginDeselected = map;
   }
   if (Array.isArray(r.morningSeen))
     s.morningSeen = [

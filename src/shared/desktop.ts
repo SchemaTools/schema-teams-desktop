@@ -142,6 +142,7 @@ export type DesktopRequest =
         }
       | { kind: 'plugins.install'; code: string }
       | { kind: 'plugins.rollback'; code: string }
+      | { kind: 'plugins.components'; code: string; deselected: string[] }
       | { kind: 'report.send'; id: string }
       | { kind: 'report.retry'; id: string }
       | { kind: 'report.fallback'; id: string }
@@ -224,6 +225,7 @@ export interface DesktopResponseMap {
   'plugins.preferences': null;
   'plugins.install': null;
   'plugins.rollback': null;
+  'plugins.components': { applied: boolean };
   init: ClientSnapshot;
   login: null;
   retry: null;

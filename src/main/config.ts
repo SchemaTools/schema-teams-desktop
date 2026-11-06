@@ -3,11 +3,14 @@
 // Список серверов бюро для путей `\\сервер\…` (ТЗ, 7.2) — тоже из закрытого .env (UNC_HOSTS).
 import { readFileSync } from 'node:fs';
 import { parseServerUrl } from './navigation';
+import { normalizeBureauValues, type BureauValues } from './plugins/bureauSettings';
 
 export interface BuildConfig {
   serverUrl?: string;
   /** Имена или IP серверов бюро, к которым пути открываются без подтверждения. */
   uncHosts?: string[];
+  /** Папки бюро для %APPDATA%\Schema\bureau.txt (BUREAU_* в закрытом .env). */
+  bureau?: BureauValues;
 }
 
 /** Разбор списка `host1,host2`: пробелы и пустые элементы отбрасываются, заглушки `<…>` — тоже. */
@@ -31,6 +34,8 @@ export function readBuildConfig(file: string): BuildConfig {
       if (typeof record.serverUrl === 'string') config.serverUrl = record.serverUrl;
       const uncHosts = parseUncHosts(record.uncHosts);
       if (uncHosts.length) config.uncHosts = uncHosts;
+      const bureau = normalizeBureauValues(record.bureau);
+      if (Object.keys(bureau).length) config.bureau = bureau;
       return config;
     }
   } catch {
