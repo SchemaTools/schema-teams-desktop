@@ -12,6 +12,8 @@ import { TimerSettings } from './timerSettings';
 import './preferences.css';
 import { UpdatePreferences, type UpdateActions } from './updates';
 import { ServerConfigurationPanel } from './serverConfiguration';
+import { ShowShortcutButton, useStartShortcut } from './startMenu';
+import { StartMenuText } from './startMenuStrings';
 const tabs = {
   general: ['Общие', Settings],
   notifications: ['Уведомления', Bell],
@@ -30,6 +32,7 @@ export function PreferencesPanel({
   onClose: () => void;
   updateActions?: UpdateActions;
 }) {
+  const shortcut = useStartShortcut();
   const [tab, setTab] = useState(initialTab),
     [loaded, setLoaded] = useState<LocalPreferences | null>(snapshot.preferences ?? null),
     [pending, setPending] = useState(false),
@@ -262,6 +265,24 @@ export function PreferencesPanel({
                         Автозапуск применяется в установленной версии приложения.
                       </p>
                     )}
+                    <section
+                      className="preferences-note start-menu-preference"
+                      aria-label={StartMenuText.title}
+                    >
+                      <b>{StartMenuText.title}</b>
+                      <p>
+                        {StartMenuText.hint}{' '}
+                        {shortcut ? StartMenuText.stepPin : StartMenuText.fromList}{' '}
+                        {StartMenuText.windows11}
+                      </p>
+                      {shortcut ? (
+                        <ShowShortcutButton />
+                      ) : (
+                        shortcut === false && (
+                          <p className="preferences-hint">{StartMenuText.noShortcut}</p>
+                        )
+                      )}
+                    </section>
                     <label className="preference-select">
                       <span>
                         <b>Тема</b>

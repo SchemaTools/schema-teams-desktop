@@ -126,6 +126,7 @@ export type DesktopRequest =
   | { kind: 'server.apply'; url: string; token: string }
   | { kind: 'setup.open' }
   | { kind: 'setup.inventory'; refresh?: boolean }
+  | { kind: 'startMenu.status' | 'startMenu.reveal' }
   | { kind: 'report.open' | 'report.clear' | 'report.edit' | 'report.screens' }
   | { kind: 'report.capture'; target: { type: 'window' } | { type: 'screen'; id: string } }
   | { kind: 'report.prepare'; options: ReportOptions }
@@ -259,6 +260,8 @@ export interface DesktopResponseMap {
   'setup.open': null;
   'setup.inventory': RevitInventory;
   'setup.finish': null;
+  'startMenu.status': { shortcut: boolean };
+  'startMenu.reveal': null;
   'report.open': null;
   'report.clear': null;
   'report.edit': null;

@@ -6,7 +6,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startClientStub, type ClientStub } from './clientStub';
@@ -27,11 +27,23 @@ test.afterEach(async () => {
   app = undefined;
   await stub.close();
 });
-async function launch(auth = false) {
+/** Своя папка Roaming: ярлык «Пуска» есть, только если тест его создал. */
+function roaming(withShortcut: boolean): string {
+  const programs = join(profile, 'roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  mkdirSync(programs, { recursive: true });
+  if (withShortcut) writeFileSync(join(programs, 'Schema Teams.lnk'), 'ярлык');
+  return join(profile, 'roaming');
+}
+async function launch(auth = false, shortcut = false) {
   existingProfile(profile);
   app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: stub.url },
+    env: {
+      ...process.env,
+      SCHEMA_TEAMS_USER_DATA: profile,
+      SCHEMA_TEAMS_SERVER_URL: stub.url,
+      APPDATA: roaming(shortcut),
+    },
   });
   const page = await app.firstWindow();
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
@@ -82,6 +94,47 @@ test('настройки доступны до входа, автозапуск 
     panel(again).getByRole('checkbox', { name: /Запускать вместе с Windows/ }),
   ).not.toBeChecked();
   await expect(panel(again).getByRole('combobox', { name: 'Тема оформления' })).toHaveValue('dark');
+});
+test('«Плитка в «Пуске»» в «Общих»: без ярлыка — подсказка, с ярлыком — «Показать ярлык» открывает Проводник', async () => {
+  let page = await launch();
+  await open(page);
+  let row = panel(page).getByRole('region', { name: 'Плитка в «Пуске»', exact: true });
+  await expect(row).toContainText('появляется после установки приложения установщиком');
+  await expect(row.getByRole('button', { name: 'Показать ярлык', exact: true })).toHaveCount(0);
+  await app?.close();
+  app = undefined;
+
+  page = await launch(false, true);
+  // после app = undefined выше TypeScript сужает тип до undefined
+  const relaunched = app as ElectronApplication | undefined;
+  if (!relaunched) throw Error('App unavailable');
+  await relaunched.evaluate(({ shell }) => {
+    const state = globalThis as unknown as { revealed: string[] };
+    state.revealed = [];
+    shell.showItemInFolder = (path) => {
+      state.revealed.push(path);
+    };
+  });
+  await open(page);
+  row = panel(page).getByRole('region', { name: 'Плитка в «Пуске»', exact: true });
+  await expect(row).toContainText('Закрепить на начальном экране');
+  await row.getByRole('button', { name: 'Показать ярлык', exact: true }).click();
+  await expect
+    .poll(() =>
+      relaunched.evaluate(() => (globalThis as unknown as { revealed: string[] }).revealed),
+    )
+    .toEqual([
+      join(
+        profile,
+        'roaming',
+        'Microsoft',
+        'Windows',
+        'Start Menu',
+        'Programs',
+        'Schema Teams.lnk',
+      ),
+    ]);
+  await expect(row.getByRole('alert')).toHaveCount(0);
 });
 test('уведомления выключаются сразу; скрытие текста и звук действуют на настоящую карточку', async () => {
   const page = await launch(true);

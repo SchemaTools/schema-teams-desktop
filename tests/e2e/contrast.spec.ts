@@ -313,7 +313,7 @@ for (const theme of ['light', 'dark'] as const) {
     await audit(await pending, 'tray');
   });
 
-  test(`${theme}: контраст четырёх шагов первого запуска`, async () => {
+  test(`${theme}: контраст пяти шагов первого запуска`, async () => {
     const page = await launch(theme, true);
     await audit(page, 'setup-connection', '.setup-panel');
     await page.getByRole('button', { name: 'Проверить связь', exact: true }).click();
@@ -325,6 +325,11 @@ for (const theme of ['light', 'dark'] as const) {
     await expect(page.getByRole('button', { name: 'Проверить папки ещё раз' })).toBeEnabled();
     await audit(page, 'setup-revit', '.setup-panel');
     await page.getByRole('button', { name: 'Далее', exact: true }).click();
+    await expect(
+      page.getByRole('heading', { name: 'Плитка в «Пуске»', exact: true }),
+    ).toBeVisible();
+    await audit(page, 'setup-start-menu', '.setup-panel');
+    await page.getByRole('button', { name: 'Пропустить', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Готово', exact: true })).toBeVisible();
     await audit(page, 'setup-done', '.setup-panel');
   });
