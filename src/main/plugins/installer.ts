@@ -12,12 +12,15 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pluginCode, pluginVersion } from '../../shared/plugins';
+import { constants as fsConstants } from 'node:fs';
 import {
+  PLUGIN_ARCHIVE_LIMITS,
   discardExtractedArchive,
   extractPluginArchive,
   type ExtractedPluginArchive,
+  type ExtractedPluginFile,
 } from './archive';
-import { removeTree } from './archivePaths';
+import { assertOrdinaryDirectory, containedPath, removeTree } from './archivePaths';
 import {
   ADDIN_MAX_BYTES,
   parseOwnAddin,
@@ -32,6 +35,9 @@ import { hashFile, key, nodePathSafe, sha } from './fsSafe';
 import type { RevitProcessState } from './safety';
 import {
   PLUGIN_SET_MANIFEST,
+  PLUGIN_SET_SHARED,
+  planPluginSetLinks,
+  type PlannedLink,
   componentId,
   componentTitle,
   parsePluginSetManifest,
@@ -122,6 +128,8 @@ export interface PreparedPlugin {
   readonly record: VersionRecord;
   readonly archive: ExtractedPluginArchive;
 }
+/** Файл папки версии: из архива или копия по ссылке формата 2. */
+type TreeFile = Pick<ExtractedPluginFile, 'relativePath' | 'size' | 'sha256' | 'kind'>;
 export type InstalledStatus = 'ok' | 'disabled' | 'damaged';
 export interface InstalledPlugin {
   code: string;
@@ -478,9 +486,8 @@ export class PluginInstaller {
         return fail('package_invalid');
       }
       try {
-        const files = new Map(archive.files.map((f) => [f.relativePath.toLowerCase(), f]));
         // Набор плагинов: schema-plugins.json в корне описывает компоненты (галочки).
-        const manifestFile = files.get(PLUGIN_SET_MANIFEST);
+        const manifestFile = archive.files.find((f) => f.relativePath === PLUGIN_SET_MANIFEST);
         let manifest: PluginSetManifest | null = null;
         if (manifestFile)
           try {
@@ -491,15 +498,43 @@ export class PluginInstaller {
           } catch {
             return fail('package_manifest');
           }
+        // Формат 2: одинаковые файлы — один раз в _shared, раскладка по links. Дальше
+        // работаем с деревом папки версии: без _shared, с копиями по путям ссылок.
+        let links: PlannedLink[] = [];
+        if (manifest)
+          try {
+            links = planPluginSetLinks(manifest, archive.files);
+          } catch {
+            return fail('package_manifest');
+          }
+        const tree: TreeFile[] =
+          manifest?.format === 2
+            ? [
+                ...archive.files.filter((f) => !f.relativePath.startsWith(`${PLUGIN_SET_SHARED}/`)),
+                ...links.map((l) => ({
+                  relativePath: l.path,
+                  size: l.size,
+                  sha256: l.sha256,
+                  kind: l.kind,
+                })),
+              ]
+            : [...archive.files];
+        // Лимиты распакованного — по раскладке: сумма размеров и число файлов папки версии.
+        if (
+          tree.length > PLUGIN_ARCHIVE_LIMITS.entries ||
+          tree.reduce((sum, f) => sum + f.size, 0) > PLUGIN_ARCHIVE_LIMITS.totalBytes
+        )
+          fail('package_invalid');
+        const files = new Map(tree.map((f) => [f.relativePath.toLowerCase(), f]));
         // Папки 2025/ и 2026/ — отдельные сборки под каждый год; без них содержимое общее.
-        const perYear = archive.files.some((f) => /^20\d\d\//.test(f.relativePath));
+        const perYear = tree.some((f) => /^20\d\d\//.test(f.relativePath));
         const parts: AddinPart[] = [],
           ids = new Set<string>();
         for (const year of years) {
           const prefix = perYear ? `${year}/` : '';
-          if (perYear && !archive.files.some((f) => f.relativePath.startsWith(prefix)))
+          if (perYear && !tree.some((f) => f.relativePath.startsWith(prefix)))
             fail('package_year_missing', String(year));
-          const manifests = archive.files.filter(
+          const manifests = tree.filter(
             (f) =>
               f.kind === 'addin' &&
               f.relativePath.startsWith(prefix) &&
@@ -546,7 +581,7 @@ export class PluginInstaller {
         }));
         const selected = components ? selectedComponentIds(components, deselected) : [];
         const addins = renderParts(parts, components ? selected : []);
-        // ТЗ 8.3: каждая DLL подписана сертификатом бюро; иначе не ставим.
+        // ТЗ 8.3: каждая DLL архива (и в _shared) подписана сертификатом бюро; иначе не ставим.
         for (const file of archive.files.filter((f) => f.kind === 'dll'))
           if (
             !(await this.o.trusted(
@@ -555,6 +590,7 @@ export class PluginInstaller {
             ))
           )
             fail('signature', basename(file.relativePath));
+        if (manifest?.format === 2) await this.layOut(archive.contentRoot, links);
         return Object.freeze({
           scope,
           code,
@@ -564,7 +600,7 @@ export class PluginInstaller {
             buildId: build.id,
             archiveSha256: build.sha256,
             years,
-            files: archive.files.map((f) => ({
+            files: tree.map((f) => ({
               path: f.relativePath,
               size: f.size,
               sha256: f.sha256,
@@ -579,6 +615,28 @@ export class PluginInstaller {
         throw error;
       }
     });
+  }
+  /**
+   * Раскладка формата 2 в staging: копия blob-файла по каждому пути ссылки (новый файл,
+   * без перезаписи) со сверкой SHA-256, затем папка _shared убирается — в папку версии
+   * переносится то же дерево, что у пакета без ссылок.
+   */
+  private async layOut(contentRoot: string, links: readonly PlannedLink[]): Promise<void> {
+    try {
+      for (const link of links) {
+        const source = containedPath(contentRoot, link.blob),
+          target = containedPath(contentRoot, link.path);
+        await mkdir(dirname(target), { recursive: true });
+        await assertOrdinaryDirectory(dirname(target));
+        await copyFile(source, target, fsConstants.COPYFILE_EXCL);
+        const copied = await hashFile(target, PLUGIN_ARCHIVE_LIMITS.fileBytes);
+        if (copied.sha256 !== link.sha256 || copied.size !== link.size) throw Error('copy');
+      }
+      const shared = join(contentRoot, PLUGIN_SET_SHARED);
+      if (await lstat(shared).catch(() => null)) await removeTree(shared);
+    } catch {
+      fail('package_invalid');
+    }
   }
   async discard(prepared: PreparedPlugin): Promise<void> {
     await discardExtractedArchive(prepared.archive).catch(() => {});

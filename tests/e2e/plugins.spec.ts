@@ -6,14 +6,14 @@ import {
   type Page,
 } from '@playwright/test';
 import { mkdtempSync, writeFileSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { source } from 'axe-core';
 import { collectNonText } from './nonTextContrast';
 import { startClientStub, type ClientStub } from './clientStub';
 import type { PluginCatalog } from '../../src/shared/plugins';
-import { makePluginZip, fixtureXml, fileHash } from '../helpers/pluginArchiveFixture';
+import { makePluginZip, fixtureXml, fileHash, toFormat2 } from '../helpers/pluginArchiveFixture';
 const ROOT = resolve(__dirname, '../..');
 let stub: ClientStub, app: ElectronApplication | undefined, profile: string;
 const initial = (): PluginCatalog => ({
@@ -484,7 +484,7 @@ const SET_COMPONENTS: [string, string, string, boolean][] = [
   ['grids', 'Оси', 'SchemaGrids', false],
   ['colors', 'Цвета', 'SchemaColors', false],
 ];
-function syntheticSet(version: string, count: number) {
+function syntheticSet(version: string, count: number, format: 1 | 2) {
   const components = SET_COMPONENTS.slice(0, count);
   const entries = [
     {
@@ -516,12 +516,18 @@ function syntheticSet(version: string, count: number) {
       name: `2025/${name}/${name}.dll`,
       bytes: Buffer.from(`INERT E2E FIXTURE ${name} ${version}, NEVER LOAD`),
     });
+    // общая библиотека в каждом плагине — одинаковые файлы
+    entries.push({
+      name: `2025/${name}/Schema.Tools.dll`,
+      bytes: Buffer.from(`INERT E2E FIXTURE Schema.Tools ${version}, NEVER LOAD`),
+    });
   }
-  return makePluginZip(entries).buffer;
+  // формат 2: одинаковое один раз — _shared + links
+  return makePluginZip(format === 2 ? toFormat2(entries).entries : entries).buffer;
 }
 test('набор плагинов: одна карточка, состав галочками без загрузки, обновление сохраняет выбор, «Вернуть»', async () => {
-  const first = syntheticSet('1.47', 3),
-    second = syntheticSet('1.48', 4);
+  const first = syntheticSet('1.47', 3, 1),
+    second = syntheticSet('1.48', 4, 2);
   const set = {
     code: 'schema-plugins',
     name: 'Набор плагинов Schema',
@@ -594,6 +600,12 @@ test('набор плагинов: одна карточка, состав га�
   expect(xml).toContain(SET_GUIDS.SchemaColors);
   expect(xml).not.toContain(SET_GUIDS.SchemaGrids);
   expect(xml).toContain(join('schema-plugins', '1.48', '2025', 'SchemaColors'));
+  // пакет формата 2: копии из _shared разложены по путям, самой _shared в папке версии нет
+  const v148 = join(state.root, 'local', 'plugins', 'schema-plugins', '1.48');
+  expect(await readFile(join(v148, '2025', 'SchemaColors', 'Schema.Tools.dll'), 'utf8')).toContain(
+    'Schema.Tools 1.48',
+  );
+  await expect(stat(join(v148, '_shared'))).rejects.toThrow();
   await panel.locator('summary').click();
   await expect(panel).toContainText('Набор 1.48: добавлены «Цвета».');
   await panel.getByRole('button', { name: 'Вернуть 1.47', exact: true }).click();

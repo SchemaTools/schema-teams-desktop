@@ -8,7 +8,14 @@
  *
  * Компонент — файл `.addin` в папке года (`2025/<addin>`, `2026/<addin>`); выбор состава
  * галочками решает, какие записи AddIn попадут в итоговый `.addin` набора.
+ *
+ * Формат 2 (решение руководителя 06.11 «одинаковое один раз»): одинаковые файлы лежат в
+ * архиве один раз — `_shared/<sha256>.<ext>`, а `links` говорит, по каким путям пакета
+ * разложить их копии: `{ "2025/SchemaFloorPlans/Schema.Tools.dll": "_shared/<sha256>.dll" }`.
+ * В папку версии `_shared` не попадает — там то же дерево, что и у пакета без ссылок.
  */
+import { pluginEntryKind, type ExtractedPluginFile } from './archive';
+import { safeArchiveRelativePath } from './archivePaths';
 export const PLUGIN_SET_CODE = 'schema-plugins';
 export const PLUGIN_SET_MANIFEST = 'schema-plugins.json';
 export const PLUGIN_SET_MANIFEST_MAX_BYTES = 256 * 1024;
@@ -23,11 +30,16 @@ export interface PluginSetComponent {
   fixed: boolean;
 }
 export interface PluginSetManifest {
-  format: 1;
+  format: 1 | 2;
   code: string;
   version: string;
   components: PluginSetComponent[];
+  /** Формат 2: путь в пакете → `_shared/<sha256>.<ext>`. У формата 1 — пусто. */
+  links: Record<string, string>;
 }
+export const PLUGIN_SET_SHARED = '_shared';
+export const PLUGIN_SET_MAX_LINKS = 4096;
+const BLOB = /^_shared\/([0-9a-f]{64})\.([a-z0-9]{1,12})$/;
 
 export const componentId = (v: unknown): v is string =>
   typeof v === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(v);
@@ -61,7 +73,28 @@ export function parsePluginSetManifest(
   }
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw Error('manifest_shape');
   const m = raw as Record<string, unknown>;
-  if (m.format !== 1) throw Error('manifest_format');
+  if (m.format !== 1 && m.format !== 2) throw Error('manifest_format');
+  const links: Record<string, string> = {};
+  if (m.format === 1 && m.links !== undefined) throw Error('manifest_links');
+  if (m.format === 2) {
+    if (!m.links || typeof m.links !== 'object' || Array.isArray(m.links))
+      throw Error('manifest_links');
+    const entries = Object.entries(m.links as Record<string, unknown>);
+    if (entries.length > PLUGIN_SET_MAX_LINKS) throw Error('manifest_links');
+    const seen = new Set<string>();
+    for (const [path, blob] of entries) {
+      linkPathValid(path);
+      if (typeof blob !== 'string') throw Error('manifest_link');
+      const match = BLOB.exec(blob);
+      if (!match || extension(path) !== match[2]) throw Error('manifest_link');
+      if (seen.has(path.toLowerCase())) throw Error('manifest_link_duplicate');
+      seen.add(path.toLowerCase());
+      links[path] = blob;
+    }
+    const keys = [...seen];
+    for (const a of keys)
+      for (const b of keys) if (b.startsWith(`${a}/`)) throw Error('manifest_link_collision');
+  }
   if (m.code !== expected.code) throw Error('manifest_code');
   if (m.version !== expected.version) throw Error('manifest_version');
   if (
@@ -86,7 +119,67 @@ export function parsePluginSetManifest(
     throw Error('manifest_duplicate');
   if (new Set(components.map((c) => c.addin.toLowerCase())).size !== components.length)
     throw Error('manifest_duplicate');
-  return { format: 1, code: expected.code, version: expected.version, components };
+  return {
+    format: m.format,
+    code: expected.code,
+    version: expected.version,
+    components,
+    links,
+  };
+}
+const extension = (path: string) => /\.([a-z0-9]{1,12})$/i.exec(path)?.[1]?.toLowerCase();
+/** Путь ссылки — по правилам путей архива, внутри 2025/ или 2026/, не .addin. */
+function linkPathValid(path: string): void {
+  const kind = pluginEntryKind(path);
+  const unicode = /[^\x20-\x7e]/.test(path);
+  if (!/^20(25|26)\//.test(path) || !kind || kind === 'addin' || (unicode && kind !== 'data'))
+    throw Error('manifest_link');
+  try {
+    if (safeArchiveRelativePath(path, false, unicode) !== path) throw Error('manifest_link');
+  } catch {
+    throw Error('manifest_link');
+  }
+}
+
+export interface PlannedLink {
+  path: string;
+  blob: string;
+  size: number;
+  sha256: string;
+  kind: ExtractedPluginFile['kind'];
+}
+/**
+ * Сверка ссылок с распакованным архивом: каждый файл в _shared назван своим SHA-256,
+ * ссылки ведут на существующие blob-файлы и не пересекаются с файлами архива.
+ */
+export function planPluginSetLinks(
+  manifest: PluginSetManifest,
+  files: readonly ExtractedPluginFile[],
+): PlannedLink[] {
+  const shared = files.filter((f) => f.relativePath.startsWith(`${PLUGIN_SET_SHARED}/`));
+  if (manifest.format === 1) return [];
+  const blobs = new Map<string, ExtractedPluginFile>();
+  for (const f of shared) {
+    const match = BLOB.exec(f.relativePath);
+    if (!match || match[1] !== f.sha256) throw Error('links_blob');
+    blobs.set(f.relativePath, f);
+  }
+  const real = files
+    .filter((f) => !f.relativePath.startsWith(`${PLUGIN_SET_SHARED}/`))
+    .map((f) => f.relativePath.toLowerCase());
+  const realSet = new Set(real);
+  const planned: PlannedLink[] = [];
+  for (const [path, blob] of Object.entries(manifest.links)) {
+    const file = blobs.get(blob);
+    if (!file) throw Error('links_missing_blob');
+    const key = path.toLowerCase();
+    if (realSet.has(key) || real.some((r) => r.startsWith(`${key}/`) || key.startsWith(`${r}/`)))
+      throw Error('links_collision');
+    const kind = pluginEntryKind(path);
+    if (!kind || kind === 'addin' || kind !== file.kind) throw Error('links_kind');
+    planned.push({ path, blob, size: file.size, sha256: file.sha256, kind });
+  }
+  return planned;
 }
 
 /** Выбранные компоненты: обязательные — всегда; остальные — все, кроме снятых. */

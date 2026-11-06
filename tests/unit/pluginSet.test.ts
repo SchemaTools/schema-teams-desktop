@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { join, win32 } from 'node:path';
+import { join, relative, sep, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
 import { PluginInstaller, type InstallerOptions } from '../../src/main/plugins/installer';
 import { PluginUpdater, type PluginUpdaterPorts } from '../../src/main/plugins/updater';
 import {
+  planPluginSetLinks,
   normalizeDeselected,
   parsePluginSetManifest,
   selectedComponentIds,
@@ -31,7 +32,13 @@ import type { PluginBuild, PluginCatalog } from '../../src/shared/plugins';
 import { normalizeSettings } from '../../src/main/settings';
 import { requestValid } from '../../src/shared/requests';
 import type { RevitProcessState } from '../../src/main/plugins/safety';
-import { fileHash, makePluginZip, type FixtureEntry } from '../helpers/pluginArchiveFixture';
+import {
+  fileHash,
+  makePluginZip,
+  toFormat2,
+  type FixtureEntry,
+} from '../helpers/pluginArchiveFixture';
+import { readdir as readdirAll, stat } from 'node:fs/promises';
 
 vi.mock('electron', () => ({ app: { isPackaged: false, getAppPath: () => '' } }));
 
@@ -82,7 +89,15 @@ function manifest(version: string, ids: string[]) {
     }),
   );
 }
-function setZip(version: string, ids: string[], opts: { manifest?: boolean } = {}) {
+function setZip(
+  version: string,
+  ids: string[],
+  opts: { manifest?: boolean; format2?: boolean } = {},
+) {
+  const entries = setEntries(version, ids, opts);
+  return makePluginZip(opts.format2 ? toFormat2(entries).entries : entries).buffer;
+}
+function setEntries(version: string, ids: string[], opts: { manifest?: boolean } = {}) {
   const entries: FixtureEntry[] = [];
   if (opts.manifest !== false)
     entries.push({ name: 'schema-plugins.json', bytes: manifest(version, ids) });
@@ -97,8 +112,13 @@ function setZip(version: string, ids: string[], opts: { manifest?: boolean } = {
         bytes: Buffer.from(`SYNTHETIC ${name} ${year} ${version}, NEVER LOAD`),
       });
       entries.push({ name: `${year}/${name}/settings.json`, bytes: Buffer.from('{}') });
+      // общая библиотека — одинаковая у всех плагинов обоих годов
+      entries.push({
+        name: `${year}/${name}/Schema.Tools.dll`,
+        bytes: Buffer.from(`SYNTHETIC Schema.Tools ${version}, NEVER LOAD`),
+      });
     }
-  return makePluginZip(entries).buffer;
+  return entries;
 }
 async function fixture() {
   const root = await temp('plugin-set-');
@@ -718,5 +738,173 @@ describe('выбор состава: настройки и запрос окна
     expect(requestValid({ ...base, deselected: ['../x'] })).toBe(false);
     expect(requestValid({ ...base, deselected: ['grids'], path: 'C:/x' })).toBe(false);
     expect(requestValid({ kind: 'plugins.components', code: CODE, deselected: [] })).toBe(false);
+  });
+});
+
+// ── формат 2: одинаковое один раз (_shared + links) ─────────────────────────────
+const HASH = 'a'.repeat(64);
+function manifest2(links: unknown, format = 2) {
+  return Buffer.from(
+    JSON.stringify({
+      format,
+      code: CODE,
+      version: '1.48',
+      components: [{ id: 'grids', title: 'Оси', addin: 'SchemaGrids.addin' }],
+      ...(links !== undefined && { links }),
+    }),
+  );
+}
+const parse2 = (links: unknown, format = 2) =>
+  parsePluginSetManifest(manifest2(links, format), { code: CODE, version: '1.48' });
+async function listTree(dir: string, base = dir): Promise<string[]> {
+  const out: string[] = [];
+  for (const name of await readdirAll(dir)) {
+    const path = join(dir, name);
+    if ((await stat(path)).isDirectory()) out.push(...(await listTree(path, base)));
+    else out.push(`${relative(base, path).split(sep).join('/')} ${fileHash(await readFile(path))}`);
+  }
+  return out.sort();
+}
+describe('формат 2: links', () => {
+  it('разбирает ссылки; формат 1 — без links', () => {
+    const m = parse2({ '2025/SchemaGrids/Schema.Tools.dll': `_shared/${HASH}.dll` });
+    expect(m.format).toBe(2);
+    expect(m.links).toEqual({ '2025/SchemaGrids/Schema.Tools.dll': `_shared/${HASH}.dll` });
+    expect(parse2(undefined, 1).links).toEqual({});
+    expect(parse2({}).links).toEqual({});
+  });
+  it.each([
+    ['links у формата 1', { '2025/a/b.dll': `_shared/${HASH}.dll` }, 1],
+    ['нет links у формата 2', undefined, 2],
+    ['links не объект', ['2025/a/b.dll'], 2],
+    ['путь вне 2025/2026', { 'x/b.dll': `_shared/${HASH}.dll` }, 2],
+    ['путь в корне', { 'b.dll': `_shared/${HASH}.dll` }, 2],
+    ['другой год', { '2024/a/b.dll': `_shared/${HASH}.dll` }, 2],
+    ['выход наверх', { '2025/../b.dll': `_shared/${HASH}.dll` }, 2],
+    ['пустой сегмент', { '2025/a//b.dll': `_shared/${HASH}.dll` }, 2],
+    ['обратная косая', { [['2025', 'a', 'b.dll'].join(BS)]: `_shared/${HASH}.dll` }, 2],
+    ['.addin', { '2025/a.addin': `_shared/${HASH}.addin` }, 2],
+    ['исполняемый', { '2025/a/b.exe': `_shared/${HASH}.exe` }, 2],
+    ['кириллица у dll', { '2025/a/Ось.dll': `_shared/${HASH}.dll` }, 2],
+    ['значение не _shared', { '2025/a/b.dll': `2025/x/${HASH}.dll` }, 2],
+    ['хеш прописными', { '2025/a/b.dll': `_shared/${'A'.repeat(64)}.dll` }, 2],
+    ['короткий хеш', { '2025/a/b.dll': '_shared/abc.dll' }, 2],
+    ['расширение не совпадает', { '2025/a/b.dll': `_shared/${HASH}.json` }, 2],
+    [
+      'повтор без учёта регистра',
+      { '2025/a/b.dll': `_shared/${HASH}.dll`, '2025/A/B.dll': `_shared/${HASH}.dll` },
+      2,
+    ],
+    [
+      'файл и папка',
+      {
+        '2025/a/b.json': `_shared/${HASH}.json`,
+        '2025/a/b.json/c.json': `_shared/${HASH}.json`,
+      },
+      2,
+    ],
+  ])('отказ: %s', (_name, links, format) => {
+    expect(() => parse2(links, format)).toThrow();
+  });
+  it('сверка с архивом: blob назван своим хешем, существует, не пересекается с файлами', () => {
+    const blob = Buffer.from('SHARED');
+    const sha = fileHash(blob);
+    const file = (relativePath: string, sha256 = sha) => ({
+      relativePath,
+      size: blob.length,
+      sha256,
+      kind: relativePath.endsWith('.dll') ? ('dll' as const) : ('data' as const),
+    });
+    const ok = parse2({ '2025/a/b.dll': `_shared/${sha}.dll` });
+    expect(planPluginSetLinks(ok, [file(`_shared/${sha}.dll`)])).toEqual([
+      { path: '2025/a/b.dll', blob: `_shared/${sha}.dll`, size: 6, sha256: sha, kind: 'dll' },
+    ]);
+    // содержимое blob не совпадает с хешем в имени
+    expect(() => planPluginSetLinks(ok, [file(`_shared/${sha}.dll`, HASH)])).toThrow('links_blob');
+    // ссылка на отсутствующий blob
+    expect(() => planPluginSetLinks(ok, [file(`_shared/${HASH}.dll`, HASH)])).toThrow(
+      'links_missing_blob',
+    );
+    // путь ссылки занят настоящим файлом архива
+    expect(() =>
+      planPluginSetLinks(ok, [file(`_shared/${sha}.dll`), file('2025/A/B.dll')]),
+    ).toThrow('links_collision');
+    expect(() =>
+      planPluginSetLinks(ok, [file(`_shared/${sha}.dll`), file('2025/a/b.dll/c.json')]),
+    ).toThrow('links_collision');
+  });
+  it('установка из пакета с links даёт то же дерево, что из пакета без links; _shared не кладётся', async () => {
+    const list = ['about', 'floorplans', 'grids'];
+    const f1 = await fixture(),
+      f2 = await fixture();
+    const plain = setZip('1.48', list),
+      packed = setZip('1.48', list, { format2: true });
+    expect(packed.length).toBeLessThan(plain.length);
+    expect(toFormat2(setEntries('1.48', list)).links).toHaveProperty([
+      '2025/SchemaGrids/Schema.Tools.dll',
+    ]);
+    expect(await install(f1, '1.48', plain)).toBe('complete');
+    expect(await install(f2, '1.48', packed)).toBe('complete');
+    const tree1 = await listTree(join(f1.options.root, CODE, '1.48')),
+      tree2 = await listTree(join(f2.options.root, CODE, '1.48'));
+    // отличается только schema-plugins.json (format и links)
+    const strip = (t: string[]) => t.filter((l) => !l.startsWith('schema-plugins.json '));
+    expect(strip(tree2)).toEqual(strip(tree1));
+    expect(tree2.some((l) => l.startsWith('_shared/'))).toBe(false);
+    expect(tree2).toContainEqual(expect.stringMatching(/^2026\/SchemaAbout\/Schema\.Tools\.dll /));
+    expect(ids(await setAddin(f2))).toEqual(ids(await setAddin(f1)));
+    expect((await f2.installer.inspect(SCOPE))[0]?.status).toBe('ok');
+    // разложенная копия пропала — «повреждён»
+    await rm(join(f2.options.root, CODE, '1.48', '2025', 'SchemaGrids', 'Schema.Tools.dll'));
+    expect((await f2.installer.inspect(SCOPE))[0]?.status).toBe('damaged');
+  });
+  it('Assembly в .addin может указывать на dll из links', async () => {
+    const f = await fixture();
+    const entries = setEntries('1.48', ['grids']).map((e) =>
+      e.name.endsWith('SchemaGrids.dll')
+        ? { ...e, bytes: Buffer.from('SAME DLL IN BOTH YEARS, NEVER LOAD') }
+        : e,
+    );
+    const { entries: packed, links } = toFormat2(entries);
+    expect(links).toHaveProperty(['2025/SchemaGrids/SchemaGrids.dll']);
+    expect(await install(f, '1.48', makePluginZip(packed).buffer)).toBe('complete');
+    expect(await setAddin(f)).toContain(
+      join(f.options.root, CODE, '1.48', '2025', 'SchemaGrids', 'SchemaGrids.dll'),
+    );
+  });
+  it('испорченный blob — сборка не ставится; подпись проверяется и у dll в _shared', async () => {
+    const f = await fixture();
+    const { entries } = toFormat2(setEntries('1.48', ['grids']));
+    const broken = entries.map((e) =>
+      e.name.startsWith('_shared/') && e.name.endsWith('.dll')
+        ? { ...e, bytes: Buffer.from('TAMPERED') }
+        : e,
+    );
+    await expect(install(f, '1.48', makePluginZip(broken).buffer)).rejects.toMatchObject({
+      reason: 'package_manifest',
+    });
+    const checked: string[] = [];
+    const g = await fixture();
+    const installer = new PluginInstaller({
+      ...g.options,
+      trusted: async (path) => {
+        const rel = relative(g.root, path).split(sep);
+        checked.push(rel.join('/'));
+        return !rel.includes('_shared');
+      },
+    });
+    const zip = makePluginZip(entries).buffer;
+    const path = join(g.root, 'p.zip');
+    await writeFile(path, zip);
+    await expect(
+      installer.prepare({
+        scope: SCOPE,
+        code: CODE,
+        build: { id: 999, version: '1.48', sha256: fileHash(zip) },
+        archivePath: path,
+        years: [2025, 2026],
+      }),
+    ).rejects.toMatchObject({ reason: 'signature' });
+    expect(checked.some((c) => c.includes('/_shared/'))).toBe(true);
   });
 });
