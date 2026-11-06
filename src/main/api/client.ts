@@ -18,10 +18,12 @@ import type {
   NotificationPage,
   NotificationItem,
   NotificationSettings,
+  PersonRef,
   SafeUser,
   ObjectInfo,
 } from '../../shared/client';
 import { REACTION_KINDS } from '../../shared/client';
+import { groupMembersValid, groupTitleValid, peopleQueryValid } from '../../shared/newChat';
 import { supportPayloadValid, type SupportPayload, type SupportReceipt } from '../../shared/report';
 import type { MorningSummary } from '../../shared/morning';
 import * as parse from './parse';
@@ -759,6 +761,71 @@ export class TeamsApi {
       },
       { top },
     );
+  }
+  /** Коллеги для нового чата (`GET /api/chats/people?q=`, без себя, не больше 50). */
+  people(q: string): Promise<ApiResult<PersonRef[]>> {
+    if (!peopleQueryValid(q)) return Promise.resolve(failure('validation'));
+    const owner = this.owner;
+    const needle = q.trim();
+    return this.request(
+      `/api/chats/people${needle ? `?q=${encodeURIComponent(needle)}` : ''}`,
+      'GET',
+      (raw) => parse.people(raw).filter((person) => person.id !== owner),
+    );
+  }
+  /**
+   * Личный чат с коллегой: сервер создаёт его при первом обращении, второй раз возвращает тот же
+   * (и снимает «убран из списка»). Повтор запроса безопасен — ключ повтора не нужен.
+   */
+  openDirect(userId: number): Promise<ApiResult<ChatSummary>> {
+    if (!this.validId(userId) || userId === this.owner)
+      return Promise.resolve(failure('validation'));
+    return this.request(
+      '/api/chats/direct',
+      'POST',
+      (raw) => {
+        const value = parse.summary(raw);
+        if (value.kind !== 'direct' || value.peer?.id !== userId) throw new parse.InvalidData();
+        return value;
+      },
+      { userId },
+    );
+  }
+  /**
+   * Групповой чат: название и участники кроме себя. Сервер 0.12.3 ключ повтора не читает —
+   * он передаётся на будущее, а двойное создание отсекает главный процесс (ClientHost).
+   */
+  createGroup(
+    title: string,
+    userIds: number[],
+    requestId: string,
+  ): Promise<ApiResult<ChatSummary>> {
+    if (
+      !groupTitleValid(title) ||
+      !groupMembersValid(userIds) ||
+      userIds.includes(this.owner ?? 0) ||
+      typeof requestId !== 'string' ||
+      !/^[A-Za-z0-9._:-]{8,100}$/.test(requestId)
+    )
+      return Promise.resolve(failure('validation'));
+    const expected = title.trim();
+    return this.request(
+      '/api/chats/group',
+      'POST',
+      (raw) => {
+        const value = parse.summary(raw);
+        if (value.kind !== 'group' || value.title !== expected) throw new parse.InvalidData();
+        return value;
+      },
+      { title: expected, userIds: [...userIds] },
+      true,
+      [200, 201],
+      requestId,
+    );
+  }
+  /** Снимок «кто в сети» (`GET /api/chats/presence`). */
+  presence(): Promise<ApiResult<ReturnType<typeof parse.presenceSnapshot>>> {
+    return this.request('/api/chats/presence', 'GET', parse.presenceSnapshot);
   }
   morning(): Promise<ApiResult<MorningSummary>> {
     return this.request('/api/desktop/morning', 'GET', parse.morning);

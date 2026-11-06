@@ -81,6 +81,10 @@ const h = vi.hoisted(() => ({
   delete: vi.fn(),
   pin: vi.fn(),
   top: vi.fn(),
+  people: vi.fn(),
+  openDirect: vi.fn(),
+  createGroup: vi.fn(),
+  presence: vi.fn(),
   morning: vi.fn(),
   plugins: vi.fn(),
   supportUpload: vi.fn(),
@@ -233,6 +237,10 @@ vi.mock('../../src/main/api/client', async (original) => {
       delete = h.delete;
       pin = h.pin;
       top = h.top;
+      people = h.people;
+      openDirect = h.openDirect;
+      createGroup = h.createGroup;
+      presence = h.presence;
       morning = h.morning;
       supportUpload = h.supportUpload;
       supportSend = h.supportSend;
@@ -461,6 +469,7 @@ beforeEach(() => {
     data: { rows: [], digestHourly: false, quiet: null },
   });
   h.timer.mockResolvedValue({ ok: true, data: null });
+  h.presence.mockResolvedValue({ ok: true, data: { online: [], lastSeen: new Map() } });
   h.screenSaverRead.mockImplementation(async () => ({
     state: 'stopped',
     observedMono: performance.now(),
@@ -3722,5 +3731,131 @@ describe('Ревью PR #6: таймер, автопауза и очередь �
     f.owned.state.connection = 'offline';
     control(f.host).pauseForAbsence();
     expect(s.outbox.list(control(f.host).pauseScope())).toHaveLength(1);
+  });
+});
+
+// По замечаниям руководителя 06.11.2026: новый чат и «кто в сети».
+describe('Новый чат и присутствие', () => {
+  type Summary = import('../../src/shared/client').ChatSummary;
+  const summary = (id: number, kind: Summary['kind'], extra: Partial<Summary> = {}): Summary => ({
+    id,
+    kind,
+    title: kind === 'group' ? 'Группа А' : '',
+    peer: kind === 'direct' ? { id: 2, shortName: 'Петров П.П.' } : null,
+    objectId: null,
+    objectCode: null,
+    memberCount: 2,
+    last: null,
+    unread: 0,
+    mentioned: false,
+    photoFileId: null,
+    top: false,
+    ...extra,
+  });
+  const presenceSends = () => h.published.filter((p) => p.channel === 'client:presence');
+  const live = (host: ClientHost) =>
+    host as unknown as { event: (name: string, value: unknown) => void };
+
+  it('личный чат: ответ сразу в списке, у известного сохраняются счётчик и закрепление', async () => {
+    const f = fixture();
+    f.state.chats = [summary(8, 'direct', { unread: 3, top: true })];
+    h.openDirect.mockResolvedValueOnce({ ok: true, data: summary(9, 'direct') });
+    expect(await f.invoke({ kind: 'chat.direct', epoch: 7, userId: 2 })).toMatchObject({
+      ok: true,
+      data: { id: 9 },
+    });
+    expect(f.state.chats.map((c) => c.id)).toEqual([9, 8]);
+    h.openDirect.mockResolvedValueOnce({ ok: true, data: summary(8, 'direct') });
+    await f.invoke({ kind: 'chat.direct', epoch: 7, userId: 2 });
+    expect(f.state.chats.map((c) => c.id)).toEqual([8, 9]);
+    expect(f.state.chats[0]).toMatchObject({ unread: 3, top: true });
+  });
+
+  it('группа: повтор с тем же ключом до ответа не создаёт вторую', async () => {
+    const f = fixture();
+    const pending = deferred<ApiResult<Summary>>();
+    h.createGroup.mockReturnValueOnce(pending.promise);
+    const request = {
+      kind: 'chat.group' as const,
+      epoch: 7,
+      title: 'Группа А',
+      userIds: [2, 3],
+      requestId: 'group-key-0001',
+    };
+    const first = f.invoke(request);
+    const second = f.invoke(request);
+    pending.resolve({ ok: true, data: summary(30, 'group') });
+    expect(await first).toMatchObject({ ok: true, data: { id: 30 } });
+    expect(await second).toMatchObject({ ok: true, data: { id: 30 } });
+    expect(h.createGroup).toHaveBeenCalledTimes(1);
+    expect(f.state.chats.map((c) => c.id)).toEqual([30]);
+  });
+
+  it('группа: отказ освобождает ключ, новая попытка идёт на сервер', async () => {
+    const f = fixture();
+    h.createGroup.mockResolvedValueOnce({
+      ok: false,
+      code: 'validation',
+      error: 'x',
+      retryable: false,
+    });
+    h.createGroup.mockResolvedValueOnce({ ok: true, data: summary(31, 'group') });
+    const request = {
+      kind: 'chat.group' as const,
+      epoch: 7,
+      title: 'Группа А',
+      userIds: [2],
+      requestId: 'group-key-0002',
+    };
+    expect(await f.invoke(request)).toMatchObject({ ok: false, code: 'validation' });
+    expect(await f.invoke(request)).toMatchObject({ ok: true });
+    expect(h.createGroup).toHaveBeenCalledTimes(2);
+  });
+
+  it('присутствие: снимок после подключения сокета, события — без лишних сообщений окну', async () => {
+    const f = fixture();
+    h.presence.mockResolvedValueOnce({
+      ok: true,
+      data: { online: [2], lastSeen: new Map([[3, '2026-11-06T08:00:00.000Z']]) },
+    });
+    required(h.realtimeStatus)(true);
+    await vi.waitFor(() => expect(presenceSends().length).toBeGreaterThan(0));
+    expect(presenceSends().at(-1)?.state).toMatchObject({
+      epoch: 7,
+      online: [2],
+      lastSeen: { '3': '2026-11-06T08:00:00.000Z' },
+    });
+    const before = h.published.filter((p) => p.channel === 'client:state').length;
+    const sent = presenceSends().length;
+    live(f.host).event('chat:presence', {
+      userId: 2,
+      online: false,
+      lastSeen: '2026-11-06T09:00:00.000Z',
+      focusUntil: null,
+    });
+    expect(presenceSends()).toHaveLength(sent + 1);
+    expect(presenceSends().at(-1)?.state).toMatchObject({ online: [] });
+    // то же событие ещё раз и негодное событие — окну ничего не уходит
+    live(f.host).event('chat:presence', {
+      userId: 2,
+      online: false,
+      lastSeen: '2026-11-06T09:00:00.000Z',
+    });
+    live(f.host).event('chat:presence', { userId: -1, online: 'да' });
+    expect(presenceSends()).toHaveLength(sent + 1);
+    // присутствие не пересылает весь снимок клиента
+    expect(h.published.filter((p) => p.channel === 'client:state')).toHaveLength(before);
+    expect(await f.invoke({ kind: 'presence.read', epoch: 7 })).toMatchObject({
+      ok: true,
+      data: { online: [], lastSeen: { '2': '2026-11-06T09:00:00.000Z' } },
+    });
+  });
+
+  it('присутствие сбрасывается при выходе', async () => {
+    const f = fixture();
+    live(f.host).event('chat:presence', { userId: 2, online: true, lastSeen: null });
+    expect(presenceSends().at(-1)?.state).toMatchObject({ online: [2] });
+    await f.invoke({ kind: 'logout', epoch: 7 });
+    expect(presenceSends().at(-1)?.state).toMatchObject({ online: [], lastSeen: {} });
   });
 });
