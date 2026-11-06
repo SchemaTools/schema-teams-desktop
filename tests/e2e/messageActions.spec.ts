@@ -36,8 +36,8 @@ async function openChat(pick = true) {
   });
   const page = await app.firstWindow();
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
-    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
-    timeout: 15_000,
+    // первый запрос на холодном раннере CI может висеть до DEADLINE (15 с) + повтор
+    timeout: 35_000,
   });
   await signIn(app, page);
   await app.evaluate(({ BrowserWindow }) => {
@@ -250,8 +250,8 @@ test('поздняя правка после выхода не меняет эк
   await page.getByRole('button', { name: 'Меню', exact: true }).click();
   await page.getByRole('button', { name: 'Выйти из учётной записи', exact: true }).click();
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
-    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
-    timeout: 15_000,
+    // первый запрос на холодном раннере CI может висеть до DEADLINE (15 с) + повтор
+    timeout: 35_000,
   });
   stub.state.loginUserId = 2;
   if (!app) throw Error('Missing application');

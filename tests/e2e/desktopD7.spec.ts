@@ -88,8 +88,8 @@ async function launch(restart = false, allowed = true) {
   );
   if (!restart) {
     await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
-      // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
-      timeout: 15_000,
+      // первый запрос на холодном раннере CI может висеть до DEADLINE (15 с) + повтор
+      timeout: 35_000,
     });
     const pending = app.waitForEvent('window');
     await page.getByRole('button', { name: 'Войти', exact: true }).click();
