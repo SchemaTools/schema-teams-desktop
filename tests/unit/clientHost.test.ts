@@ -120,6 +120,7 @@ const h = vi.hoisted(() => ({
   quit: vi.fn(),
   beep: vi.fn(),
   openExternal: vi.fn(),
+  showItemInFolder: vi.fn(),
   traySetImage: vi.fn(),
   applyAutostart: vi.fn(),
   openLogs: vi.fn(),
@@ -158,7 +159,7 @@ vi.mock('electron', async () => {
     powerMonitor: Object.assign(new EventEmitter(), { getSystemIdleState: h.idleState }),
     screen: { getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } }) },
     session: { fromPartition: () => ses },
-    shell: { beep: h.beep, openExternal: h.openExternal },
+    shell: { beep: h.beep, openExternal: h.openExternal, showItemInFolder: h.showItemInFolder },
   };
 });
 vi.mock('../../src/main/plugins/production', async (original) => {
@@ -1095,6 +1096,35 @@ describe('ClientHost: поколение входа проверяется в д
       ok: true,
       data: { years: [] },
     });
+    expect(f.settingsUpdate).not.toHaveBeenCalled();
+  });
+  it('ярлык «Пуска»: только фиксированный путь установщика, Проводник открывается главным процессом', async () => {
+    const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const roaming = mkdtempSync(join(tmpdir(), 'stdesk-start-'));
+    const previous = process.env.APPDATA;
+    process.env.APPDATA = roaming;
+    onTestFinished(() => {
+      if (previous === undefined) delete process.env.APPDATA;
+      else process.env.APPDATA = previous;
+      rmSync(roaming, { recursive: true, force: true });
+    });
+    const f = fixture();
+    expect(await f.invoke({ kind: 'startMenu.status' })).toEqual({
+      ok: true,
+      data: { shortcut: false },
+    });
+    expect((await f.invoke({ kind: 'startMenu.reveal' })).ok).toBe(false);
+    expect(h.showItemInFolder).not.toHaveBeenCalled();
+    const programs = join(roaming, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+    mkdirSync(programs, { recursive: true });
+    writeFileSync(join(programs, 'Schema Teams.lnk'), 'ярлык');
+    expect(await f.invoke({ kind: 'startMenu.status' })).toEqual({
+      ok: true,
+      data: { shortcut: true },
+    });
+    expect(await f.invoke({ kind: 'startMenu.reveal' })).toEqual({ ok: true, data: null });
+    expect(h.showItemInFolder).toHaveBeenCalledExactlyOnceWith(join(programs, 'Schema Teams.lnk'));
     expect(f.settingsUpdate).not.toHaveBeenCalled();
   });
   it('incompatible health blocks setup completion without changing startup', async () => {

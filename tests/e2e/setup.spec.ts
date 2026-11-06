@@ -5,7 +5,7 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { startClientStub, type ClientStub } from './clientStub';
@@ -31,10 +31,23 @@ test.afterEach(async () => {
   app = undefined;
   await stub.close();
 });
-async function launch(url = stub.url) {
+/** Своя папка Roaming: ярлык «Пуска» есть, только если тест его создал. */
+function roaming(withShortcut: boolean): string {
+  const dir = join(profile, 'roaming');
+  const programs = join(dir, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  mkdirSync(programs, { recursive: true });
+  if (withShortcut) writeFileSync(join(programs, 'Schema Teams.lnk'), 'ярлык');
+  return dir;
+}
+async function launch(url = stub.url, shortcut = false) {
   app = await electron.launch({
     args: [ROOT],
-    env: { ...process.env, SCHEMA_TEAMS_USER_DATA: profile, SCHEMA_TEAMS_SERVER_URL: url },
+    env: {
+      ...process.env,
+      SCHEMA_TEAMS_USER_DATA: profile,
+      SCHEMA_TEAMS_SERVER_URL: url,
+      APPDATA: roaming(shortcut),
+    },
   });
   const page = await app.firstWindow();
   await expect(page.locator('.app-shell')).toBeVisible();
@@ -81,9 +94,13 @@ async function toDone(page: Page, inventoryFailure = false) {
       exact: true,
     })
     .click();
+  await expect(
+    wizard(page).getByRole('heading', { name: 'Плитка в «Пуске»', exact: true }),
+  ).toBeVisible();
+  await wizard(page).getByRole('button', { name: 'Пропустить', exact: true }).click();
   await expect(wizard(page).getByRole('heading', { name: 'Готово', exact: true })).toBeVisible();
 }
-test('первый запуск проходит четыре шага, сохраняет готовность и не возвращает мастер после перезапуска', async () => {
+test('первый запуск проходит пять шагов, сохраняет готовность и не возвращает мастер после перезапуска', async () => {
   const page = await launch();
   await toDone(page);
   const p = wizard(page);
@@ -229,4 +246,50 @@ test('пустая сборка сохраняет подключение и п�
     onboardingComplete: true,
     serverUrl: new URL(stub.url).origin,
   });
+});
+test('шаг «Плитка в «Пуске»»: без ярлыка — только текст, с ярлыком — «Показать ярлык» открывает Проводник', async () => {
+  let page = await launch();
+  await checked(page);
+  await login(page);
+  await wizard(page).getByRole('button', { name: 'Далее', exact: true }).click();
+  await expect(
+    wizard(page).getByRole('button', { name: 'Проверить папки ещё раз', exact: true }),
+  ).toBeEnabled();
+  await wizard(page).getByRole('button', { name: 'Далее', exact: true }).click();
+  const p = wizard(page);
+  await expect(p.getByRole('heading', { name: 'Плитка в «Пуске»', exact: true })).toBeVisible();
+  await expect(p).toContainText('Windows не разрешает программам закреплять себя');
+  await expect(p).toContainText('появляется после установки приложения установщиком');
+  await expect(p.getByRole('button', { name: 'Показать ярлык', exact: true })).toHaveCount(0);
+  await expect(p.getByRole('img', { name: /Закрепить на начальном экране/ })).toBeVisible();
+  await app?.close();
+  app = undefined;
+
+  page = await launch(stub.url, true);
+  await active().evaluate(({ shell }) => {
+    const state = globalThis as unknown as { revealed: string[] };
+    state.revealed = [];
+    shell.showItemInFolder = (path) => {
+      state.revealed.push(path);
+    };
+  });
+  await checked(page);
+  await wizard(page).getByRole('button', { name: 'Далее', exact: true }).click();
+  await expect(
+    wizard(page).getByRole('button', { name: 'Проверить папки ещё раз', exact: true }),
+  ).toBeEnabled();
+  await wizard(page).getByRole('button', { name: 'Далее', exact: true }).click();
+  const q = wizard(page);
+  await expect(q).toContainText('Закрепить на начальном экране');
+  await expect(q.getByRole('button', { name: 'Пропустить', exact: true })).toBeEnabled();
+  await q.getByRole('button', { name: 'Показать ярлык', exact: true }).click();
+  await expect(q.getByRole('button', { name: 'Далее', exact: true })).toBeEnabled();
+  const revealed = await active().evaluate(
+    () => (globalThis as unknown as { revealed: string[] }).revealed,
+  );
+  expect(revealed).toEqual([
+    join(profile, 'roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Schema Teams.lnk'),
+  ]);
+  await q.getByRole('button', { name: 'Далее', exact: true }).click();
+  await expect(q.getByRole('heading', { name: 'Готово', exact: true })).toBeVisible();
 });

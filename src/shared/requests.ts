@@ -38,6 +38,8 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     'server.apply',
     'setup.open',
     'setup.inventory',
+    'startMenu.status',
+    'startMenu.reveal',
     'report.open',
     'report.clear',
     'report.edit',
@@ -104,6 +106,9 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     case 'setup.finish':
       return only('autostart') && typeof r.autostart === 'boolean';
     case 'setup.open':
+      return only();
+    case 'startMenu.status':
+    case 'startMenu.reveal':
       return only();
     case 'setup.inventory':
       return only('refresh') && (r.refresh === undefined || typeof r.refresh === 'boolean');

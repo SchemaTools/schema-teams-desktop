@@ -4,8 +4,13 @@ import type { ClientSnapshot } from '../shared/desktop';
 import type { RevitInventory } from '../shared/setup';
 import { request } from './bridge';
 import { ServerConfigurationPanel } from './serverConfiguration';
+import { StartMenuGuide, useStartShortcut } from './startMenu';
+import { StartMenuText } from './startMenuStrings';
 import './setup.css';
-const stages = ['Подключение', 'Вход', 'Плагины Revit', 'Готово'];
+const stages = ['Подключение', 'Вход', 'Плагины Revit', StartMenuText.title, 'Готово'];
+/** Шаг «Плитка в «Пуске»» — необязательный: «Пропустить» ведёт дальше так же, как «Далее». */
+const START_STEP = 3,
+  DONE_STEP = 4;
 export function SetupPanel({
   snapshot,
   onClose,
@@ -18,7 +23,9 @@ export function SetupPanel({
     [inventory, setInventory] = useState<RevitInventory | null>(null),
     [pending, setPending] = useState(false),
     [error, setError] = useState(''),
-    [autostart, setAutostart] = useState(snapshot.preferences?.autostart ?? true);
+    [autostart, setAutostart] = useState(snapshot.preferences?.autostart ?? true),
+    [shortcutShown, setShortcutShown] = useState(false);
+  const shortcut = useStartShortcut();
   const alive = useRef(true),
     flight = useRef(false),
     heading = useRef<HTMLHeadingElement>(null),
@@ -225,7 +232,10 @@ export function SetupPanel({
               </label>
             </>
           )}
-          {step === 3 && (
+          {step === START_STEP && (
+            <StartMenuGuide shortcut={shortcut} onShown={() => setShortcutShown(true)} />
+          )}
+          {step === DONE_STEP && (
             <>
               <p>
                 Приложение готово к работе с чатами и ручным учётом времени. Плагины можно будет
@@ -275,13 +285,17 @@ export function SetupPanel({
             </button>
           )}
           <span />
-          {step < 3 ? (
+          {step < DONE_STEP ? (
             <button
               className="primary-button"
               disabled={pending || (step === 0 && !checked) || (step === 1 && !online)}
               onClick={next}
             >
-              {step === 2 && error ? 'Продолжить без проверки Revit' : 'Далее'}
+              {step === 2 && error
+                ? 'Продолжить без проверки Revit'
+                : step === START_STEP && !shortcutShown
+                  ? StartMenuText.skip
+                  : 'Далее'}
             </button>
           ) : (
             <button

@@ -1,0 +1,108 @@
+/* «Плитка в «Пуске»»: схема ярлыка и меню, без скриншотов Windows */
+.start-menu-guide {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+.start-menu-guide ol {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  line-height: 1.5;
+}
+.start-menu-guide p {
+  margin: 0 0 12px;
+}
+.start-menu-alt {
+  color: var(--muted);
+  font-size: 13px;
+}
+.start-menu-picture {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--background);
+}
+.start-menu-shortcut {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+}
+.start-menu-tile {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: #1b3fd1;
+  color: #fff;
+}
+.start-menu-tile .schema-logo {
+  width: 22px;
+  height: 22px;
+}
+.start-menu-name {
+  width: 44px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--control-line);
+}
+.start-menu-arrow {
+  width: 34px;
+  height: 16px;
+  flex: none;
+  fill: none;
+  stroke: var(--control-line);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.start-menu-context {
+  flex: 1;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--control-line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.start-menu-context span {
+  height: 18px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+}
+.start-menu-context span::after {
+  content: '';
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--line);
+}
+.start-menu-context span.current {
+  background: var(--accent-soft);
+}
+.start-menu-context span.current::after {
+  background: var(--accent-text);
+}
+.start-menu-context svg {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  fill: none;
+  stroke: var(--accent-text);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+@media (max-width: 640px) {
+  .start-menu-guide {
+    grid-template-columns: 1fr;
+  }
+}

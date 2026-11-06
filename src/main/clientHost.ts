@@ -82,6 +82,7 @@ import { supportedServerVersion, MINIMUM_SERVER_VERSION } from '../shared/server
 import type { Health } from '../shared/client';
 import type { RevitInventory } from '../shared/setup';
 import { RevitInventoryService } from './desktop/revitInventory';
+import { StartMenuShortcut, startShortcutPath } from './desktop/startMenu';
 import { ReportService, type ReportBackend } from './diagnostics/service';
 import { SupportLedger, supportStorage } from './diagnostics/ledger';
 import { SupportSender, type SupportContext } from './diagnostics/sender';
@@ -299,6 +300,10 @@ export class ClientHost {
   });
   private readonly configuration: ServerConfigurationService;
   private readonly inventory: RevitInventoryService;
+  private readonly startMenu = new StartMenuShortcut({
+    path: () => startShortcutPath(process.env, app.getPath('appData')),
+    reveal: (path) => shell.showItemInFolder(path),
+  });
   private readonly report: ReportService;
   private readonly support: SupportSender;
   private reportBinding?: { id: string; epoch: number; owner: number; serverHash: string };
@@ -2504,6 +2509,9 @@ export class ClientHost {
       return failure('forbidden');
     if (raw.kind === 'updates.trayDrafts' && event.sender.id !== this.trayWindow?.webContents.id)
       return failure('forbidden');
+    // ярлык «Пуска» показывают только мастер и настройки — окно клиента
+    if (raw.kind.startsWith('startMenu.') && event.sender.id !== this.o.main.win.webContents.id)
+      return failure('forbidden');
     if (
       desktopShutdown.locked &&
       ![
@@ -2622,6 +2630,10 @@ export class ClientHost {
             retryable: true,
           };
         }
+      case 'startMenu.status':
+        return ok(this.startMenu.status());
+      case 'startMenu.reveal':
+        return this.startMenu.reveal() ? ok(null) : failure('validation');
       case 'server.read':
         return ok(this.configuration.read());
       case 'server.check':
