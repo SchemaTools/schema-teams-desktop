@@ -155,10 +155,23 @@ function extra(bytes: Buffer): void {
     at += length;
   }
 }
-function filename(bytes: Buffer): string {
-  if (!bytes.length || bytes.length > 241 || bytes.some((byte) => byte < 32 || byte > 126))
+/**
+ * Имя записи: ASCII или UTF-8 с флагом 11 (так пишут 7-Zip и .NET). Не-ASCII допускается
+ * только у данных и папок (решение 06.11): сборки и .addin — по-прежнему ASCII.
+ */
+function filename(bytes: Buffer, flags: number): { name: string; unicode: boolean } {
+  if (!bytes.length || bytes.length > 720 || bytes.some((byte) => byte < 32 || byte === 127))
     reject('unsupported-name-encoding');
-  return bytes.toString('ascii');
+  if (!bytes.some((byte) => byte > 126)) {
+    if (bytes.length > 241) reject('unsupported-name-encoding');
+    return { name: bytes.toString('ascii'), unicode: false };
+  }
+  if (!(flags & 0x800)) reject('unsupported-name-encoding');
+  try {
+    return { name: new TextDecoder('utf-8', { fatal: true }).decode(bytes), unicode: true };
+  } catch {
+    return reject('unsupported-name-encoding');
+  }
 }
 
 async function inspectZip(
@@ -236,9 +249,11 @@ async function inspectZip(
     if (startDisk) reject('unsupported-multidisk');
     bounds(at + 46, nameSize + extraSize + commentSize, central.length);
     const rawName = central.subarray(at + 46, at + 46 + nameSize),
-      sourceName = filename(rawName),
-      directory = sourceName.endsWith('/'),
-      name = safeArchiveRelativePath(sourceName, directory);
+      source = filename(rawName, flags),
+      directory = source.name.endsWith('/');
+    if (source.unicode && !directory && pluginEntryKind(source.name) !== 'data')
+      reject('unsupported-name-encoding');
+    const name = safeArchiveRelativePath(source.name, directory, source.unicode);
     extra(central.subarray(at + 46 + nameSize, at + 46 + nameSize + extraSize));
     const mode = attributes >>> 16,
       type = mode & 0xf000,

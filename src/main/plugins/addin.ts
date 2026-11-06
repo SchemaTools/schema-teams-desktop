@@ -128,15 +128,52 @@ export function resolveAssembly(addinRelativePath: string, assembly: string): st
 export function renderAddin(
   entries: readonly { entry: AddinEntry; assemblyPath: string }[],
 ): string {
+  return renderAddinEntries(
+    entries.map(({ entry, assemblyPath }) => resolvedEntry(entry, assemblyPath)),
+  );
+}
+/** Запись AddIn с уже подставленным абсолютным путём Assembly — хранится в состоянии. */
+export interface ResolvedAddinEntry {
+  type: AddinEntry['type'];
+  fields: [string, string][];
+}
+export function resolvedEntry(entry: AddinEntry, assemblyPath: string): ResolvedAddinEntry {
+  return {
+    type: entry.type,
+    fields: entry.fields.map(([name, value]): [string, string] => [
+      name,
+      name === 'Assembly' ? assemblyPath : value,
+    ]),
+  };
+}
+/** Итоговый .addin из готовых записей (набор плагинов — только выбранные компоненты). */
+export function renderAddinEntries(entries: readonly ResolvedAddinEntry[]): string {
   const lines = ['<?xml version="1.0" encoding="utf-8"?>', '<RevitAddIns>'];
-  for (const { entry, assemblyPath } of entries) {
+  for (const entry of entries) {
     lines.push(`  <AddIn Type="${entry.type}">`);
-    for (const [name, value] of entry.fields)
-      lines.push(`    <${name}>${escape(name === 'Assembly' ? assemblyPath : value)}</${name}>`);
+    for (const [name, value] of entry.fields) lines.push(`    <${name}>${escape(value)}</${name}>`);
     lines.push('  </AddIn>');
   }
   lines.push('</RevitAddIns>', '');
   return lines.join('\r\n');
+}
+export function resolvedEntryValid(v: unknown): v is ResolvedAddinEntry {
+  const e = v as ResolvedAddinEntry;
+  return (
+    !!e &&
+    (e.type === 'Application' || e.type === 'Command') &&
+    Array.isArray(e.fields) &&
+    e.fields.length <= 64 &&
+    e.fields.every(
+      (f) =>
+        Array.isArray(f) &&
+        f.length === 2 &&
+        typeof f[0] === 'string' &&
+        /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(f[0]) &&
+        typeof f[1] === 'string' &&
+        f[1].length <= 32767,
+    )
+  );
 }
 
 /** Мягкое чтение чужого .addin: пары AddInId → Assembly, что удалось найти. Не бросает. */

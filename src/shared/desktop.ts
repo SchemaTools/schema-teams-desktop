@@ -12,6 +12,8 @@ import type {
   FilePickResult,
   MessagePage,
   NotificationItem,
+  PersonRef,
+  PresenceView,
   SafeUser,
   ObjectInfo,
 } from './client';
@@ -142,6 +144,7 @@ export type DesktopRequest =
         }
       | { kind: 'plugins.install'; code: string }
       | { kind: 'plugins.rollback'; code: string }
+      | { kind: 'plugins.components'; code: string; deselected: string[] }
       | { kind: 'report.send'; id: string }
       | { kind: 'report.retry'; id: string }
       | { kind: 'report.fallback'; id: string }
@@ -193,6 +196,10 @@ export type DesktopRequest =
       | { kind: 'chat.delete'; chatId: number; messageId: number }
       | { kind: 'chat.pin'; chatId: number; messageId: number | null }
       | { kind: 'chat.top'; chatId: number; top: boolean }
+      | { kind: 'chat.people'; q: string }
+      | { kind: 'chat.direct'; userId: number }
+      | { kind: 'chat.group'; title: string; userIds: number[]; requestId: string }
+      | { kind: 'presence.read' }
       | {
           kind: 'chat.reaction';
           chatId: number;
@@ -224,6 +231,7 @@ export interface DesktopResponseMap {
   'plugins.preferences': null;
   'plugins.install': null;
   'plugins.rollback': null;
+  'plugins.components': { applied: boolean };
   init: ClientSnapshot;
   login: null;
   retry: null;
@@ -290,6 +298,10 @@ export interface DesktopResponseMap {
   'chat.delete': ChatMessage;
   'chat.pin': null;
   'chat.top': ChatSummary;
+  'chat.people': PersonRef[];
+  'chat.direct': ChatSummary;
+  'chat.group': ChatSummary;
+  'presence.read': PresenceView;
   'chat.reaction': ChatReaction[];
   'chat.read': null;
   'chat.typing': null;
@@ -307,6 +319,8 @@ export interface DesktopResponseMap {
 export interface DesktopBridge {
   request<R extends DesktopRequest>(request: R): Promise<ApiResult<DesktopResponseMap[R['kind']]>>;
   subscribe(listener: (snapshot: ClientSnapshot) => void): () => void;
+  /** «Кто в сети» — отдельно от снимка: событие присутствия не перерисовывает окно целиком. */
+  subscribePresence(listener: (presence: PresenceView) => void): () => void;
 }
 declare global {
   interface Window {

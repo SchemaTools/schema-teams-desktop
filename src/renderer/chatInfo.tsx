@@ -183,6 +183,7 @@ export function ChatInfoPanel({
             id={chat.peer?.id ?? chat.id}
             photo={chat.photoFileId}
             object={chat.kind === 'object'}
+            {...(chat.kind === 'direct' && chat.peer && { presenceId: chat.peer.id })}
           />
           <h3>{title}</h3>
           <p>
@@ -209,6 +210,7 @@ export function ChatInfoPanel({
                   id={member.user.id}
                   photo={member.photoFileId}
                   small
+                  {...(member.user.id !== ownId && { presenceId: member.user.id })}
                 />
                 <span className="chat-info-member-name">{member.user.shortName}</span>
                 {member.user.id === ownId && <small>{R.you}</small>}

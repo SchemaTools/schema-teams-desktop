@@ -4,7 +4,8 @@ import { expectedValid, timerRowsValid } from './time';
 import { preferenceTabs, preferencesPatchValid } from './preferences';
 import { releaseVersionValid } from './updates';
 import { reportOptionsValid } from './report';
-import { pluginCode } from './plugins';
+import { pluginCode, pluginComponentId } from './plugins';
+import { groupMembersValid, groupTitleValid, peopleQueryValid } from './newChat';
 const id = (v: unknown) => typeof v === 'number' && Number.isSafeInteger(v) && v > 0;
 const text = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
 const uuid = (v: unknown) =>
@@ -59,6 +60,15 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
     case 'plugins.install':
     case 'plugins.rollback':
       return only('code') && pluginCode(r.code);
+    case 'plugins.components':
+      return (
+        only('code', 'deselected') &&
+        pluginCode(r.code) &&
+        Array.isArray(r.deselected) &&
+        r.deselected.length <= 200 &&
+        r.deselected.every(pluginComponentId) &&
+        new Set(r.deselected).size === r.deselected.length
+      );
     case 'plugins.preferences':
       return (
         only('beta', 'autoUpdate', 'notifyInstalled') &&
@@ -297,6 +307,20 @@ export function requestValid(raw: unknown): raw is DesktopRequest {
       return (
         only('chatId', 'messageId') && id(r.chatId) && (r.messageId === null || id(r.messageId))
       );
+    case 'chat.people':
+      return only('q') && peopleQueryValid(r.q);
+    case 'chat.direct':
+      return only('userId') && id(r.userId);
+    case 'chat.group':
+      return (
+        only('title', 'userIds', 'requestId') &&
+        groupTitleValid(r.title) &&
+        groupMembersValid(r.userIds) &&
+        typeof r.requestId === 'string' &&
+        /^[A-Za-z0-9._:-]{8,100}$/.test(r.requestId)
+      );
+    case 'presence.read':
+      return only();
     case 'chat.reaction':
       return (
         only('chatId', 'messageId', 'reaction', 'remove') &&

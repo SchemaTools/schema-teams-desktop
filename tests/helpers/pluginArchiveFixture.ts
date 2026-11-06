@@ -96,3 +96,43 @@ export function fixtureXml(assembly = 'managed/gen-v1/Plugin.dll', id = fixtureG
     `<?xml version="1.0" encoding="utf-8"?><RevitAddIns><AddIn Type="Application"><Name>Synthetic fixture</Name><Assembly>${assembly}</Assembly><AddInId>${id}</AddInId><FullClassName>Fixture.Plugin</FullClassName><VendorId>TEST</VendorId></AddIn></RevitAddIns>`,
   );
 }
+/**
+ * Пакет набора формата 2 из записей формата 1: одинаковые файлы в 2025/ и 2026/ (кроме
+ * .addin) — один раз в `_shared/<sha256>.<ext>`, в schema-plugins.json — `format: 2` и `links`.
+ */
+export function toFormat2(entries: readonly FixtureEntry[]): {
+  entries: FixtureEntry[];
+  links: Record<string, string>;
+} {
+  const groups = new Map<string, FixtureEntry[]>();
+  for (const e of entries)
+    if (/^20(25|26)\//.test(e.name) && !/\.addin$/i.test(e.name)) {
+      const hash = fileHash(e.bytes);
+      groups.set(hash, [...(groups.get(hash) ?? []), e]);
+    }
+  const links: Record<string, string> = {},
+    shared: FixtureEntry[] = [],
+    linked = new Set<string>();
+  for (const [hash, group] of groups) {
+    if (group.length < 2) continue;
+    const ext = /\.([a-z0-9]+)$/i.exec(group[0]?.name ?? '')?.[1]?.toLowerCase() ?? 'bin';
+    if (group.some((e) => !e.name.toLowerCase().endsWith(`.${ext}`))) continue;
+    const blob = `_shared/${hash}.${ext}`;
+    shared.push({ name: blob, bytes: group[0]?.bytes ?? Buffer.alloc(0) });
+    for (const e of group) {
+      links[e.name] = blob;
+      linked.add(e.name);
+    }
+  }
+  const result = entries
+    .filter((e) => !linked.has(e.name))
+    .map((e) => {
+      if (e.name !== 'schema-plugins.json') return e;
+      const manifest = JSON.parse(e.bytes.toString('utf8')) as Record<string, unknown>;
+      return {
+        ...e,
+        bytes: Buffer.from(JSON.stringify({ ...manifest, format: 2, links })),
+      };
+    });
+  return { entries: [...result, ...shared], links };
+}

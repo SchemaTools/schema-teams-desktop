@@ -104,6 +104,14 @@ export interface FixtureState {
   latest: unknown | null;
   latestStatus: number | null;
   latestDelayMs: number;
+  /** Коллеги для нового чата (`GET /api/chats/people`), все вымышленные. */
+  people: { id: number; shortName: string }[];
+  /** Созданные личные и групповые чаты: ид → вид, название, участники. */
+  createdChats: Map<number, { kind: 'direct' | 'group'; title: string; members: number[] }>;
+  /** Снимок «кто в сети» (`GET /api/chats/presence`). */
+  presenceOnline: number[];
+  presenceLastSeen: Record<string, string>;
+  groupStatus: number | null;
 }
 const names: Record<number, string> = { 1: 'Иванова И.И.', 2: 'Петров П.П.' };
 const csrfFor = (id: number) => `csrf-test-only-user-${id}`;
@@ -228,6 +236,43 @@ export async function startClientStub(
     latest: null,
     latestStatus: null,
     latestDelayMs: 0,
+    people: [
+      { id: 1, shortName: 'Иванова И.И.' },
+      { id: 2, shortName: 'Петров П.П.' },
+      { id: 3, shortName: 'Сидоров С.С.' },
+      { id: 5, shortName: 'Семёнова А.А.' },
+    ],
+    createdChats: new Map(),
+    presenceOnline: [],
+    presenceLastSeen: {},
+    groupStatus: null,
+  };
+  let nextChatId = 500;
+  const createdSummary = (chatId: number, user: number): ChatSummary => {
+    const c = state.createdChats.get(chatId);
+    if (!c) throw new Error('unknown chat');
+    const peerId = c.members.find((m) => m !== user) ?? user;
+    return {
+      id: chatId,
+      kind: c.kind,
+      title: c.title,
+      peer:
+        c.kind === 'direct'
+          ? {
+              id: peerId,
+              shortName: state.people.find((p) => p.id === peerId)?.shortName ?? '',
+            }
+          : null,
+      objectId: null,
+      objectCode: null,
+      memberCount: c.members.length,
+      last: null,
+      unread: 0,
+      mentioned: false,
+      photoFileId: null,
+      top: false,
+      myActiveTasks: 0,
+    };
   };
   const prepared = new Map<
     string,
@@ -899,10 +944,115 @@ export async function startClientStub(
             ...chat,
             ...(!state.legacyChatFields && { top: tops.get(user)?.has(chat.id) ?? false }),
           })),
+          ...[...state.createdChats]
+            .filter(([, c]) => c.members.includes(user))
+            .map(([id]) => createdSummary(id, user)),
         ],
         unreadTotal: unread.get(chatOf(user)) ?? 0,
       });
       return;
+    }
+    if (path === '/api/chats/people' && method === 'GET') {
+      const q = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase('ru-RU');
+      json(
+        res,
+        200,
+        state.people
+          .filter((p) => p.id !== user && p.shortName.toLocaleLowerCase('ru-RU').includes(q))
+          .slice(0, 50),
+      );
+      return;
+    }
+    if (path === '/api/chats/presence' && method === 'GET') {
+      json(res, 200, { online: state.presenceOnline, lastSeen: state.presenceLastSeen, focus: {} });
+      return;
+    }
+    if (path === '/api/chats/direct' && method === 'POST') {
+      const peer = body?.userId;
+      if (
+        typeof peer !== 'number' ||
+        peer === user ||
+        !state.people.some((p) => p.id === peer) ||
+        Object.keys(body ?? {}).length !== 1
+      ) {
+        denied(res, 'validation', 400);
+        return;
+      }
+      // у пользователей 1 и 2 личный чат уже есть — сервер возвращает его
+      if ((user === 1 && peer === 2) || (user === 2 && peer === 1)) {
+        json(res, 200, summary(chatOf(user), user));
+        return;
+      }
+      let id = [...state.createdChats].find(
+        ([, c]) => c.kind === 'direct' && c.members.includes(user) && c.members.includes(peer),
+      )?.[0];
+      if (id === undefined) {
+        id = nextChatId++;
+        state.createdChats.set(id, { kind: 'direct', title: '', members: [user, peer] });
+        conversations.set(id, []);
+      }
+      json(res, 200, createdSummary(id, user));
+      return;
+    }
+    if (path === '/api/chats/group' && method === 'POST') {
+      if (state.groupStatus) {
+        denied(res, state.groupStatus === 403 ? 'forbidden' : 'internal', state.groupStatus);
+        return;
+      }
+      const title = typeof body?.title === 'string' ? body.title.trim() : '';
+      const ids = Array.isArray(body?.userIds) ? (body.userIds as unknown[]) : [];
+      if (
+        !title ||
+        title.length > 80 ||
+        ids.length === 0 ||
+        ids.some((id) => typeof id !== 'number' || !state.people.some((p) => p.id === id))
+      ) {
+        denied(res, 'validation', 400);
+        return;
+      }
+      const id = nextChatId++;
+      const members = [user, ...new Set(ids as number[])].filter(
+        (m, i, all) => all.indexOf(m) === i,
+      );
+      state.createdChats.set(id, { kind: 'group', title, members });
+      conversations.set(id, []);
+      for (const member of members) io.to(`user:${member}`).emit('chat:list');
+      json(res, 201, createdSummary(id, user));
+      return;
+    }
+    const created = /^\/api\/chats\/(\d+)(?:\/(messages|read))?$/.exec(path);
+    if (created && state.createdChats.has(Number(created[1]))) {
+      const id = Number(created[1]);
+      const c = state.createdChats.get(id);
+      if (!c?.members.includes(user)) {
+        denied(res, 'not_found', 404);
+        return;
+      }
+      if (!created[2] && method === 'GET') {
+        json(res, 200, {
+          chat: createdSummary(id, user),
+          members: c.members.map((m) => ({
+            user: { id: m, shortName: state.people.find((p) => p.id === m)?.shortName ?? '' },
+            readUpTo: null,
+            photoFileId: null,
+          })),
+          canManageMembers: c.kind === 'group' && c.members[0] === user,
+          canLeave: c.kind === 'group',
+          canWrite: true,
+          pinned: null,
+          canPin: true,
+          taskStageId: null,
+        });
+        return;
+      }
+      if (created[2] === 'messages' && method === 'GET') {
+        json(res, 200, { items: conversations.get(id) ?? [], hasMore: false, hasNewer: false });
+        return;
+      }
+      if (created[2] === 'read') {
+        json(res, 200, { ok: true });
+        return;
+      }
     }
     const topRoute = /^\/api\/chats\/(\d+)\/top$/.exec(path);
     if (topRoute && method === 'PUT') {
@@ -1336,6 +1486,13 @@ export async function startClientStub(
       return message;
     },
     emit: (name: string, data: unknown, userId = 1) => io.to(`user:${userId}`).emit(name, data),
+    /** Событие присутствия — всем, как на сервере (`chat:presence`). */
+    presence: (userId: number, online: boolean, lastSeen: string | null = null) => {
+      if (online) state.presenceOnline = [...new Set([...state.presenceOnline, userId])];
+      else state.presenceOnline = state.presenceOnline.filter((id) => id !== userId);
+      if (lastSeen) state.presenceLastSeen[String(userId)] = lastSeen;
+      io.emit('chat:presence', { userId, online, lastSeen, focusUntil: null });
+    },
     disconnect: () => io.disconnectSockets(true),
     /** Новые сообщения без событий сокета (как во время разрыва). */
     pushMany: (count: number, chatId = 4) => {

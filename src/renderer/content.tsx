@@ -16,6 +16,7 @@ import { R } from './strings';
 import { MessageReactions } from './reactions';
 import { ReactionText } from './reactionStrings';
 import { MessageActions } from './messageActions';
+import { PresenceDot } from './presence';
 
 const previewQueue: { current: () => boolean; run: () => Promise<void> }[] = [];
 let activePreviews = 0;
@@ -68,9 +69,12 @@ export function Avatar({
   object = false,
   bot = false,
   small = false,
+  presenceId,
 }: {
   name: string;
   id: number;
+  /** Сотрудник, чья точка «в сети» у аватара (личный чат, участник); нет — без точки. */
+  presenceId?: number;
   /** Фото профиля или логотип бюро (`photoFileId`); null — буквы. */
   photo?: number | null;
   object?: boolean;
@@ -84,7 +88,7 @@ export function Avatar({
     setLoaded(false);
   }, [photo]);
   const showPhoto = photo !== null && !failed;
-  return (
+  const avatar = (
     <span
       className={`avatar ${bot ? '' : colorClass(id)}${object ? ' object-avatar' : ''}${bot ? ' bot-avatar' : ''}${small ? ' small' : ''}${showPhoto && loaded ? ' with-photo' : ''}`}
       aria-hidden="true"
@@ -104,6 +108,15 @@ export function Avatar({
           }}
         />
       )}
+    </span>
+  );
+  // точка — рядом с аватаром: у самого аватара overflow: hidden (фото по форме)
+  return presenceId === undefined ? (
+    avatar
+  ) : (
+    <span className={`avatar-presence${small ? ' small' : ''}`}>
+      {avatar}
+      <PresenceDot userId={presenceId} />
     </span>
   );
 }

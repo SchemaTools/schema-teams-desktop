@@ -47,7 +47,21 @@ export interface PluginUpdaterPorts {
   changed(): void;
   audit?: PluginAuditListener;
   pollMs?: number;
+  /** Снятые галочки набора для плагина (настройки компьютера). */
+  deselected?(code: string): string[];
+  /**
+   * Доверие сертификату бюро перед установкой (импорт в «Доверенные корневые» и
+   * «Доверенные издатели» пользователя). Автоматическая установка не вызывает системный
+   * диалог Windows: 'required' — нужна кнопка; prompting — перед диалогом, для подсказки в окне.
+   */
+  ensureTrust?(o: { manual: boolean; prompting: () => void }): Promise<PluginTrustOutcome>;
+  /**
+   * Перед записью своего .addin при закрытом Revit: замена прежней установки Inno и
+   * bureau.txt. Возвращает причину предупреждения (установка всё равно идёт) или null.
+   */
+  beforeCommit?(code: string, first: boolean): Promise<string | null>;
 }
+export type PluginTrustOutcome = 'ok' | 'required' | 'declined' | 'failed';
 export interface PluginUpdateNotice {
   id: string;
   type: 'waiting' | 'complete';
@@ -146,6 +160,36 @@ export class PluginUpdater {
     void this.refresh();
     return { accepted: true };
   }
+  /**
+   * Смена состава набора: .addin перезаписывается из установленной папки версии без
+   * загрузки. Не установлен — выбор только сохраняется и применится при установке.
+   */
+  async select(code: string): Promise<{ ok: boolean; reason?: string; applied?: boolean }> {
+    this.sync();
+    const context = this.o.context();
+    if (!context) return { ok: false, reason: 'plugin_context_unavailable' };
+    const local = this.managed.plugins.find((p) => p.code === code);
+    if (!local?.components) return { ok: true, applied: false };
+    try {
+      const result = await this.op(() =>
+        this.o.installer().select(context.scope, code, this.o.deselected?.(code) ?? []),
+      );
+      if (result === null) return { ok: false, reason: 'plugin_job_failed' };
+      this.audit({
+        operation: 'install',
+        phase: 'result',
+        outcome: 'ok',
+        reason: 'selection',
+        plugin: code,
+      });
+      await this.inspect(context.scope);
+      this.emit();
+      return { ok: true, applied: result === 'complete' };
+    } catch (error) {
+      const reason = error instanceof PluginInstallError ? error.reason : 'plugin_job_failed';
+      return { ok: false, reason };
+    }
+  }
   /** Проверить и выполнить очередь. retryFailures — по «Проверить сейчас». */
   refresh(retryFailures = false): Promise<void> {
     if (this.disposed) return Promise.resolve();
@@ -214,10 +258,14 @@ export class PluginUpdater {
       years: before?.years ?? [],
       kind: work.kind,
       phase: 'waiting',
+      // Предупреждение операции (прежняя установка не удалена) держится до её конца.
+      ...(before?.notice && { notice: before.notice }),
       ...patch,
     };
     if (!patch.reason) delete next.reason;
     if (!patch.detail) delete next.detail;
+    if (!next.notice) delete next.notice;
+    if (!patch.prompt) delete next.prompt;
     this.state = {
       ...this.state,
       items: [...this.state.items.filter((i) => i.code !== work.code), next],
@@ -244,6 +292,7 @@ export class PluginUpdater {
           previous: p.previous,
           rollbackAvailable: p.rollbackAvailable,
           held: !!p.held,
+          ...(p.components && { components: structuredClone(p.components) }),
         })),
       };
     return installed;
@@ -392,9 +441,14 @@ export class PluginUpdater {
           version: local?.previous ?? '',
           from: local?.version,
           years: local?.years ?? [],
+          notice: undefined,
         });
         this.audit({ operation: 'rollback', phase: 'requested', plugin: work.code });
-        const result = await installer.rollback(context.scope, work.code);
+        const result = await installer.rollback(
+          context.scope,
+          work.code,
+          this.o.deselected?.(work.code),
+        );
         if (result === 'waiting') return 'waiting';
         this.item(work, {
           phase: 'complete',
@@ -422,6 +476,7 @@ export class PluginUpdater {
         version: build.version,
         from: local?.version,
         years: target,
+        notice: undefined,
       });
       // Зависимости (Schema.Tools) — первыми; несовместимое сочетание не ставится.
       let plans;
@@ -503,6 +558,24 @@ export class PluginUpdater {
       version: step.build.version,
       buildId: step.build.id,
     });
+    if (this.o.ensureTrust) {
+      const trust = await this.o
+        .ensureTrust({
+          manual: work.manual,
+          prompting: () => this.item(work, { phase: 'installing', prompt: 'certificate' }),
+        })
+        .catch((): PluginTrustOutcome => 'failed');
+      if (trust !== 'ok') {
+        this.audit({
+          operation: 'install',
+          phase: 'result',
+          outcome: 'rejected',
+          reason: `certificate_${trust}`,
+          plugin: step.code,
+        });
+        throw new PluginInstallError(`certificate_${trust}`);
+      }
+    }
     if (step.code === work.code) this.item(work, { phase: 'downloading' });
     const abort = new AbortController();
     let archive: string;
@@ -519,12 +592,28 @@ export class PluginUpdater {
       build: step.build,
       archivePath: archive,
       years: step.years,
+      deselected: this.o.deselected?.(step.code),
     });
     try {
       // Сборку отозвали, пока качали, — ставить её уже не нужно.
       const latest = this.o.catalog()?.plugins.find((p) => p.code === step.code);
       if (latest && latest.stable?.id !== step.build.id && latest.beta?.id !== step.build.id)
         throw new PluginInstallError('plugin_unavailable');
+      // Прежняя установка Inno и bureau.txt — при закрытом Revit, до записи своего .addin.
+      if (this.o.beforeCommit && (await this.revitIdle())) {
+        const warning = await this.o
+          .beforeCommit(step.code, !have)
+          .catch(() => 'legacy_failed' as const);
+        if (warning) {
+          this.item(work, { phase: 'installing', notice: warning });
+          this.audit({
+            operation: 'install',
+            phase: 'waiting',
+            reason: warning,
+            plugin: step.code,
+          });
+        }
+      }
       const result = await installer.commit(prepared);
       if (result === 'complete')
         this.audit({

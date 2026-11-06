@@ -40,6 +40,8 @@ import type { ClientSnapshot, DesktopRequest } from '../shared/desktop';
 import { requestValid } from '../shared/requests';
 import { TeamsApi, failure } from './api/client';
 import * as parse from './api/parse';
+import { PresenceTracker } from './presence';
+import type { ChatSummary, PresenceView } from '../shared/client';
 import { workTimer, controlledTimer } from './api/time';
 import type { WorkTimer } from '../shared/time';
 import { TimerAbsence } from './timer/absence';
@@ -93,8 +95,13 @@ import {
   type PluginUpdaterContext,
 } from './plugins/updater';
 import { PluginInstaller } from './plugins/installer';
+import { PLUGIN_SET_CODE } from '../shared/plugins';
 import { S } from './strings';
-import { createProductionInstaller, pluginInstallationAvailable } from './plugins/production';
+import {
+  createPluginSetup,
+  createProductionInstaller,
+  pluginInstallationAvailable,
+} from './plugins/production';
 import { readRevitProcesses } from './plugins/safety';
 import {
   MorningNotices,
@@ -224,6 +231,9 @@ export class ClientHost {
     },
     processes: readRevitProcesses,
     mayRun: () => !this.destroyed && !desktopShutdown.locked,
+    deselected: (code) => [...(this.o.settings.get().pluginDeselected?.[code] ?? [])],
+    // Сертификат бюро, замена установки Inno и bureau.txt (решение 06.11).
+    ...createPluginSetup(),
     audit: (event) => this.o.log.info('плагины', { ...event }),
     changed: () => {
       if (!this.destroyed) {
@@ -241,6 +251,11 @@ export class ClientHost {
   private bootFlight?: Promise<void>;
   private bootEpoch = -1;
   private socketOnline = false;
+  /** Кто в сети: снимок при входе и переподключении сокета, затем события `chat:presence`. */
+  private readonly presence = new PresenceTracker();
+  private presenceSent = '';
+  /** Группа создаётся один раз на ключ: повтор того же ключа ждёт или получает прежний ответ. */
+  private readonly groupFlights = new Map<string, Promise<ApiResult<ChatSummary>>>();
   private probing?: Promise<void>;
   private onlineFallback?: NodeJS.Timeout;
   private refreshScope: RefreshScope | null = null;
@@ -697,6 +712,8 @@ export class ClientHost {
           this.socketOnline = online;
           if (!this.state.user || this.state.user.id !== this.api.owner) return;
           if (online) {
+            // события присутствия идут только по сокету: снимок — после каждого подключения
+            void this.loadPresence();
             // «Нет связи» снимает только ответ сервера: сокет может подняться, когда
             // REST ещё недоступен (например, сервер отвечает 503).
             if (this.state.connection === 'offline') void this.probeServer();
@@ -806,6 +823,7 @@ export class ClientHost {
     this.liveNotices.reset();
     this.state.albumCelebration = null;
     this.activeChat = null;
+    this.resetPresence();
     this.state = {
       ...this.state,
       epoch: this.api.epoch,
@@ -859,6 +877,7 @@ export class ClientHost {
     this.uploads.reset();
     this.toasts.clear();
     this.activeChat = null;
+    this.resetPresence();
     this.state = {
       ...this.state,
       epoch: this.api.epoch,
@@ -953,6 +972,7 @@ export class ClientHost {
       this.state.timerError = null;
       this.state.navigateTimer = null;
       this.activeChat = null;
+      this.resetPresence();
       this.toasts.clear();
       this.paths.reset();
       this.files.reset();
@@ -2072,7 +2092,16 @@ export class ClientHost {
       }
       return;
     }
-    if (name === 'chat:presence') return;
+    if (name === 'chat:presence') {
+      try {
+        if (!this.state.user || this.state.user.id !== this.api.owner) return;
+        // окну — только если что-то поменялось, и отдельным сообщением (не весь снимок)
+        if (this.presence.apply(parse.presenceChange(data))) this.sendPresence();
+      } catch {
+        /* Негодное событие присутствия в окно не попадает. */
+      }
+      return;
+    }
     if (name === 'chat:stickers') {
       this.state.stickersRevision = (this.state.stickersRevision ?? 0) + 1;
       this.publish();
@@ -2512,6 +2541,12 @@ export class ClientHost {
     // ярлык «Пуска» показывают только мастер и настройки — окно клиента
     if (raw.kind.startsWith('startMenu.') && event.sender.id !== this.o.main.win.webContents.id)
       return failure('forbidden');
+    // новый чат и «кто в сети» — только окно клиента, не меню трея
+    if (
+      ['chat.people', 'chat.direct', 'chat.group', 'presence.read'].includes(raw.kind) &&
+      event.sender.id !== this.o.main.win.webContents.id
+    )
+      return failure('forbidden');
     if (
       desktopShutdown.locked &&
       ![
@@ -2814,6 +2849,37 @@ export class ClientHost {
       void this.pluginUpdates.refresh();
       return ok(null);
     }
+    if (r.kind === 'plugins.components') {
+      if (!this.pluginContext()) return failure('forbidden');
+      const known =
+        this.pluginUpdates.managed.plugins.some((p) => p.code === r.code) ||
+        !!this.pluginCatalog.state.catalog?.plugins.some((p) => p.code === r.code);
+      if (!known) return failure('validation');
+      // Обязательные компоненты снять нельзя — их отметка игнорируется.
+      const fixed = new Set(
+        this.pluginUpdates.managed.plugins
+          .find((p) => p.code === r.code)
+          ?.components?.filter((c) => c.fixed)
+          .map((c) => c.id) ?? [],
+      );
+      const before = this.o.settings.get().pluginDeselected ?? {};
+      this.o.settings.update({
+        pluginDeselected: {
+          ...before,
+          [r.code]: [...new Set(r.deselected.filter((id) => !fixed.has(id)))].sort(),
+        },
+      });
+      const result = await this.pluginUpdates.select(r.code);
+      this.publish();
+      if (result.ok) return ok({ applied: result.applied === true });
+      return {
+        ok: false,
+        code: 'plugin_job_blocked',
+        retryable: true,
+        error:
+          result.reason === 'journal_pending' ? S.pluginSelectionBusy : S.pluginSelectionFailed,
+      };
+    }
     if (r.kind === 'plugins.install' || r.kind === 'plugins.rollback') {
       if (!this.pluginContext()) return failure('forbidden');
       // Запрос только ставит намерение в очередь; ход и итог видны на экране плагинов.
@@ -3086,6 +3152,17 @@ export class ClientHost {
         if (result.ok) this.scheduleRefresh();
         return result;
       }
+      case 'chat.people':
+        return this.api.people(r.q);
+      case 'chat.direct': {
+        const result = await this.api.openDirect(r.userId);
+        if (result.ok) this.acceptCreatedChat(result.data);
+        return result;
+      }
+      case 'chat.group':
+        return this.createGroup(r.title, r.userIds, r.requestId);
+      case 'presence.read':
+        return ok(this.presenceView());
       case 'chat.reaction': {
         const result = await this.api.reactions(r.chatId, r.messageId, r.reaction, r.remove);
         if (result.ok) this.scheduleRefresh();
@@ -3172,12 +3249,24 @@ export class ClientHost {
       // ТЗ 5.3: «Планы этажей 1.43 · ДДУ 1.12 — установятся, когда вы закроете Revit 2025».
       const list = ticket.items.map((i) => `${i.name} ${i.version}`.trim()).join(' · ');
       const years = [...new Set(ticket.items.flatMap((i) => i.years))].sort().join(', ');
+      // Набор плагинов одним пакетом: «Готово обновление набора плагинов — установится, когда закроете Revit».
+      const set = ticket.items.length === 1 && ticket.items[0]?.code === PLUGIN_SET_CODE;
       const spec: ToastSpec = {
         id: 'plugins:' + ticket.id,
         key: ticket.id,
         groupId: 'plugin-' + ticket.type,
-        title: ticket.type === 'waiting' ? S.pluginWaitingTitle : S.pluginCompleteTitle,
-        body: ticket.type === 'waiting' ? S.pluginWaitingBody(list, years) : list,
+        title:
+          ticket.type === 'waiting'
+            ? set
+              ? S.pluginSetWaitingTitle
+              : S.pluginWaitingTitle
+            : S.pluginCompleteTitle,
+        body:
+          ticket.type === 'waiting'
+            ? set
+              ? S.pluginSetWaitingBody(list, years)
+              : S.pluginWaitingBody(list, years)
+            : list,
         hasReply: false,
         buttons: ticket.type === 'waiting' ? [S.pluginNotesButton, S.pluginOkButton] : [],
         delayMs: 0,
@@ -3254,6 +3343,65 @@ export class ClientHost {
       this.trayDrafts.dirtyCount === 0 &&
       !this.trayDrafts.busy
     );
+  }
+  /** Созданный или открытый чат сразу в списке (окно откроет его), затем — свежий список. */
+  private acceptCreatedChat(chat: ChatSummary): void {
+    const known = this.state.chats.find((c) => c.id === chat.id);
+    const rest = this.state.chats.filter((c) => c.id !== chat.id);
+    // у известного чата счётчики и закрепление — из списка: ответ создания их не уточняет
+    this.state.chats = [known ? { ...chat, unread: known.unread, top: known.top } : chat, ...rest];
+    this.publish();
+    this.scheduleRefresh('chats');
+  }
+  private createGroup(
+    title: string,
+    userIds: number[],
+    requestId: string,
+  ): Promise<ApiResult<ChatSummary>> {
+    const key = `${this.api.epoch}:${this.api.owner ?? 0}:${requestId}`;
+    const known = this.groupFlights.get(key);
+    if (known) return known;
+    const epoch = this.api.epoch;
+    const flight = this.api.createGroup(title, userIds, requestId).then((result) => {
+      // группа не создана (или исход неизвестен) — ключ освобождается для новой попытки;
+      // при неизвестном исходе список чатов перечитывается, окно предупреждает
+      if (!result.ok) this.groupFlights.delete(key);
+      if (epoch !== this.api.epoch) return failure<ChatSummary>('stale_session');
+      if (result.ok) this.acceptCreatedChat(result.data);
+      else if (result.uncertain) this.scheduleRefresh('chats');
+      return result;
+    });
+    this.groupFlights.set(key, flight);
+    return flight;
+  }
+  private async loadPresence(): Promise<void> {
+    const epoch = this.api.epoch,
+      owner = this.api.owner;
+    if (!owner || this.state.user?.id !== owner) return;
+    const token = this.presence.begin();
+    const result = await this.api.presence();
+    if (this.destroyed || epoch !== this.api.epoch || owner !== this.api.owner) return;
+    if (result.ok) {
+      if (this.presence.accept(token, result.data)) this.sendPresence();
+    } else this.presence.fail(token);
+  }
+  private resetPresence(): void {
+    this.presence.reset();
+    this.groupFlights.clear();
+    this.sendPresence();
+  }
+  private presenceView(): PresenceView {
+    return { epoch: this.api?.epoch ?? 0, ...this.presence.view() };
+  }
+  /** «Кто в сети» — отдельным сообщением окну клиента: лента и список не пересылаются. */
+  private sendPresence(): void {
+    if (this.destroyed) return;
+    const stamp = `${this.api?.epoch ?? 0}:${this.presence.version}`;
+    if (stamp === this.presenceSent) return;
+    this.presenceSent = stamp;
+    const win = this.o.main.win;
+    if (!win.isDestroyed() && this.peers.has(win.webContents.id))
+      win.webContents.send('client:presence', this.presenceView());
   }
   private publish(): void {
     this.syncScreenSaverDemand();

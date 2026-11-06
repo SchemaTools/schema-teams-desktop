@@ -514,3 +514,37 @@ export function notificationSettings(v: unknown): NotificationSettings {
     }),
   };
 }
+/** `GET /api/chats/people?q=` — коллеги для нового чата; негодная строка — весь ответ негоден. */
+export function people(v: unknown): PersonRef[] {
+  const list = array(v, person, 50);
+  if (new Set(list.map((p) => p.id)).size !== list.length) throw new InvalidData();
+  return list;
+}
+/** Не больше стольких сотрудников в снимке присутствия — с запасом на любое бюро. */
+const PRESENCE_LIMIT = 5000;
+/**
+ * `GET /api/chats/presence` → `{online, lastSeen}`; `focus` здесь не нужен (свой «Фокус» —
+ * `GET /api/focus`). Ид — строго положительные целые, время — разбираемое ISO.
+ */
+export function presenceSnapshot(v: unknown): { online: number[]; lastSeen: Map<number, string> } {
+  const x = object(v);
+  const online = [...new Set(array(x.online, id, PRESENCE_LIMIT))];
+  const raw = object(x.lastSeen);
+  const keys = Object.keys(raw);
+  if (keys.length > PRESENCE_LIMIT) throw new InvalidData();
+  const lastSeen = new Map<number, string>();
+  for (const key of keys) {
+    if (!/^[1-9]\d{0,15}$/.test(key)) throw new InvalidData();
+    lastSeen.set(id(Number(key)), date(raw[key]));
+  }
+  return { online, lastSeen };
+}
+/** Событие `chat:presence` → `{userId, online, lastSeen}`; `focusUntil` не нужен окну. */
+export function presenceChange(v: unknown): {
+  userId: number;
+  online: boolean;
+  lastSeen: string | null;
+} {
+  const x = object(v);
+  return { userId: id(x.userId), online: flag(x.online), lastSeen: nullable(x.lastSeen, date) };
+}

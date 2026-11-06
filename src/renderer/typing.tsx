@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { ClientSnapshot } from '../shared/desktop';
 
 export function TypingStatus({
@@ -10,7 +10,7 @@ export function TypingStatus({
   entries: ClientSnapshot['typing'];
   chatId: number;
   online: boolean;
-  fallback?: string;
+  fallback?: ReactNode;
 }) {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {

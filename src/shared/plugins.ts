@@ -44,7 +44,20 @@ export interface InstalledPluginView {
   rollbackAvailable: boolean;
   /** После «Вернуть» автообновление этой сборки остановлено. */
   held: boolean;
+  /** Компоненты набора плагинов (schema-plugins.json установленной версии) и выбор. */
+  components?: PluginComponentView[];
 }
+export interface PluginComponentView {
+  id: string;
+  title: string;
+  /** Без снятия галочки. */
+  fixed: boolean;
+  selected: boolean;
+}
+/** Код набора плагинов бюро в реестре Teams (решение 06.11). */
+export const PLUGIN_SET_CODE = 'schema-plugins';
+export const pluginComponentId = (v: unknown): v is string =>
+  typeof v === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(v);
 export interface ManagedPluginsView {
   /** Доверенный издатель настроен — ставить можно. */
   available: boolean;
@@ -63,6 +76,10 @@ export interface PluginWorkItem {
   reason?: string;
   /** Только имя файла .addin или .dll — для понятной причины ошибки. */
   detail?: string;
+  /** Предупреждение без отказа (прежняя установка не удалена — .addin перехвачены). */
+  notice?: string;
+  /** Сейчас Windows спросит подтверждение сертификата бюро. */
+  prompt?: 'certificate';
 }
 export interface PluginWorkflowState {
   phase: 'idle' | 'waiting';

@@ -12,13 +12,19 @@ export function reject(code: string): never {
   throw new PluginArchiveError(code);
 }
 
-/** Deliberately bounded ASCII Win32 subset; unsupported Unicode is rejected, not guessed. */
-export function safeArchiveRelativePath(value: string, directory = false): string {
+/**
+ * Deliberately bounded Win32 subset. По умолчанию — только ASCII; unicode=true разрешает
+ * ещё буквы, цифры и диакритику (кириллица в именах данных: «Что нового.md», семейства .rfa)
+ * в нормальной форме NFC. Управляющие, форматирующие и прочие символы — отказ, не догадка.
+ */
+export function safeArchiveRelativePath(value: string, directory = false, unicode = false): string {
   if (
     typeof value !== 'string' ||
     value.length < 1 ||
     value.length > 240 ||
-    /[^\x20-\x7e]/.test(value) ||
+    (unicode
+      ? /[^\x20-\x7e\p{L}\p{M}\p{N}]/u.test(value) || value.normalize('NFC') !== value
+      : /[^\x20-\x7e]/.test(value)) ||
     /[\\:<>"|?*]/.test(value) ||
     value.startsWith('/')
   )

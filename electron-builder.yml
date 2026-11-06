@@ -34,6 +34,8 @@ nsis:
   # журналы и настройки при удалении остаются (ТЗ, 9.1)
   deleteAppDataOnUninstall: false
   artifactName: Schema Teams Setup ${version}.${ext}
+  # ярлык «Пуска» пересоздаётся при каждой установке (значок после обновления, решение 06.11)
+  include: installer/windows.nsh
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
 publish: null
