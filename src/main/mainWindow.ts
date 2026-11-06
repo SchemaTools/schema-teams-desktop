@@ -6,7 +6,7 @@ import type { Logger } from './logger';
 import { ZOOM_MAX, ZOOM_MIN, type SettingsStore } from './settings';
 import { S } from './strings';
 import { fitBounds, MIN_SIZE } from './windowState';
-import { windowImage } from './icons';
+import { notificationImage, windowImage } from './icons';
 import { applyWindowTheme, windowBackground } from './windowTheme';
 export const PARTITION = 'persist:teams';
 export const CLIENT_FILE = join(__dirname, '../renderer/index.html');
@@ -126,7 +126,7 @@ export class MainWindow {
       new Notification({
         title: S.trayHintTitle,
         body: S.trayHintBody,
-        icon: windowImage(),
+        icon: notificationImage(),
       }).show();
   }
 }

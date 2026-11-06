@@ -1,4 +1,4 @@
-import { drawMark, GRAPHITE, WHITE, type Bitmap, type Rgba } from '../mark';
+import { GRAPHITE, trayMark, WHITE, type Bitmap, type Rgba } from '../mark';
 
 const GLYPHS: Record<string, string[]> = {
   '0': ['111', '101', '101', '101', '111'],
@@ -51,7 +51,7 @@ export interface IconState {
   timer: 'idle' | 'run' | 'pause';
 }
 export function statusBitmap(size: number, dark: boolean, state: IconState): Bitmap {
-  const bitmap = drawMark(size, dark ? WHITE : GRAPHITE);
+  const bitmap = trayMark(size, dark);
   const scale = size / 16;
   if (!state.online) {
     for (let i = 0; i < bitmap.data.length; i += 4) {
