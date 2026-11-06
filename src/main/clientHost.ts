@@ -40,6 +40,8 @@ import type { ClientSnapshot, DesktopRequest } from '../shared/desktop';
 import { requestValid } from '../shared/requests';
 import { TeamsApi, failure } from './api/client';
 import * as parse from './api/parse';
+import { PresenceTracker } from './presence';
+import type { ChatSummary, PresenceView } from '../shared/client';
 import { workTimer, controlledTimer } from './api/time';
 import type { WorkTimer } from '../shared/time';
 import { TimerAbsence } from './timer/absence';
@@ -249,6 +251,11 @@ export class ClientHost {
   private bootFlight?: Promise<void>;
   private bootEpoch = -1;
   private socketOnline = false;
+  /** Кто в сети: снимок при входе и переподключении сокета, затем события `chat:presence`. */
+  private readonly presence = new PresenceTracker();
+  private presenceSent = '';
+  /** Группа создаётся один раз на ключ: повтор того же ключа ждёт или получает прежний ответ. */
+  private readonly groupFlights = new Map<string, Promise<ApiResult<ChatSummary>>>();
   private probing?: Promise<void>;
   private onlineFallback?: NodeJS.Timeout;
   private refreshScope: RefreshScope | null = null;
@@ -705,6 +712,8 @@ export class ClientHost {
           this.socketOnline = online;
           if (!this.state.user || this.state.user.id !== this.api.owner) return;
           if (online) {
+            // события присутствия идут только по сокету: снимок — после каждого подключения
+            void this.loadPresence();
             // «Нет связи» снимает только ответ сервера: сокет может подняться, когда
             // REST ещё недоступен (например, сервер отвечает 503).
             if (this.state.connection === 'offline') void this.probeServer();
@@ -814,6 +823,7 @@ export class ClientHost {
     this.liveNotices.reset();
     this.state.albumCelebration = null;
     this.activeChat = null;
+    this.resetPresence();
     this.state = {
       ...this.state,
       epoch: this.api.epoch,
@@ -867,6 +877,7 @@ export class ClientHost {
     this.uploads.reset();
     this.toasts.clear();
     this.activeChat = null;
+    this.resetPresence();
     this.state = {
       ...this.state,
       epoch: this.api.epoch,
@@ -961,6 +972,7 @@ export class ClientHost {
       this.state.timerError = null;
       this.state.navigateTimer = null;
       this.activeChat = null;
+      this.resetPresence();
       this.toasts.clear();
       this.paths.reset();
       this.files.reset();
@@ -2080,7 +2092,16 @@ export class ClientHost {
       }
       return;
     }
-    if (name === 'chat:presence') return;
+    if (name === 'chat:presence') {
+      try {
+        if (!this.state.user || this.state.user.id !== this.api.owner) return;
+        // окну — только если что-то поменялось, и отдельным сообщением (не весь снимок)
+        if (this.presence.apply(parse.presenceChange(data))) this.sendPresence();
+      } catch {
+        /* Негодное событие присутствия в окно не попадает. */
+      }
+      return;
+    }
     if (name === 'chat:stickers') {
       this.state.stickersRevision = (this.state.stickersRevision ?? 0) + 1;
       this.publish();
@@ -2519,6 +2540,12 @@ export class ClientHost {
       return failure('forbidden');
     // ярлык «Пуска» показывают только мастер и настройки — окно клиента
     if (raw.kind.startsWith('startMenu.') && event.sender.id !== this.o.main.win.webContents.id)
+      return failure('forbidden');
+    // новый чат и «кто в сети» — только окно клиента, не меню трея
+    if (
+      ['chat.people', 'chat.direct', 'chat.group', 'presence.read'].includes(raw.kind) &&
+      event.sender.id !== this.o.main.win.webContents.id
+    )
       return failure('forbidden');
     if (
       desktopShutdown.locked &&
@@ -3125,6 +3152,17 @@ export class ClientHost {
         if (result.ok) this.scheduleRefresh();
         return result;
       }
+      case 'chat.people':
+        return this.api.people(r.q);
+      case 'chat.direct': {
+        const result = await this.api.openDirect(r.userId);
+        if (result.ok) this.acceptCreatedChat(result.data);
+        return result;
+      }
+      case 'chat.group':
+        return this.createGroup(r.title, r.userIds, r.requestId);
+      case 'presence.read':
+        return ok(this.presenceView());
       case 'chat.reaction': {
         const result = await this.api.reactions(r.chatId, r.messageId, r.reaction, r.remove);
         if (result.ok) this.scheduleRefresh();
@@ -3305,6 +3343,65 @@ export class ClientHost {
       this.trayDrafts.dirtyCount === 0 &&
       !this.trayDrafts.busy
     );
+  }
+  /** Созданный или открытый чат сразу в списке (окно откроет его), затем — свежий список. */
+  private acceptCreatedChat(chat: ChatSummary): void {
+    const known = this.state.chats.find((c) => c.id === chat.id);
+    const rest = this.state.chats.filter((c) => c.id !== chat.id);
+    // у известного чата счётчики и закрепление — из списка: ответ создания их не уточняет
+    this.state.chats = [known ? { ...chat, unread: known.unread, top: known.top } : chat, ...rest];
+    this.publish();
+    this.scheduleRefresh('chats');
+  }
+  private createGroup(
+    title: string,
+    userIds: number[],
+    requestId: string,
+  ): Promise<ApiResult<ChatSummary>> {
+    const key = `${this.api.epoch}:${this.api.owner ?? 0}:${requestId}`;
+    const known = this.groupFlights.get(key);
+    if (known) return known;
+    const epoch = this.api.epoch;
+    const flight = this.api.createGroup(title, userIds, requestId).then((result) => {
+      // группа не создана (или исход неизвестен) — ключ освобождается для новой попытки;
+      // при неизвестном исходе список чатов перечитывается, окно предупреждает
+      if (!result.ok) this.groupFlights.delete(key);
+      if (epoch !== this.api.epoch) return failure<ChatSummary>('stale_session');
+      if (result.ok) this.acceptCreatedChat(result.data);
+      else if (result.uncertain) this.scheduleRefresh('chats');
+      return result;
+    });
+    this.groupFlights.set(key, flight);
+    return flight;
+  }
+  private async loadPresence(): Promise<void> {
+    const epoch = this.api.epoch,
+      owner = this.api.owner;
+    if (!owner || this.state.user?.id !== owner) return;
+    const token = this.presence.begin();
+    const result = await this.api.presence();
+    if (this.destroyed || epoch !== this.api.epoch || owner !== this.api.owner) return;
+    if (result.ok) {
+      if (this.presence.accept(token, result.data)) this.sendPresence();
+    } else this.presence.fail(token);
+  }
+  private resetPresence(): void {
+    this.presence.reset();
+    this.groupFlights.clear();
+    this.sendPresence();
+  }
+  private presenceView(): PresenceView {
+    return { epoch: this.api?.epoch ?? 0, ...this.presence.view() };
+  }
+  /** «Кто в сети» — отдельным сообщением окну клиента: лента и список не пересылаются. */
+  private sendPresence(): void {
+    if (this.destroyed) return;
+    const stamp = `${this.api?.epoch ?? 0}:${this.presence.version}`;
+    if (stamp === this.presenceSent) return;
+    this.presenceSent = stamp;
+    const win = this.o.main.win;
+    if (!win.isDestroyed() && this.peers.has(win.webContents.id))
+      win.webContents.send('client:presence', this.presenceView());
   }
   private publish(): void {
     this.syncScreenSaverDemand();

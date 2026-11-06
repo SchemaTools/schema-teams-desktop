@@ -222,3 +222,18 @@ export interface FocusSummary {
   mentions: number;
   chats: { chatId: number; title: string; count: number; mentions: number; last: string[] }[];
 }
+/** Название группового разговора и состав — пределы сервера (`CHAT_TITLE_MAX`, `CHAT_GROUP_MAX`). */
+export const CHAT_TITLE_MAX = 80;
+export const CHAT_GROUP_MAX = 50;
+/** Поиск коллег (`GET /api/chats/people?q=`): сервер отдаёт не больше 50 строк. */
+export const PEOPLE_QUERY_MAX = 100;
+/**
+ * Кто в сети (`GET /api/chats/presence` и событие `chat:presence`, Teams 0.9.0, п. 4.1):
+ * `online` — ид сотрудников с открытым соединением, `lastSeen` — ид → время отключения
+ * (с запуска сервера; после перезапуска неизвестно).
+ */
+export interface PresenceView {
+  epoch: number;
+  online: number[];
+  lastSeen: Record<string, string>;
+}
