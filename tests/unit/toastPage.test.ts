@@ -34,6 +34,12 @@ describe('вид уведомления по макету v4 (замечание
     expect(page).toContain('data-action="1"');
     expect(page).toContain('Проверьте &lt;узел&gt; 5');
   });
+  it('знак бюро в строке приложения — два контурных квадрата, не диагональ', () => {
+    const page = html();
+    expect(page).toMatch(/<svg class="mark"[^>]*>.*<rect class="b"[^>]*>.*<rect class="f"/);
+    expect(page).not.toContain('linear-gradient(135deg');
+    expect(page).toContain(':root.dark .mark .f{stroke:#5b7bff}');
+  });
   it('буквы обложки', () => {
     expect(toastInitials('Петров П.П.')).toBe('ПП');
     expect(toastInitials('Тестовый чат')).toBe('ТЧ');
