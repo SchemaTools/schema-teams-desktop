@@ -2105,7 +2105,7 @@ function Empty({
 }) {
   return (
     <section className="empty-state">
-      <SchemaLogo />
+      <SchemaLogo geometry="primary" />
       <h1>{title}</h1>
       {text && <p>{text}</p>}
       {children}

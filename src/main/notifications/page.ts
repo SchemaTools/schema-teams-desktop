@@ -5,6 +5,7 @@
 import { S } from '../strings';
 import { REPLY_LIMIT, type ToastSpec } from './types';
 import { closeGlyph, sendGlyph } from './glyphs';
+import { markSvg } from '../mark';
 
 function esc(text: string): string {
   return text.replace(/[&<>"']/g, (c) => {
@@ -48,7 +49,8 @@ body{margin:0;background:transparent;color:var(--body);font:14px/1.4 Inter,"Sego
 .toast{height:100%;padding:14px;border:1px solid var(--rule);border-radius:14px;background:var(--side);
 display:flex;flex-direction:column;gap:10px;overflow:auto;scrollbar-width:thin}
 .app{display:flex;align-items:center;gap:7px;color:var(--meta);font-size:12px}
-.mark{width:12px;height:12px;border-radius:3px;background:linear-gradient(135deg,var(--ink) 0 50%,var(--acc) 50% 100%)}
+.mark{width:12px;height:12px;flex:none}.mark .b{stroke:#1a1d21}.mark .f{stroke:#1b3fd1}
+:root.dark .mark .b{stroke:#fff}:root.dark .mark .f{stroke:#5b7bff}
 .h{display:flex;align-items:center;gap:10px;cursor:pointer;border-radius:10px}
 .av{width:40px;height:40px;flex:none;border-radius:50%;display:grid;place-items:center;color:#fff;
 font-weight:600;font-size:14px}
@@ -74,7 +76,7 @@ font-weight:600;font-size:13px}.actions button:hover{filter:brightness(.97)}
 #status{color:var(--ok);margin:0;font-size:13px}#status:empty{display:none}
 #status[data-state="error"]{color:var(--bad)}
 </style></head><body><section class="toast" aria-label="${esc(S.customToastTitle)}">
-<div class="app"><span class="mark" aria-hidden="true"></span>${esc(spec.header ? `${S.appName} · ${spec.header}` : S.appName)}
+<div class="app">${markSvg('mark')}${esc(spec.header ? `${S.appName} · ${spec.header}` : S.appName)}
 <button id="close" aria-label="${esc(S.customToastClose)}">${closeGlyph}</button></div>
 <div id="message" class="h" role="button" tabindex="0" aria-label="${esc(S.menuOpen)}"><span class="av" style="background:${coverColor(spec.title)}" aria-hidden="true">${esc(toastInitials(spec.title))}</span><span class="tx"><h1>${esc(spec.title)}</h1><p class="body">${esc(spec.body)}</p></span></div>
 ${

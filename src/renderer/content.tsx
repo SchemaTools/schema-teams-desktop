@@ -31,11 +31,29 @@ function drainPreviews(): void {
   }
 }
 
-export function SchemaLogo({ className = '' }: { className?: string }) {
+/**
+ * Знак бюро — два наложенных контурных квадрата, вариант «Пересечение» (Брендинг бюро,
+ * schema-mark-*.svg). Задний квадрат (слева внизу) — currentColor, передний (справа вверху) —
+ * `--schema-logo-front`, без неё — тоже currentColor. `ui` — толстая линия для мелких размеров
+ * (schema-mark-ui-mono), `primary` — основная (schema-mark-primary).
+ */
+export function SchemaLogo({
+  className = '',
+  geometry = 'ui',
+}: {
+  className?: string;
+  geometry?: 'ui' | 'primary';
+}) {
+  const g =
+    geometry === 'primary'
+      ? { line: 6.1453, near: 3.0726, far: 27.6536, side: 69.2737 }
+      : { line: 9.1892, near: 4.5946, far: 28.3784, side: 67.027 };
   return (
-    <svg className={`schema-logo ${className}`} viewBox="0 0 22 22" aria-hidden="true">
-      <rect x="6" y="1" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" />
-      <rect x="1" y="6" width="15" height="15" fill="currentColor" opacity=".92" />
+    <svg className={`schema-logo ${className}`} viewBox="0 0 100 100" aria-hidden="true">
+      <g fill="none" strokeWidth={g.line}>
+        <rect className="schema-logo-back" x={g.near} y={g.far} width={g.side} height={g.side} />
+        <rect className="schema-logo-front" x={g.far} y={g.near} width={g.side} height={g.side} />
+      </g>
     </svg>
   );
 }
@@ -68,7 +86,7 @@ export function Avatar({
   const showPhoto = photo !== null && !failed;
   return (
     <span
-      className={`avatar ${colorClass(id)}${object ? ' object-avatar' : ''}${bot ? ' bot-avatar' : ''}${small ? ' small' : ''}${showPhoto && loaded ? ' with-photo' : ''}`}
+      className={`avatar ${bot ? '' : colorClass(id)}${object ? ' object-avatar' : ''}${bot ? ' bot-avatar' : ''}${small ? ' small' : ''}${showPhoto && loaded ? ' with-photo' : ''}`}
       aria-hidden="true"
     >
       {/* буквы видны, пока фото грузится или если его нет */}
