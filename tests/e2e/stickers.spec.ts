@@ -45,7 +45,7 @@ async function openChat() {
   });
   const page = await app.firstWindow();
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
-    timeout: 15_000,
+    timeout: 35_000,
   });
   const pending = app.waitForEvent('window');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();

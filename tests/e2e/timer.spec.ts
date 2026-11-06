@@ -57,8 +57,8 @@ async function launch() {
   });
   const page = await app.firstWindow();
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
-    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
-    timeout: 15_000,
+    // первый запрос на холодном раннере CI может висеть до DEADLINE (15 с) + повтор
+    timeout: 35_000,
   });
   const next = app.waitForEvent('window');
   await page.getByRole('button', { name: 'Войти', exact: true }).click();
@@ -221,8 +221,8 @@ test('открытие не меняет таймер, блокировка бе
   });
   await expect(p).toHaveCount(0);
   await expect(page.locator('.app-shell')).toHaveAttribute('data-connection', 'signedOut', {
-    // запуск Electron на машине CI бывает дольше 5 с (05.11: plugins, timer)
-    timeout: 15_000,
+    // первый запрос на холодном раннере CI может висеть до DEADLINE (15 с) + повтор
+    timeout: 35_000,
   });
 });
 test('таймер, запущенный на сайте или другом ПК, блокировка этого компьютера на паузу не ставит', async () => {
